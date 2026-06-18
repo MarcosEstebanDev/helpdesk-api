@@ -1,0 +1,48 @@
+# Infra local de desarrollo. NO es para producción.
+# Levanta solo las dependencias externas (Postgres + Redis); la API se corre
+# con `pnpm start:dev` apuntando a estos servicios vía .env.
+#
+#   docker compose -f infra/docker-compose.yml up -d
+#
+# Postgres 17 y Redis 7 (ver stack en CLAUDE.md). El rol de aplicación SIN
+# BYPASSRLS y las policies de Row-Level Security se crean en la Fase 2 vía
+# migraciones; acá el superusuario es solo para bootstrap local.
+name: helpdesk
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: helpdesk-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: helpdesk
+      POSTGRES_PASSWORD: helpdesk
+      POSTGRES_DB: helpdesk
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U helpdesk -d helpdesk']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: helpdesk-redis
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
+  redis-data:

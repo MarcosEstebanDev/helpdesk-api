@@ -1,0 +1,6 @@
+# pnpm 11 dependency build-script policy.
+# unrs-resolver ships prebuilt native binaries (used by eslint) -> allowed.
+# @scarf/scarf is install-time telemetry we deliberately skip -> denied.
+allowBuilds:
+  '@scarf/scarf': false
+  unrs-resolver: true
