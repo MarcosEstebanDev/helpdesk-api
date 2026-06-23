@@ -90,23 +90,24 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
-## Estado actual (2026-06-17)
+## Estado actual (2026-06-18)
 
-**Fase 1 — parcial.** Hecho en `helpdesk-api`:
+**Fase 1 (backend) — CERRADA.** Hecho y verificado en `helpdesk-api`:
 - Estructura hexagonal + `shared-kernel` (Result, Entity, AggregateRoot, ValueObject, DomainEvent, branded-id).
 - Config tipada con Zod (`src/infrastructure/config`).
 - Módulo `health` (`GET /health`) como ejemplo de bounded context.
 - Swagger/OpenAPI montado en `/docs`. `ValidationPipe` global.
-- **Verificado:** `pnpm build` OK, 7/7 unit tests, 1/1 e2e.
+- `infra/docker-compose.yml` (Postgres 17 + Redis 7 con healthchecks).
+- `Dockerfile` multi-stage (pnpm via corepack, runner no-root) + `.dockerignore`.
+- CI GitHub Actions (`.github/workflows/ci.yml`): install → `lint:ci` → test → test:e2e → build. (`lint:ci` = eslint sin `--fix`, `--max-warnings 0`).
+- `.gitignore` + `.gitattributes` (normaliza EOL a LF) + **git init + commit inicial** (`24d8cb3`, rama `main`, 36 archivos).
+- **Remote en GitHub:** `origin` → https://github.com/MarcosEstebanDev/helpdesk-api (privado). `main` trackea `origin/main`.
+- **Verificado:** `pnpm lint:ci`, `pnpm build`, 7/7 unit, 1/1 e2e en verde.
 
 ## PENDIENTE para cerrar la Fase 1 (retomar acá)
 
 En `helpdesk-api`:
-- [ ] `infra/docker-compose.yml` (Postgres 17 + Redis 7).
-- [ ] `Dockerfile` multi-stage.
-- [ ] CI GitHub Actions (`.github/workflows/ci.yml`): install → lint → test → build.
 - [ ] `docs/ARCHITECTURE.md` ya creado con ADRs iniciales — ampliar a medida que avanzan las fases.
-- [ ] `.gitignore` + `git init` + commit inicial.
 
 En `helpdesk-web` (todavía sin crear):
 - [ ] `create-next-app` (App Router, TS, src dir).
