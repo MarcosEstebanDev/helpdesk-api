@@ -1,4 +1,5 @@
 export * from './domain/result';
+export * from './domain/domain-error';
 export * from './domain/entity';
 export * from './domain/aggregate-root';
 export * from './domain/value-object';

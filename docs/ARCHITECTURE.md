@@ -119,6 +119,39 @@ e2e de aislamiento cross-tenant. (−) El rol de app y las policies viven en SQL
 dentro de la migración (Prisma no los modela); el rol/credencial local va en la
 migración por pragmatismo de portfolio (en prod se provisiona por IaC).
 
+## ADR-0011 — Flujo de autenticación (módulo `iam`)
+
+**Contexto.** Hace falta auth multi-tenant sin filtrar información entre tenants ni
+permitir enumeración de cuentas, y con sesiones revocables. El bounded context se
+llama **`iam`** (Identity & Access Management): agrupa identidad (Organization, User,
+Membership), credenciales y sesiones, y en Fase 3 sumará RBAC.
+**Decisión (fase 2b — dominio + aplicación).**
+- **Registro self-service:** `RegisterOrganization` crea Organization + User +
+  Membership(ADMIN) y deja la sesión iniciada. El *provisioning* resuelve el
+  huevo-o-la-gallina de RLS: se genera el `orgId` en la app y se inserta todo dentro
+  de `withTenant(orgId)` (el `WITH CHECK` pasa porque el contexto = tenant nuevo).
+- **Login por slug:** el `organizationSlug` resuelve el tenant ANTES de buscar al
+  usuario (email único por tenant). La resolución slug→id es el único acceso que NO
+  depende del contexto de tenant ⇒ se implementará (2c) con una función Postgres
+  `SECURITY DEFINER`, no abriendo RLS.
+- **Passwords:** política mínima en el VO `Password`; hash **argon2id** vía el puerto
+  `PasswordHasher`. Nunca se persiste el texto plano.
+- **Tokens:** access JWT corto (claims `userId`/`tenantId`/`role`) + **refresh JWT
+  firmado que carga `tenantId`** (así `/auth/refresh` conoce el tenant sin lookup
+  previo). Del refresh solo se persiste su **hash**.
+- **Rotación + reuse detection:** cada refresh válido se marca rotado y se emite uno
+  nuevo en la misma **familia**; presentar un refresh ya rotado/revocado revoca la
+  familia entera (robo). `Logout` revoca la familia (idempotente).
+- **Anti-enumeración:** todos los fallos de login devuelven el mismo error genérico.
+- **Pureza:** dominio y aplicación no importan Nest ni Prisma; dependen de 8 puertos
+  (repos de User/Organization/Membership/RefreshToken, `PasswordHasher`,
+  `TokenService`, `IdGenerator`, `Clock`). Los casos de uso devuelven `Result`.
+**Consecuencias.** (+) Lógica de auth 100% testeable por unidad con puertos mockeados
+(reuse detection incluido), sin DB ni HTTP. (+) Sesiones revocables y robo detectable.
+(−) Login requiere el slug de la org (UX de "workspace"). (−) Más puertos que mockear;
+la implementación real (argon2, JWT, repos Prisma, función `SECURITY DEFINER`,
+controllers, cookies, interceptor de tenant) queda para 2c.
+
 ---
 
 ## Seguridad (resumen)

@@ -58,6 +58,7 @@ uso dependen de la interfaz, nunca del adapter.
 - ADR-0008 **CQRS-lite** (commands por casos de uso; queries con read models que leen Prisma directo).
 - ADR-0009 **Tenant context** vía transacción + `set_config('app.current_tenant', $1, true)` (`PrismaService.withTenant`).
 - ADR-0010 **RLS multicapa**: rol de app `helpdesk_app` sin BYPASSRLS + `FORCE RLS` + policies fail-closed con `NULLIF(current_setting(...), '')`.
+- ADR-0011 **Flujo de auth** (módulo `iam`): registro self-service con provisioning, login por slug, argon2id, access JWT + refresh JWT (con `tenantId`) con rotación + reuse detection por familia.
 
 ## Seguridad (modelo, "portfolio-pragmático")
 
@@ -80,7 +81,7 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 ## Plan de fases
 
 1. ✅ Scaffold + docker-compose + CI mínimo
-2. 🔄 Auth + tenancy — **2a (Prisma + RLS) CERRADA**; falta 2b (auth domain/application) y 2c (JWT, controllers, interceptor de tenant context)
+2. 🔄 Auth + tenancy — **2a (Prisma + RLS) y 2b (dominio + aplicación `iam`) CERRADAS**; falta 2c (infra: argon2, JWT, repos Prisma, controllers, interceptor de tenant context)
 3. ⬜ RBAC (guard + decorator `@Roles`)
 4. ⬜ Tickets CRUD + AuditLog
 5. ⬜ Colas (routing job, DLQ, backoff)
@@ -94,6 +95,14 @@ Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
 ## Estado actual (2026-06-25)
+
+**Fase 2b (dominio + aplicación `iam`) — CERRADA.** Hecho y verificado en `helpdesk-api` (sin commitear aún):
+- `src/modules/iam/domain`: branded ids; `Role`; errores-as-values (`DomainError` en shared-kernel + errores IAM con `code`); VOs `Email`/`Password`/`PasswordHash`; entidades `Organization`/`User`/`Membership`/`RefreshToken` (estado de refresh: `isActive`/`isSpent`/`isExpired`); `slugify`; 8 **puertos** (repos User/Organization/Membership/RefreshToken, `PasswordHasher`, `TokenService`, `IdGenerator`, `Clock`).
+- `src/modules/iam/application`: `SessionIssuer` (emite access+refresh, familia nueva vs existente) y 4 casos de uso — `RegisterOrganization` (provisioning), `Login` (por slug, anti-enumeración), `RefreshTokens` (rotación + reuse → revoca familia), `Logout` (idempotente). Devuelven `Result`.
+- Dominio y aplicación **puros** (sin Nest ni Prisma). Tests unit con puertos mockeados.
+- ADR-0011 en ARCHITECTURE.md. Override de ESLint para tests (relaja reglas type-aware ruidosas con mocks de Jest, solo en `*.spec.ts`/`test/**`).
+- **Verificado:** `lint:ci` + **37/37 unit** + `build` OK. (Los e2e de 2a siguen verdes; `iam` aún no se expone por HTTP — eso es 2c.)
+- **Decisiones tomadas:** módulo `iam` (no `auth`); login requiere `organizationSlug`; refresh es JWT firmado con `tenantId`; resolución slug→tenant irá por función `SECURITY DEFINER` en 2c.
 
 **Fase 2a (Prisma + RLS) — CERRADA.** Hecho y verificado en `helpdesk-api`:
 - `prisma/schema.prisma`: `Organization`, `User`, `Membership` + enum `Role`. Datasource con
@@ -122,21 +131,19 @@ las policies usan `NULLIF(current_setting(...), '')` para colapsar "sin setear" 
 - **Remote en GitHub:** `origin` → https://github.com/MarcosEstebanDev/helpdesk-api (privado). `main` trackea `origin/main`.
 - **Verificado:** `pnpm lint:ci`, `pnpm build`, 7/7 unit, 1/1 e2e en verde.
 
-## PENDIENTE (retomar acá → Fase 2b)
+## PENDIENTE (retomar acá → Fase 2c)
 
-Fase 1 cerrada en ambos repos. Fase 2a (Prisma + RLS) cerrada. Siguiente:
+Fase 1 cerrada en ambos repos. Fase 2a (Prisma + RLS) y 2b (dominio + aplicación `iam`) cerradas. Siguiente:
 
-**Fase 2b — módulo `auth` hexagonal (domain + application):**
-- [ ] Entidades/VOs: `Email`, `PasswordHash`; branded IDs `TenantId`/`UserId`.
-- [ ] Ports: `UserRepository`, `PasswordHasher`, `TokenService`.
-- [ ] Casos de uso: `RegisterOrganization` (crea Org+User+Membership ADMIN en una tx), `Login`, `RefreshTokens`, `Logout`. Tests unit con puertos mockeados.
+**Fase 2c — infraestructura `iam` (adapters + HTTP):**
+- [ ] Migración: tabla `refresh_tokens` (tenant_id, user_id, family_id, token_hash, expires_at, rotated_at, revoked_at) con RLS como las demás; función `SECURITY DEFINER` para resolver slug→tenant_id sin abrir RLS.
+- [ ] Adapters: repos Prisma (corriendo cada op dentro de `withTenant`), `Argon2Hasher` (argon2id), `JwtTokenService` (access + refresh firmado con `tenantId`, `hashRefreshToken`), `UuidGenerator`, `SystemClock`.
+- [ ] `IamModule` Nest: wiring de los 4 casos de uso vía `useFactory` (mantener puros) inyectando los adapters por token de puerto.
+- [ ] Controllers `POST /auth/{register,login,refresh,logout}` con DTOs + Swagger; mapear `IamError.code` → status (409/401/etc.); refresh en cookie httpOnly.
+- [ ] `JwtAuthGuard` + `TenantContextInterceptor` (fija el tenant desde el JWT para `withTenant`).
+- [ ] e2e: register→login→refresh (rotación) + reuse detection (revoca familia) + aislamiento.
 
-**Fase 2c — infraestructura auth:**
-- [ ] Repos Prisma (usando `withTenant`), `Argon2Hasher`, `JwtTokenService` (access+refresh, rotación+reuse detection, refresh en cookie httpOnly), modelo `RefreshToken` (nueva migración).
-- [ ] Controllers `POST /auth/{register,login,refresh,logout}`, `JwtAuthGuard` + `TenantContextInterceptor` (puebla el tenant para `withTenant` desde el JWT).
-- [ ] e2e: happy path + refresh rotation/reuse.
-
-Recordar: proponer estructura/decisiones y **esperar OK** antes de codear (ADR-0011 = flujo de auth).
+Recordar: proponer estructura/decisiones y **esperar OK** antes de codear.
 
 ## Comandos
 
