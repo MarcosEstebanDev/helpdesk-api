@@ -15,6 +15,29 @@ jobs:
   verify:
     name: lint · test · build
     runs-on: ubuntu-latest
+
+    # Postgres real para los e2e (RLS no se puede mockear). El usuario `helpdesk`
+    # es el owner/superusuario que corre las migraciones; el rol de aplicación
+    # restringido `helpdesk_app` lo crea la propia migración (ADR-0010).
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: helpdesk
+          POSTGRES_PASSWORD: helpdesk
+          POSTGRES_DB: helpdesk
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U helpdesk -d helpdesk"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://helpdesk_app:helpdesk_app@localhost:5432/helpdesk?schema=public
+      MIGRATION_DATABASE_URL: postgresql://helpdesk:helpdesk@localhost:5432/helpdesk?schema=public
+
     steps:
       - uses: actions/checkout@v4
 
@@ -31,6 +54,12 @@ jobs:
 
       - name: Install
         run: pnpm install --frozen-lockfile
+
+      - name: Prisma generate
+        run: pnpm prisma:generate
+
+      - name: Apply migrations (crea rol de app + RLS)
+        run: pnpm prisma:deploy
 
       - name: Lint
         run: pnpm lint:ci

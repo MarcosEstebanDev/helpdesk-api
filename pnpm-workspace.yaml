@@ -1,6 +1,10 @@
 # pnpm 11 dependency build-script policy.
 # unrs-resolver ships prebuilt native binaries (used by eslint) -> allowed.
+# prisma/@prisma/* corren postinstall para bajar engines y generar el client -> allowed.
 # @scarf/scarf is install-time telemetry we deliberately skip -> denied.
 allowBuilds:
+  '@prisma/client': true
+  '@prisma/engines': true
   '@scarf/scarf': false
+  prisma: true
   unrs-resolver: true

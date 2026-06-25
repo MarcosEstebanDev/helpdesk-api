@@ -11,7 +11,8 @@ no cantidad de features.
 
 Dos repos separados (NO monorepo — decisión deliberada, ver ADR-0001):
 - `helpdesk-api` (este) — NestJS, arquitectura hexagonal.
-- `helpdesk-web` — Next.js App Router (todavía sin scaffoldear).
+- `helpdesk-web` — Next.js App Router. **Ya scaffoldeado** (Fase 1 cerrada): repo PÚBLICO
+  https://github.com/MarcosEstebanDev/helpdesk-web (ojo: el web es público, este api es privado).
 
 ## Stack y tooling
 
@@ -55,6 +56,8 @@ uso dependen de la interfaz, nunca del adapter.
 - ADR-0006 **Branded types** para IDs (`TenantId`, `TicketId`…) — seguridad por diseño.
 - ADR-0007 **Transactional outbox** para publicar eventos de forma confiable.
 - ADR-0008 **CQRS-lite** (commands por casos de uso; queries con read models que leen Prisma directo).
+- ADR-0009 **Tenant context** vía transacción + `set_config('app.current_tenant', $1, true)` (`PrismaService.withTenant`).
+- ADR-0010 **RLS multicapa**: rol de app `helpdesk_app` sin BYPASSRLS + `FORCE RLS` + policies fail-closed con `NULLIF(current_setting(...), '')`.
 
 ## Seguridad (modelo, "portfolio-pragmático")
 
@@ -76,8 +79,8 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 
 ## Plan de fases
 
-1. ✅ Scaffold + docker-compose + CI mínimo  *(en curso — ver estado abajo)*
-2. ⬜ Auth + tenancy (JWT, interceptor de tenant context, RLS policies + e2e de aislamiento cross-tenant)
+1. ✅ Scaffold + docker-compose + CI mínimo
+2. 🔄 Auth + tenancy — **2a (Prisma + RLS) CERRADA**; falta 2b (auth domain/application) y 2c (JWT, controllers, interceptor de tenant context)
 3. ⬜ RBAC (guard + decorator `@Roles`)
 4. ⬜ Tickets CRUD + AuditLog
 5. ⬜ Colas (routing job, DLQ, backoff)
@@ -90,7 +93,22 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
-## Estado actual (2026-06-18)
+## Estado actual (2026-06-25)
+
+**Fase 2a (Prisma + RLS) — CERRADA.** Hecho y verificado en `helpdesk-api`:
+- `prisma/schema.prisma`: `Organization`, `User`, `Membership` + enum `Role`. Datasource con
+  `url` (rol app restringido) + `directUrl` (rol owner solo para migraciones).
+- `src/infrastructure/prisma`: `PrismaService` (lifecycle + `withTenant(tenantId, fn)`) y `PrismaModule` global, wired en `app.module`.
+- Migración `init_auth_tenancy`: DDL + **rol `helpdesk_app`** (LOGIN, sin BYPASSRLS, no-owner, idempotente) + GRANTs DML + `ALTER DEFAULT PRIVILEGES` + `ENABLE/FORCE RLS` + policies `tenant_isolation` fail-closed (`NULLIF(current_setting('app.current_tenant', true), '')::uuid`).
+- `env.schema`: `DATABASE_URL` ahora **required**; nuevo `MIGRATION_DATABASE_URL` (opcional, solo migraciones). `.env`/`.env.example` actualizados.
+- CI: servicio Postgres 17 + `prisma generate` + `prisma migrate deploy` antes de los tests.
+- Test estrella `test/rls-isolation.e2e-spec.ts`: aislamiento cross-tenant (cada tenant ve solo lo suyo, no lee por id ajeno, fail-closed sin contexto, WITH CHECK bloquea insertar en otro tenant).
+- `pnpm-workspace.yaml`: builds de `prisma`/`@prisma/*` aprobados.
+- **Verificado:** `lint:ci`, 7/7 unit, 5/5 e2e, `build` OK. App levanta (`/health` 200, `/docs` 200, Prisma conecta como `helpdesk_app`). Migración valida desde cero con `ON_ERROR_STOP=1`. **No commiteado/pusheado aún.**
+
+**Aprendizaje RLS (importante):** un GUC con namespace propio, tras setearse una vez en la
+sesión, al resetearse vuelve a **cadena vacía** `''` (no NULL); `''::uuid` lanza `22P02`. Por eso
+las policies usan `NULLIF(current_setting(...), '')` para colapsar "sin setear" y "reseteado" a NULL.
 
 **Fase 1 (backend) — CERRADA.** Hecho y verificado en `helpdesk-api`:
 - Estructura hexagonal + `shared-kernel` (Result, Entity, AggregateRoot, ValueObject, DomainEvent, branded-id).
@@ -104,17 +122,21 @@ Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 - **Remote en GitHub:** `origin` → https://github.com/MarcosEstebanDev/helpdesk-api (privado). `main` trackea `origin/main`.
 - **Verificado:** `pnpm lint:ci`, `pnpm build`, 7/7 unit, 1/1 e2e en verde.
 
-## PENDIENTE para cerrar la Fase 1 (retomar acá)
+## PENDIENTE (retomar acá → Fase 2b)
 
-En `helpdesk-api`:
-- [ ] `docs/ARCHITECTURE.md` ya creado con ADRs iniciales — ampliar a medida que avanzan las fases.
+Fase 1 cerrada en ambos repos. Fase 2a (Prisma + RLS) cerrada. Siguiente:
 
-En `helpdesk-web` (todavía sin crear):
-- [ ] `create-next-app` (App Router, TS, src dir).
-- [ ] Estructura feature-based + providers de TanStack Query y Zustand + provider WebSocket placeholder.
-- [ ] `Dockerfile` multi-stage + CI + README.
+**Fase 2b — módulo `auth` hexagonal (domain + application):**
+- [ ] Entidades/VOs: `Email`, `PasswordHash`; branded IDs `TenantId`/`UserId`.
+- [ ] Ports: `UserRepository`, `PasswordHasher`, `TokenService`.
+- [ ] Casos de uso: `RegisterOrganization` (crea Org+User+Membership ADMIN en una tx), `Login`, `RefreshTokens`, `Logout`. Tests unit con puertos mockeados.
 
-Luego: arrancar **Fase 2 (Auth + tenancy + RLS)** — recordar proponer y esperar OK primero.
+**Fase 2c — infraestructura auth:**
+- [ ] Repos Prisma (usando `withTenant`), `Argon2Hasher`, `JwtTokenService` (access+refresh, rotación+reuse detection, refresh en cookie httpOnly), modelo `RefreshToken` (nueva migración).
+- [ ] Controllers `POST /auth/{register,login,refresh,logout}`, `JwtAuthGuard` + `TenantContextInterceptor` (puebla el tenant para `withTenant` desde el JWT).
+- [ ] e2e: happy path + refresh rotation/reuse.
+
+Recordar: proponer estructura/decisiones y **esperar OK** antes de codear (ADR-0011 = flujo de auth).
 
 ## Comandos
 

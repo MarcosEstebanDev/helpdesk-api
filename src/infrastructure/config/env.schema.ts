@@ -5,15 +5,19 @@ import { z } from 'zod';
  * if a required variable is missing or malformed the process fails fast with
  * a readable message, instead of blowing up at runtime deep in a request.
  *
- * DATABASE_URL / REDIS_URL are optional in Phase 1 and become required in
- * their respective phases (2 and 5).
+ * DATABASE_URL is required from Phase 2 on (the app talks to Postgres at boot).
+ * MIGRATION_DATABASE_URL is only needed to RUN migrations (`prisma migrate`), not
+ * at runtime, so it stays optional. REDIS_URL becomes required in Phase 5.
  */
 export const envSchema = z.object({
   NODE_ENV: z
     .enum(['development', 'test', 'production'])
     .default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
-  DATABASE_URL: z.string().min(1).optional(),
+  // Rol de aplicación RESTRINGIDO (sin BYPASSRLS) — RLS siempre aplica.
+  DATABASE_URL: z.string().min(1),
+  // Rol owner/superusuario — solo para `prisma migrate` (DDL). No usar en runtime.
+  MIGRATION_DATABASE_URL: z.string().min(1).optional(),
   REDIS_URL: z.string().min(1).optional(),
 });
 

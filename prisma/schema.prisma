@@ -1,0 +1,78 @@
+// Prisma schema — fuente de verdad del modelo relacional (ADR-0003 multi-tenancy
+// con Row-Level Security row-level por `tenant_id`).
+//
+// Dos conexiones (ADR-0010):
+//   - `url`       -> rol de aplicación RESTRINGIDO (sin BYPASSRLS, no dueño de las
+//                    tablas). Lo usa @prisma/client en runtime. RLS SIEMPRE aplica.
+//   - `directUrl` -> rol owner/superusuario, solo para `prisma migrate` (DDL).
+//
+// Las policies de RLS y el rol de app NO los modela Prisma: viven en el SQL de la
+// migración (ver prisma/migrations/*/migration.sql).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("MIGRATION_DATABASE_URL")
+}
+
+/// Roles dentro de una organización. El rol es POR membership (por tenant),
+/// nunca global (ver modelo de seguridad en CLAUDE.md).
+enum Role {
+  ADMIN
+  AGENT
+  VIEWER
+
+  @@map("role")
+}
+
+/// Tenant raíz. Su aislamiento RLS se hace por `id` (es la propia clave de tenant),
+/// a diferencia de las tablas hijas que se aíslan por `tenant_id`.
+model Organization {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users       User[]
+  memberships Membership[]
+
+  @@map("organizations")
+}
+
+/// Usuario perteneciente a un tenant. El email es único POR tenant (el mismo email
+/// puede existir en organizaciones distintas).
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  email        String
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  memberships  Membership[]
+
+  @@unique([tenantId, email])
+  @@map("users")
+}
+
+/// Relación usuario <-> organización con su rol. Un usuario tiene a lo sumo un
+/// membership por tenant.
+model Membership {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  role      Role
+  createdAt DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@map("memberships")
+}

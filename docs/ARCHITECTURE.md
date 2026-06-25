@@ -86,6 +86,39 @@ handlers ⇒ efectivamente once. (−) Componente extra (relay/publisher).
 **Consecuencias.** (+) Lecturas simples y rápidas, escrituras con invariantes. (−) Dos
 caminos de acceso a datos a mantener.
 
+## ADR-0009 — Tenant context vía transacción + `set_config`
+
+**Contexto.** Para que las policies de RLS (ADR-0003) filtren por tenant, Postgres
+necesita saber el tenant actual. Con un pool de conexiones no se puede usar una
+variable de sesión global: la conexión se reusa entre requests y el contexto se
+filtraría de un tenant a otro.
+**Decisión (fase 2).** `PrismaService.withTenant(tenantId, fn)` abre una transacción
+y ejecuta `SELECT set_config('app.current_tenant', $1, true)` (con `is_local = true`)
+**al inicio** de esa transacción. El valor solo vive dentro de la transacción, así que
+ninguna otra request hereda el contexto aunque comparta conexión. El `tenantId` se
+pasa **parametrizado** (bind param), nunca concatenado, y proviene siempre del JWT.
+**Consecuencias.** (+) Aislamiento correcto bajo pooling; imposible "olvidarse" de
+filtrar (lo hace la DB). (−) Toda operación tenant-scoped debe correr dentro de
+`withTenant` (una transacción por unidad de trabajo).
+
+## ADR-0010 — RLS multicapa: rol de app restringido + FORCE RLS
+
+**Contexto.** RLS protege solo si la app no puede saltearla. Por defecto el dueño de
+las tablas y los superusuarios ignoran las policies.
+**Decisión (fase 2).** Dos conexiones: las **migraciones** corren con un rol
+owner/superusuario (`MIGRATION_DATABASE_URL`); la **aplicación** corre con un rol
+restringido `helpdesk_app` (`DATABASE_URL`) **sin BYPASSRLS y que no es dueño de las
+tablas**, con solo `SELECT/INSERT/UPDATE/DELETE`. Además se activa `FORCE ROW LEVEL
+SECURITY` en cada tabla tenant-scoped. Las policies son **fail-closed**: usan
+`current_setting('app.current_tenant', true)` (missing_ok), de modo que sin contexto
+de tenant el valor es NULL y no devuelve ninguna fila. La tabla `organizations` se
+aísla por `id`; las hijas (`users`, `memberships`, …) por `tenant_id`.
+**Consecuencias.** (+) Última línea de defensa real: aunque un caso de uso tenga un
+bug y omita el filtro, la DB no deja ver datos de otro tenant. (+) Verificable con un
+e2e de aislamiento cross-tenant. (−) El rol de app y las policies viven en SQL crudo
+dentro de la migración (Prisma no los modela); el rol/credencial local va en la
+migración por pragmatismo de portfolio (en prod se provisiona por IaC).
+
 ---
 
 ## Seguridad (resumen)
