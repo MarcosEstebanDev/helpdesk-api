@@ -152,6 +152,35 @@ Membership), credenciales y sesiones, y en Fase 3 sumará RBAC.
 la implementación real (argon2, JWT, repos Prisma, función `SECURITY DEFINER`,
 controllers, cookies, interceptor de tenant) queda para 2c.
 
+
+## ADR-0012 — Resolución `slug -> tenant` sin abrir RLS (rol dedicado + `SECURITY DEFINER`)
+
+**Contexto.** El login recibe `organizationSlug` y todavía NO conoce el tenant, así
+que no puede fijar `app.current_tenant` antes de consultar. Pero `organizations`
+tiene `FORCE ROW LEVEL SECURITY`, que —a diferencia de `ENABLE`— aplica también al
+dueño de la tabla: cualquier consulta sin contexto devuelve cero filas.
+**Decisión.** Un rol dedicado `helpdesk_slug_resolver` (NOLOGIN, sin `BYPASSRLS`)
+con `GRANT SELECT (id, slug)` a nivel de **columna** sobre `organizations` y una
+policy propia acotada a `SELECT`. La función `iam_resolve_tenant_by_slug(text)` es
+`SECURITY DEFINER`, propiedad de ese rol, con `search_path` fijo, y solo
+`helpdesk_app` puede ejecutarla.
+**Alternativas descartadas.**
+- *Dar `BYPASSRLS` al rol de app*: resolvería el login y destruiría la garantía del
+  ADR-0010 para todo lo demás. Desproporcionado.
+- *`SECURITY DEFINER` propiedad del owner*: seguiría filtrada por `FORCE RLS`, y si
+  el owner fuese superusuario expondría toda la base ante un fallo en la función.
+- *Tabla desnormalizada `slug -> id` sin RLS*: duplica estado y hay que mantenerlo
+  sincronizado; el mismo dato en dos sitios acaba divergiendo.
+**Consecuencias.** (+) Privilegio mínimo real: aunque la función se viera
+comprometida, lo máximo que expone es el mapeo `slug -> id`, que el propio cliente
+ya provee en el login. (+) No depende de que el rol de migración sea superusuario.
+(−) La migración debe poder hacer `GRANT helpdesk_slug_resolver TO CURRENT_USER`
+para transferir la propiedad de la función. (−) Una excepción a RLS es una excepción:
+queda documentada aquí y acotada a dos columnas de una tabla.
+**Revisar si.** Se añade una segunda consulta pre-autenticación (p. ej. SSO por
+dominio de email): conviene evaluar un esquema `public_lookup` separado en vez de ir
+sumando funciones definer.
+
 ---
 
 ## Seguridad (resumen)

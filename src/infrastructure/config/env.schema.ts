@@ -19,6 +19,13 @@ export const envSchema = z.object({
   // Rol owner/superusuario — solo para `prisma migrate` (DDL). No usar en runtime.
   MIGRATION_DATABASE_URL: z.string().min(1).optional(),
   REDIS_URL: z.string().min(1).optional(),
+  // Secretos JWT (ADR-0011). Separados a propósito: un access token filtrado no
+  // permite forjar refresh tokens. Mínimo 32 chars para que HS256 tenga margen.
+  JWT_ACCESS_SECRET: z.string().min(32),
+  JWT_REFRESH_SECRET: z.string().min(32),
+  // TTLs en formato de `ms` (ej. '15m', '30d') — los consume @nestjs/jwt.
+  JWT_ACCESS_TTL: z.string().min(1).default('15m'),
+  JWT_REFRESH_TTL: z.string().min(1).default('30d'),
 });
 
 export type Env = z.infer<typeof envSchema>;
