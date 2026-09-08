@@ -58,9 +58,11 @@ uso dependen de la interfaz, nunca del adapter.
 - ADR-0008 **CQRS-lite** (commands por casos de uso; queries con read models que leen Prisma directo).
 - ADR-0009 **Tenant context** vía transacción + `set_config('app.current_tenant', $1, true)` (`PrismaService.withTenant`).
 - ADR-0010 **RLS multicapa**: rol de app `helpdesk_app` sin BYPASSRLS + `FORCE RLS` + policies fail-closed con `NULLIF(current_setting(...), '')`.
+- ADR-0011 **Flujo de auth** (módulo `iam`): registro self-service con provisioning, login por slug, argon2id, access JWT + refresh JWT (con `tenantId`) con rotación + reuse detection por familia.
 - ADR-0012 **Resolución `slug -> tenant`** sin abrir RLS: rol dedicado `helpdesk_slug_resolver`
   (NOLOGIN, sin BYPASSRLS, GRANT a nivel de columna) + función `SECURITY DEFINER` de su propiedad.
-- ADR-0011 **Flujo de auth** (módulo `iam`): registro self-service con provisioning, login por slug, argon2id, access JWT + refresh JWT (con `tenantId`) con rotación + reuse detection por familia.
+- ADR-0013 **Rate limiting** en auth: throttler global + límites estrictos por endpoint,
+  almacenamiento en memoria (revisar al escalar a varias instancias).
 
 ## Seguridad (modelo, "portfolio-pragmático")
 
@@ -72,6 +74,7 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 - Refresh tokens con rotación + reuse detection; passwords con argon2id; refresh en cookie httpOnly.
 - RBAC: el rol es **por membership** (por tenant), no global.
 - Sanitizar HTML del email entrante (anti stored-XSS). Verificar firmas de webhooks.
+- Rate limiting en auth (ADR-0013): guard global + `@Throttle` estricto en login/registro/refresh.
 
 ## Metodología de trabajo (IMPORTANTE)
 
@@ -116,7 +119,11 @@ punta a punta. Hecho y verificado:
 - **`src/bootstrap.ts`:** configuración del pipeline compartida por `main.ts` y los
   e2e, para que los tests ejerciten exactamente el mismo pipeline que producción.
 - **ADR-0012** escrito (la migración de julio ya lo referenciaba pero no existía).
-- **Verificado:** `lint:ci` limpio, **37/37 unit**, **17/17 e2e** contra Postgres real,
+- **Rate limiting (ADR-0013):** `@nestjs/throttler` como guard global + límites
+  estrictos por endpoint. Suite propia `auth-rate-limit.e2e-spec.ts` con el guard real.
+- **Precondición de e2e:** `test/global-setup.ts` comprueba conexión y migraciones, y
+  si faltan dice exactamente qué comando ejecutar en vez de fallar con un error de Prisma.
+- **Verificado:** `lint:ci` limpio, **37/37 unit**, **20/20 e2e** contra Postgres real,
   `build` OK, ambas migraciones aplicadas desde cero, y flujo probado a mano con curl
   (registro → me → login → rotación → reuse detection → revocación de familia).
 
@@ -173,7 +180,7 @@ Fases 1, 2a, 2b y 2c cerradas. La API de autenticación funciona end-to-end.
 - [ ] Decorador `@Roles(...)` + `RolesGuard` que lee el rol del contexto de tenant
       (nunca del body/query), con jerarquía ADMIN > AGENT > VIEWER.
 - [ ] Aplicarlo a una ruta de prueba y cubrirlo con e2e (403 vs 200 por rol).
-- [ ] ADR-0013 con la decisión de jerarquía de roles vs permisos granulares.
+- [ ] ADR-0014 con la decisión de jerarquía de roles vs permisos granulares.
 
 **Fase 4 — Tickets + AuditLog** (el producto empieza acá):
 - [ ] Modelo `Ticket`, `Comment`, `AuditLog` con RLS igual que el resto.

@@ -181,6 +181,40 @@ queda documentada aquí y acotada a dos columnas de una tabla.
 dominio de email): conviene evaluar un esquema `public_lookup` separado en vez de ir
 sumando funciones definer.
 
+
+## ADR-0013 — Rate limiting en autenticación
+
+**Contexto.** `/auth/login` y `/auth/register` son los endpoints que un atacante usa
+para fuerza bruta. Además, argon2id tarda ~50 ms **a propósito**: eso encarece un
+ataque por diccionario, pero convierte al login en un vector de denegación de
+servicio barato si se puede llamar sin límite.
+**Decisión.** `@nestjs/throttler` registrado como guard **global** (`APP_GUARD`) con
+un límite general de red de seguridad (300/min), y límites estrictos por endpoint vía
+`@Throttle`: login 5/15 min, registro 5/hora, refresh 30/15 min (ver
+`src/modules/iam/infrastructure/http/throttle.policy.ts`). Almacenamiento **en
+memoria**. Los límites son constantes en código, no configuración por entorno.
+**Alternativas descartadas.**
+- *Almacenamiento en Redis*: correcto en multi-instancia, pero adelantaría Redis de
+  la fase 5 y haría `REDIS_URL` obligatorio antes de tiempo. Con una sola instancia
+  el resultado es idéntico.
+- *Rate limit en el reverse proxy*: cero código, pero la política no quedaría
+  versionada, ni revisable en el diff, ni cubierta por tests.
+- *Límites configurables por variable de entorno*: un límite de seguridad que se
+  afloja con una variable acaba aflojado. El único escape hatch (`THROTTLE_SKIP`)
+  exige además `NODE_ENV=test`, así que en producción no puede activarse.
+**Consecuencias.** (+) Ninguna ruta nueva nace desprotegida: el guard es global y los
+endpoints sensibles endurecen, en vez de tener que acordarse de proteger cada una.
+(+) La política está versionada y cubierta por e2e (`auth-rate-limit.e2e-spec.ts`).
+(−) El contador es **por instancia**: con N réplicas el límite efectivo es N veces
+mayor. (−) Se limita por IP+ruta, no por cuenta: un atacante que agote el límite deja
+fuera al usuario legítimo que comparta esa IP — hay un test que lo deja explícito en
+vez de esconderlo. (−) Detrás de un proxy hay que configurar `trust proxy`, o todas
+las peticiones compartirán la IP del proxy y el límite se aplicará a todo el tráfico
+junto (pendiente: depende de la topología de despliegue).
+**Revisar si.** Se despliega más de una instancia (→ mover el almacenamiento a Redis,
+ya disponible desde la fase 5), o si el bloqueo del usuario legítimo resulta un
+problema real (→ limitar por cuenta además de por IP).
+
 ---
 
 ## Seguridad (resumen)

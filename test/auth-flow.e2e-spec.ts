@@ -7,6 +7,12 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 
+// Esta suite ejercita el FLUJO, no la política de rate limiting: encadena varios
+// logins que dispararían el límite (ADR-0013). El límite tiene su propia suite,
+// `auth-rate-limit.e2e-spec.ts`, que corre con el guard real.
+// Jest aísla cada suite en su proceso, así que esto no afecta a la otra.
+process.env.THROTTLE_SKIP = '1';
+
 /**
  * Test e2e del flujo completo de autenticación (Fase 2c, ADR-0011).
  *

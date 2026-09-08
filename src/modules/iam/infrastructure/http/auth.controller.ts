@@ -18,6 +18,7 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import type { Env } from '../../../../infrastructure/config/env.schema';
 import type { TenantContext } from '../../../../infrastructure/tenant/tenant-context';
@@ -35,6 +36,11 @@ import {
   RegisterOrganizationDto,
 } from './dto/auth.dto';
 import { toHttpException } from './iam-http.mapper';
+import {
+  LOGIN_THROTTLE,
+  REFRESH_THROTTLE,
+  REGISTER_THROTTLE,
+} from './throttle.policy';
 
 /** El refresh token nunca toca JavaScript del navegador: solo esta cookie. */
 const REFRESH_COOKIE = 'refresh_token';
@@ -53,6 +59,7 @@ export class AuthController {
   ) {}
 
   @Post('register')
+  @Throttle({ default: REGISTER_THROTTLE })
   @ApiOperation({ summary: 'Registra una organización y su usuario ADMIN' })
   @ApiResponse({ status: 201, type: AuthResponseDto })
   @ApiResponse({
@@ -69,6 +76,7 @@ export class AuthController {
   }
 
   @Post('login')
+  @Throttle({ default: LOGIN_THROTTLE })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Inicia sesión en una organización' })
   @ApiResponse({ status: 200, type: AuthResponseDto })
@@ -83,6 +91,7 @@ export class AuthController {
   }
 
   @Post('refresh')
+  @Throttle({ default: REFRESH_THROTTLE })
   @HttpCode(HttpStatus.OK)
   @ApiCookieAuth(REFRESH_COOKIE)
   @ApiOperation({ summary: 'Rota el refresh token y emite un access nuevo' })
