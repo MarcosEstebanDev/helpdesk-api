@@ -9,7 +9,6 @@ import {
   RefreshTokenClaims,
   TokenService,
 } from '../../domain/ports/token.service';
-import { isRole } from '../../domain/role';
 
 /** Forma del payload que firmamos. `sub` es el estándar JWT para el sujeto. */
 interface RefreshPayload {
@@ -121,7 +120,3 @@ export class JwtTokenService implements TokenService {
     return createHash('sha256').update(token).digest('hex');
   }
 }
-
-/** Verifica que el rol que viaja en un access token sea uno conocido. */
-export const parseRole = (raw: unknown): string | null =>
-  typeof raw === 'string' && isRole(raw) ? raw : null;

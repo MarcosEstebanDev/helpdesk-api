@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from './infrastructure/config/config.module';
 import { PrismaModule } from './infrastructure/prisma/prisma.module';
-import { TenantModule } from './infrastructure/tenant/tenant.module';
 import { HealthModule } from './modules/health/health.module';
 import { IamModule } from './modules/iam/iam.module';
 
@@ -11,6 +10,6 @@ import { IamModule } from './modules/iam/iam.module';
  * later logging and queues) lives under `src/infrastructure/*`.
  */
 @Module({
-  imports: [ConfigModule, PrismaModule, TenantModule, HealthModule, IamModule],
+  imports: [ConfigModule, PrismaModule, HealthModule, IamModule],
 })
 export class AppModule {}
