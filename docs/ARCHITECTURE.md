@@ -215,6 +215,37 @@ junto (pendiente: depende de la topología de despliegue).
 ya disponible desde la fase 5), o si el bloqueo del usuario legítimo resulta un
 problema real (→ limitar por cuenta además de por IP).
 
+
+## ADR-0014 — Autorización por jerarquía de roles (no permisos granulares)
+
+**Contexto.** El rol es por membership y hay tres (ADMIN, AGENT, VIEWER — ADR-0011).
+Hay que decidir cómo se expresa "quién puede hacer qué" en las rutas.
+**Decisión.** Jerarquía ordinal **ADMIN > AGENT > VIEWER**. Cada endpoint declara un
+rango **mínimo** con `@MinRole(...)`, y cualquier rol superior lo satisface. El orden
+vive en el dominio (`hasAtLeastRole` en `domain/role.ts`), no en el guard: "un ADMIN
+puede todo lo que puede un AGENT" es una regla de negocio, no de HTTP. `RolesGuard`
+se registra como guard global pero no exige nada si la ruta no declara `@MinRole`.
+**Alternativas descartadas.**
+- *Permisos granulares* (`ticket:read`, `sla:configure`) con roles como conjuntos de
+  permisos: es lo correcto cuando los roles dejan de ser un orden total. Con tres que
+  sí lo son, añade una tabla, una capa de indirección y **cero capacidad real hoy**.
+- *`@Roles('AGENT', 'ADMIN')` enumerando los permitidos*: duplica la jerarquía en cada
+  ruta; añadir un rol obligaría a revisar todos los decoradores del proyecto.
+- *Guard "deny by default"* (exigir rol en toda ruta): obligaría a marcar
+  explícitamente como públicas rutas que ya protege `JwtAuthGuard`, y esa doble
+  anotación es justo donde se cuelan los olvidos.
+**Consecuencias.** (+) Añadir un rol intermedio es cambiar un número en `ROLE_RANK`.
+(+) La regla se testea sin HTTP ni base de datos. (+) El nombre `@MinRole` delata la
+semántica: `@Roles('AGENT')` se leería como "solo AGENT". (−) **El rol viaja en el
+access token**: degradar a alguien no surte efecto hasta que el token caduque (15 min)
+o renueve. Se acepta a cambio de no consultar la base de datos en cada request; el
+refresh ya re-lee el membership, así que se corrige solo. Hay un e2e que lo deja
+explícito en vez de esconderlo. (−) La jerarquía asume un orden total: un rol como
+"BILLING", que pudiera facturar pero no ver tickets, no encaja.
+**Revisar si.** Aparece un rol que no encaja en el orden total (→ migrar a permisos
+granulares), o si el desfase de 15 minutos resulta inaceptable para alguna operación
+crítica (→ lista de revocación, o lookup del membership solo en esas rutas).
+
 ---
 
 ## Seguridad (resumen)

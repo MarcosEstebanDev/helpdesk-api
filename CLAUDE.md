@@ -63,6 +63,8 @@ uso dependen de la interfaz, nunca del adapter.
   (NOLOGIN, sin BYPASSRLS, GRANT a nivel de columna) + función `SECURITY DEFINER` de su propiedad.
 - ADR-0013 **Rate limiting** en auth: throttler global + límites estrictos por endpoint,
   almacenamiento en memoria (revisar al escalar a varias instancias).
+- ADR-0014 **Autorización por jerarquía** ADMIN > AGENT > VIEWER con `@MinRole(...)`
+  (rango mínimo), no permisos granulares. El orden vive en el dominio.
 
 ## Seguridad (modelo, "portfolio-pragmático")
 
@@ -87,8 +89,8 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 
 1. ✅ Scaffold + docker-compose + CI mínimo
 2. ✅ Auth + tenancy — **2a (Prisma + RLS), 2b (dominio + aplicación `iam`) y 2c (infraestructura + HTTP) CERRADAS**
-3. 🔄 RBAC (guard + decorator `@Roles`)
-4. ⬜ Tickets CRUD + AuditLog
+3. ✅ RBAC (`@MinRole` + `RolesGuard` global, jerarquía en el dominio)
+4. 🔄 Tickets CRUD + AuditLog
 5. ⬜ Colas (routing job, DLQ, backoff)
 6. ⬜ SLA engine (delayed jobs, breach, escalado)
 7. ⬜ Realtime (WebSocket gateway + cliente Next)
@@ -100,6 +102,21 @@ Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
 ## Estado actual (2026-09-08)
+
+**Fase 3 (RBAC) — CERRADA.**
+- `domain/role.ts`: `ROLE_RANK` + `hasAtLeastRole()`. El orden de autoridad es una
+  regla de negocio, así que vive en el dominio y se testea sin HTTP (6 unit tests).
+- `@MinRole(role)` declara el rango **mínimo**; se llama así y no `@Roles` porque con
+  jerarquía `@Roles('AGENT')` se leería como "solo AGENT".
+- `RolesGuard` registrado como segundo `APP_GUARD` (después del throttler: no tiene
+  sentido comprobar el rol de una petición que ya excedió su cuota). No exige nada si
+  la ruta no declara `@MinRole`, y distingue 401 (sin sesión) de 403 (sin rango).
+- ADR-0014 con la decisión, sus tres alternativas descartadas y su disparador de revisión.
+- e2e `rbac.e2e-spec.ts` con un controller definido SOLO en el test: la fase 3 entrega
+  el mecanismo, no rutas de producto. Cubre la jerarquía completa, 401 vs 403, el caso
+  de `@MinRole` sin `JwtAuthGuard`, y el desfase del rol en el token ya emitido.
+- **Verificado:** `lint:ci` limpio, 43/43 unit, **29/29 e2e**, `build` OK.
+
 
 **Fase 2c (infraestructura `iam` + HTTP) — CERRADA.** La API ya se puede usar de
 punta a punta. Hecho y verificado:
@@ -172,20 +189,17 @@ las policies usan `NULLIF(current_setting(...), '')` para colapsar "sin setear" 
 - **Remote en GitHub:** `origin` → https://github.com/MarcosEstebanDev/helpdesk-api (privado). `main` trackea `origin/main`.
 - **Verificado:** `pnpm lint:ci`, `pnpm build`, 7/7 unit, 1/1 e2e en verde.
 
-## PENDIENTE (retomar acá → Fase 3)
+## PENDIENTE (retomar acá → Fase 4)
 
-Fases 1, 2a, 2b y 2c cerradas. La API de autenticación funciona end-to-end.
+Fases 1, 2 (a/b/c) y 3 cerradas. Autenticación y autorización funcionan end-to-end.
 
-**Fase 3 — RBAC:**
-- [ ] Decorador `@Roles(...)` + `RolesGuard` que lee el rol del contexto de tenant
-      (nunca del body/query), con jerarquía ADMIN > AGENT > VIEWER.
-- [ ] Aplicarlo a una ruta de prueba y cubrirlo con e2e (403 vs 200 por rol).
-- [ ] ADR-0014 con la decisión de jerarquía de roles vs permisos granulares.
-
-**Fase 4 — Tickets + AuditLog** (el producto empieza acá):
-- [ ] Modelo `Ticket`, `Comment`, `AuditLog` con RLS igual que el resto.
-- [ ] CRUD de tickets + comentarios, con `withTenant` en cada operación.
-- [ ] Índices pensados para multi-tenant (prefijo `tenant_id`, como en refresh_tokens).
+**Fase 4 — Tickets + AuditLog** (acá empieza el producto):
+- [ ] Dominio: `Ticket` (estado, prioridad, asignado), `Comment`, `AuditLog`.
+- [ ] Migración con RLS igual que el resto e índices con prefijo `tenant_id`.
+- [ ] Casos de uso: crear, listar, asignar, comentar, cambiar estado.
+- [ ] Rutas protegidas con `@MinRole`: VIEWER lee, AGENT opera, ADMIN configura.
+- [ ] AuditLog escrito en la MISMA transacción que el cambio que registra.
+- [ ] ADR-0015: modelo de estados del ticket y qué transiciones son válidas.
 
 Recordar: proponer estructura/decisiones y **esperar OK** antes de codear.
 

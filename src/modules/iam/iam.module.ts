@@ -30,6 +30,7 @@ import {
 } from './domain/ports/user.repository';
 import { AccessTokenVerifier } from './infrastructure/auth/access-token.verifier';
 import { JwtAuthGuard } from './infrastructure/auth/jwt-auth.guard';
+import { RolesGuard } from './infrastructure/auth/roles.guard';
 import { TenantContextMiddleware } from './infrastructure/auth/tenant-context.middleware';
 import { Argon2PasswordHasher } from './infrastructure/crypto/argon2-password-hasher';
 import { JwtTokenService } from './infrastructure/crypto/jwt-token.service';
@@ -67,6 +68,7 @@ import { UuidGenerator } from './infrastructure/system/uuid-generator';
     AccessTokenVerifier,
     TenantContextMiddleware,
     JwtAuthGuard,
+    RolesGuard,
     SystemClock,
     UuidGenerator,
 
@@ -162,6 +164,6 @@ import { UuidGenerator } from './infrastructure/system/uuid-generator';
     },
   ],
   // Otros bounded contexts (tickets, fase 4) necesitan proteger sus rutas.
-  exports: [JwtAuthGuard, TenantContextMiddleware],
+  exports: [JwtAuthGuard, RolesGuard, TenantContextMiddleware],
 })
 export class IamModule {}

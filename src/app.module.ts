@@ -6,6 +6,7 @@ import { PrismaModule } from './infrastructure/prisma/prisma.module';
 import { GLOBAL_THROTTLE } from './modules/iam/infrastructure/http/throttle.policy';
 import { HealthModule } from './modules/health/health.module';
 import { IamModule } from './modules/iam/iam.module';
+import { RolesGuard } from './modules/iam/infrastructure/auth/roles.guard';
 
 /**
  * Composition root. Each bounded context lives under `src/modules/*` and is
@@ -33,6 +34,12 @@ import { IamModule } from './modules/iam/iam.module';
     HealthModule,
     IamModule,
   ],
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+  // Orden de ejecución = orden de registro. El rate limiting va primero: no
+  // tiene sentido gastar una comprobación de rol en una petición que ya excedió
+  // su cuota.
+  providers: [
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: RolesGuard },
+  ],
 })
 export class AppModule {}
