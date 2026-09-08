@@ -58,6 +58,8 @@ uso dependen de la interfaz, nunca del adapter.
 - ADR-0008 **CQRS-lite** (commands por casos de uso; queries con read models que leen Prisma directo).
 - ADR-0009 **Tenant context** vía transacción + `set_config('app.current_tenant', $1, true)` (`PrismaService.withTenant`).
 - ADR-0010 **RLS multicapa**: rol de app `helpdesk_app` sin BYPASSRLS + `FORCE RLS` + policies fail-closed con `NULLIF(current_setting(...), '')`.
+- ADR-0012 **Resolución `slug -> tenant`** sin abrir RLS: rol dedicado `helpdesk_slug_resolver`
+  (NOLOGIN, sin BYPASSRLS, GRANT a nivel de columna) + función `SECURITY DEFINER` de su propiedad.
 - ADR-0011 **Flujo de auth** (módulo `iam`): registro self-service con provisioning, login por slug, argon2id, access JWT + refresh JWT (con `tenantId`) con rotación + reuse detection por familia.
 
 ## Seguridad (modelo, "portfolio-pragmático")
@@ -81,8 +83,8 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 ## Plan de fases
 
 1. ✅ Scaffold + docker-compose + CI mínimo
-2. 🔄 Auth + tenancy — **2a (Prisma + RLS) y 2b (dominio + aplicación `iam`) CERRADAS**; falta 2c (infra: argon2, JWT, repos Prisma, controllers, interceptor de tenant context)
-3. ⬜ RBAC (guard + decorator `@Roles`)
+2. ✅ Auth + tenancy — **2a (Prisma + RLS), 2b (dominio + aplicación `iam`) y 2c (infraestructura + HTTP) CERRADAS**
+3. 🔄 RBAC (guard + decorator `@Roles`)
 4. ⬜ Tickets CRUD + AuditLog
 5. ⬜ Colas (routing job, DLQ, backoff)
 6. ⬜ SLA engine (delayed jobs, breach, escalado)
@@ -94,9 +96,41 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
-## Estado actual (2026-06-25)
+## Estado actual (2026-09-08)
 
-**Fase 2b (dominio + aplicación `iam`) — CERRADA.** Hecho y verificado en `helpdesk-api` (sin commitear aún):
+**Fase 2c (infraestructura `iam` + HTTP) — CERRADA.** La API ya se puede usar de
+punta a punta. Hecho y verificado:
+- **Adapters:** `Argon2PasswordHasher` (argon2id vía `@node-rs/argon2`, params OWASP),
+  `JwtTokenService` (access + refresh firmados con secretos distintos; hash SHA-256
+  del refresh para el lookup), `SystemClock`, `UuidGenerator`, y los 4 repos Prisma
+  corriendo cada operación dentro de `withTenant`.
+- **HTTP:** `POST /auth/{register,login,refresh,logout}` + `GET /auth/me`, con DTOs
+  validados, Swagger, refresh en cookie httpOnly (`Path=/auth`) y mapeo de
+  `IamError.code` a `application/problem+json` (RFC 7807).
+- **Contexto de tenant:** `TenantContextMiddleware` (AsyncLocalStorage) + `JwtAuthGuard`
+  + decorador `@CurrentUser`. Es middleware y no interceptor a propósito: un
+  interceptor devuelve un Observable que Nest suscribe fuera del scope de
+  `AsyncLocalStorage` y el contexto se perdería.
+- **`IamModule`:** casos de uso construidos con `useFactory` inyectando por TOKEN de
+  puerto, de modo que siguen siendo clases puras sin decoradores de Nest.
+- **`src/bootstrap.ts`:** configuración del pipeline compartida por `main.ts` y los
+  e2e, para que los tests ejerciten exactamente el mismo pipeline que producción.
+- **ADR-0012** escrito (la migración de julio ya lo referenciaba pero no existía).
+- **Verificado:** `lint:ci` limpio, **37/37 unit**, **17/17 e2e** contra Postgres real,
+  `build` OK, ambas migraciones aplicadas desde cero, y flujo probado a mano con curl
+  (registro → me → login → rotación → reuse detection → revocación de familia).
+
+**Gotchas resueltos en 2c (para no volver a tropezar):**
+- `@nestjs/jwt@12` es **solo ESM** y Jest (CommonJS) no lo puede parsear: se fija a
+  `^11`, que es la línea que acompaña a Nest 11.
+- `Algorithm` de `@node-rs/argon2` es un `const enum` ambiente: con `isolatedModules`
+  no se puede leer su valor; se usa la constante `2` (Argon2id) con import de tipo.
+- Nest 11 va sobre Express 5, donde `forRoutes('*')` ya no es válido: el middleware
+  de tenant se registra como middleware global en `configureApp`.
+
+## Estado anterior (2026-06-25)
+
+**Fase 2b (dominio + aplicación `iam`) — CERRADA.** Commiteada en `6e41da2`:
 - `src/modules/iam/domain`: branded ids; `Role`; errores-as-values (`DomainError` en shared-kernel + errores IAM con `code`); VOs `Email`/`Password`/`PasswordHash`; entidades `Organization`/`User`/`Membership`/`RefreshToken` (estado de refresh: `isActive`/`isSpent`/`isExpired`); `slugify`; 8 **puertos** (repos User/Organization/Membership/RefreshToken, `PasswordHasher`, `TokenService`, `IdGenerator`, `Clock`).
 - `src/modules/iam/application`: `SessionIssuer` (emite access+refresh, familia nueva vs existente) y 4 casos de uso — `RegisterOrganization` (provisioning), `Login` (por slug, anti-enumeración), `RefreshTokens` (rotación + reuse → revoca familia), `Logout` (idempotente). Devuelven `Result`.
 - Dominio y aplicación **puros** (sin Nest ni Prisma). Tests unit con puertos mockeados.
@@ -113,7 +147,7 @@ Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 - CI: servicio Postgres 17 + `prisma generate` + `prisma migrate deploy` antes de los tests.
 - Test estrella `test/rls-isolation.e2e-spec.ts`: aislamiento cross-tenant (cada tenant ve solo lo suyo, no lee por id ajeno, fail-closed sin contexto, WITH CHECK bloquea insertar en otro tenant).
 - `pnpm-workspace.yaml`: builds de `prisma`/`@prisma/*` aprobados.
-- **Verificado:** `lint:ci`, 7/7 unit, 5/5 e2e, `build` OK. App levanta (`/health` 200, `/docs` 200, Prisma conecta como `helpdesk_app`). Migración valida desde cero con `ON_ERROR_STOP=1`. **No commiteado/pusheado aún.**
+- **Verificado:** `lint:ci`, 7/7 unit, 5/5 e2e, `build` OK. App levanta (`/health` 200, `/docs` 200, Prisma conecta como `helpdesk_app`). Migración valida desde cero. Commiteada en `da83958`.
 
 **Aprendizaje RLS (importante):** un GUC con namespace propio, tras setearse una vez en la
 sesión, al resetearse vuelve a **cadena vacía** `''` (no NULL); `''::uuid` lanza `22P02`. Por eso
@@ -131,17 +165,20 @@ las policies usan `NULLIF(current_setting(...), '')` para colapsar "sin setear" 
 - **Remote en GitHub:** `origin` → https://github.com/MarcosEstebanDev/helpdesk-api (privado). `main` trackea `origin/main`.
 - **Verificado:** `pnpm lint:ci`, `pnpm build`, 7/7 unit, 1/1 e2e en verde.
 
-## PENDIENTE (retomar acá → Fase 2c)
+## PENDIENTE (retomar acá → Fase 3)
 
-Fase 1 cerrada en ambos repos. Fase 2a (Prisma + RLS) y 2b (dominio + aplicación `iam`) cerradas. Siguiente:
+Fases 1, 2a, 2b y 2c cerradas. La API de autenticación funciona end-to-end.
 
-**Fase 2c — infraestructura `iam` (adapters + HTTP):**
-- [ ] Migración: tabla `refresh_tokens` (tenant_id, user_id, family_id, token_hash, expires_at, rotated_at, revoked_at) con RLS como las demás; función `SECURITY DEFINER` para resolver slug→tenant_id sin abrir RLS.
-- [ ] Adapters: repos Prisma (corriendo cada op dentro de `withTenant`), `Argon2Hasher` (argon2id), `JwtTokenService` (access + refresh firmado con `tenantId`, `hashRefreshToken`), `UuidGenerator`, `SystemClock`.
-- [ ] `IamModule` Nest: wiring de los 4 casos de uso vía `useFactory` (mantener puros) inyectando los adapters por token de puerto.
-- [ ] Controllers `POST /auth/{register,login,refresh,logout}` con DTOs + Swagger; mapear `IamError.code` → status (409/401/etc.); refresh en cookie httpOnly.
-- [ ] `JwtAuthGuard` + `TenantContextInterceptor` (fija el tenant desde el JWT para `withTenant`).
-- [ ] e2e: register→login→refresh (rotación) + reuse detection (revoca familia) + aislamiento.
+**Fase 3 — RBAC:**
+- [ ] Decorador `@Roles(...)` + `RolesGuard` que lee el rol del contexto de tenant
+      (nunca del body/query), con jerarquía ADMIN > AGENT > VIEWER.
+- [ ] Aplicarlo a una ruta de prueba y cubrirlo con e2e (403 vs 200 por rol).
+- [ ] ADR-0013 con la decisión de jerarquía de roles vs permisos granulares.
+
+**Fase 4 — Tickets + AuditLog** (el producto empieza acá):
+- [ ] Modelo `Ticket`, `Comment`, `AuditLog` con RLS igual que el resto.
+- [ ] CRUD de tickets + comentarios, con `withTenant` en cada operación.
+- [ ] Índices pensados para multi-tenant (prefijo `tenant_id`, como en refresh_tokens).
 
 Recordar: proponer estructura/decisiones y **esperar OK** antes de codear.
 
