@@ -15,6 +15,7 @@ const STATUS_BY_CODE: Record<string, HttpStatus> = {
   'ticketing.invalid_subject': HttpStatus.BAD_REQUEST,
   'ticketing.invalid_description': HttpStatus.BAD_REQUEST,
   'ticketing.empty_comment': HttpStatus.BAD_REQUEST,
+  'ticketing.invalid_sla_target': HttpStatus.BAD_REQUEST,
   'ticketing.ticket_not_found': HttpStatus.NOT_FOUND,
   'ticketing.assignee_not_found': HttpStatus.NOT_FOUND,
   'ticketing.invalid_transition': HttpStatus.CONFLICT,

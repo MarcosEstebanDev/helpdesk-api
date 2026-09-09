@@ -10,6 +10,7 @@ import {
   Max,
   Min,
 } from 'class-validator';
+import { SLA_KINDS } from '../../../domain/sla/sla-timer.entity';
 import {
   TICKET_PRIORITIES,
   TICKET_STATUSES,
@@ -126,11 +127,30 @@ export class TicketCommentDto {
   @ApiProperty() createdAt!: Date;
 }
 
+export class TicketSlaDto {
+  @ApiProperty({ enum: SLA_KINDS }) kind!: string;
+  @ApiProperty({ description: 'Instante en que vence este reloj.' })
+  dueAt!: Date;
+  @ApiProperty({ nullable: true }) stoppedAt!: Date | null;
+  @ApiProperty({ nullable: true }) breachedAt!: Date | null;
+  @ApiProperty({
+    enum: ['running', 'met', 'breached'],
+    description: 'Se deriva de las fechas; no hay un campo de estado guardado.',
+  })
+  status!: string;
+  @ApiProperty({
+    description:
+      'Minutos de margen, negativos si se pasó. El reloj en marcha se mide contra ahora; el parado, contra su hora de parada.',
+  })
+  remainingMinutes!: number;
+}
+
 export class TicketDetailDto extends TicketSummaryDto {
   @ApiProperty() description!: string;
   @ApiProperty({ nullable: true }) resolvedAt!: Date | null;
   @ApiProperty({ nullable: true }) closedAt!: Date | null;
   @ApiProperty({ type: [TicketCommentDto] }) comments!: TicketCommentDto[];
+  @ApiProperty({ type: [TicketSlaDto] }) sla!: TicketSlaDto[];
 }
 
 export class TicketPageDto {

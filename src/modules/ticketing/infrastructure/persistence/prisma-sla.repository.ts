@@ -50,6 +50,51 @@ export class PrismaSlaPolicyRepository
       return overrides;
     });
   }
+
+  async upsert(input: {
+    tenantId: TenantId;
+    priority: TicketPriority;
+    target: SlaTarget;
+    now: Date;
+  }): Promise<void> {
+    await this.runInTenant(input.tenantId, async (tx) => {
+      await tx.slaPolicy.upsert({
+        // La clave natural es (tenant, prioridad): el id sintético existe para
+        // el ORM, pero quien manda es el par único del esquema.
+        where: {
+          tenantId_priority: {
+            tenantId: input.tenantId,
+            priority: input.priority,
+          },
+        },
+        create: {
+          tenantId: input.tenantId,
+          priority: input.priority,
+          responseMinutes: input.target.responseMinutes,
+          resolutionMinutes: input.target.resolutionMinutes,
+          // `updated_at` no lleva `@updatedAt`: la hora entra por el puerto
+          // `Clock`, así que los tests pueden fijarla igual que en el resto.
+          updatedAt: input.now,
+        },
+        update: {
+          responseMinutes: input.target.responseMinutes,
+          resolutionMinutes: input.target.resolutionMinutes,
+          updatedAt: input.now,
+        },
+      });
+    });
+  }
+
+  async remove(tenantId: TenantId, priority: TicketPriority): Promise<boolean> {
+    return this.runInTenant(tenantId, async (tx) => {
+      // `deleteMany` y no `delete`: borrar algo que no está no es un error aquí,
+      // y `delete` lanzaría P2025 abortando la transacción del caso de uso.
+      const { count } = await tx.slaPolicy.deleteMany({
+        where: { tenantId, priority },
+      });
+      return count > 0;
+    });
+  }
 }
 
 @Injectable()

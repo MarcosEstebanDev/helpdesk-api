@@ -1,6 +1,6 @@
 import { SlaTimerId, TenantId, TicketId } from '../ids';
 import { CALENDAR_24_7 } from './sla-calendar';
-import { SlaTimer } from './sla-timer.entity';
+import { SlaTimer, describeSlaTimer } from './sla-timer.entity';
 
 const TENANT = TenantId('11111111-1111-1111-1111-111111111111');
 const TICKET = TicketId('44444444-4444-4444-4444-444444444444');
@@ -145,5 +145,62 @@ describe('SlaTimer', () => {
       expect(timer.stoppedAt).toBeNull();
       expect(timer.isBreached()).toBe(true);
     });
+  });
+});
+
+describe('describeSlaTimer', () => {
+  const VENCE = new Date('2026-09-09T12:00:00.000Z');
+  const base = { kind: 'RESPONSE' as const, dueAt: VENCE };
+
+  it('un reloj en marcha se mide contra AHORA', () => {
+    const vista = describeSlaTimer(
+      { ...base, stoppedAt: null, breachedAt: null },
+      new Date('2026-09-09T11:30:00.000Z'),
+    );
+
+    expect(vista.status).toBe('running');
+    expect(vista.remainingMinutes).toBe(30);
+  });
+
+  it('un reloj cumplido se mide contra su hora de parada, no contra ahora', () => {
+    // Si se midiera contra ahora, el margen de un ticket ya resuelto empeoraría
+    // cada vez que alguien abre la pantalla.
+    const vista = describeSlaTimer(
+      {
+        ...base,
+        stoppedAt: new Date('2026-09-09T11:45:00.000Z'),
+        breachedAt: null,
+      },
+      new Date('2026-09-10T00:00:00.000Z'),
+    );
+
+    expect(vista.status).toBe('met');
+    expect(vista.remainingMinutes).toBe(15);
+  });
+
+  it('un reloj incumplido dice cuánto se pasó', () => {
+    const vista = describeSlaTimer(
+      {
+        ...base,
+        stoppedAt: null,
+        breachedAt: new Date('2026-09-09T12:20:00.000Z'),
+      },
+      new Date('2026-09-10T00:00:00.000Z'),
+    );
+
+    expect(vista.status).toBe('breached');
+    expect(vista.remainingMinutes).toBe(-20);
+  });
+
+  it('el margen de un reloj en marcha ya vencido es negativo', () => {
+    // El barrido puede no haber pasado todavía: la vista no miente diciendo que
+    // va bien, pero tampoco lo marca como incumplido antes de que se registre.
+    const vista = describeSlaTimer(
+      { ...base, stoppedAt: null, breachedAt: null },
+      new Date('2026-09-09T12:10:00.000Z'),
+    );
+
+    expect(vista.status).toBe('running');
+    expect(vista.remainingMinutes).toBe(-10);
   });
 });

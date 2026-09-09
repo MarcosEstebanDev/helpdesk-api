@@ -216,11 +216,40 @@ export const fakeProcessedMessages = (
 };
 
 /** Política de SLA en memoria: por defecto, sin ningún override. */
+export interface FakeSlaPolicies extends SlaPolicyRepository {
+  /** Lo que hay configurado ahora mismo, para afirmar sobre ello. */
+  readonly overrides: Partial<Record<TicketPriority, SlaTarget>>;
+  readonly upserts: number;
+}
+
 export const fakeSlaPolicies = (
-  overrides: Partial<Record<TicketPriority, SlaTarget>> = {},
-): SlaPolicyRepository => ({
-  overridesOf: () => Promise.resolve(overrides),
-});
+  iniciales: Partial<Record<TicketPriority, SlaTarget>> = {},
+): FakeSlaPolicies => {
+  const overrides: Partial<Record<TicketPriority, SlaTarget>> = {
+    ...iniciales,
+  };
+  const state = { upserts: 0 };
+
+  return {
+    overrides,
+    get upserts() {
+      return state.upserts;
+    },
+    // Copia defensiva: el caso de uso no debe poder mutar el almacen por
+    // referencia, igual que no podria con una fila de Postgres.
+    overridesOf: () => Promise.resolve({ ...overrides }),
+    upsert: (input) => {
+      overrides[input.priority] = input.target;
+      state.upserts += 1;
+      return Promise.resolve();
+    },
+    remove: (_tenantId, priority) => {
+      const habia = overrides[priority] !== undefined;
+      delete overrides[priority];
+      return Promise.resolve(habia);
+    },
+  };
+};
 
 export interface FakeSlaTimers extends SlaTimerRepository {
   readonly saved: SlaTimer[];

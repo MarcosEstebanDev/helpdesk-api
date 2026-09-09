@@ -1,4 +1,6 @@
-import { TicketPriority } from '../ticket-status';
+import { Result, err, ok } from '../../../../shared-kernel';
+import { InvalidSlaTargetError } from '../errors';
+import { TICKET_PRIORITIES, TicketPriority } from '../ticket-status';
 
 /**
  * Objetivos de SLA por prioridad (ADR-0020).
@@ -47,3 +49,89 @@ export const resolvePolicy = (
   NORMAL: overrides.NORMAL ?? DEFAULT_SLA_POLICY.NORMAL,
   LOW: overrides.LOW ?? DEFAULT_SLA_POLICY.LOW,
 });
+
+/**
+ * Techo de un objetivo de SLA: un año.
+ *
+ * No es una restricción técnica, es una de sentido: un plazo de varios años no
+ * es un compromiso, es la ausencia de uno, y deja relojes corriendo para siempre
+ * que el barrido tiene que mirar en cada pasada. Quien no quiera comprometerse a
+ * nada, que no configure la prioridad.
+ */
+export const SLA_MAX_MINUTES = 365 * 24 * 60;
+
+const esPlazoValido = (minutos: number): boolean =>
+  Number.isInteger(minutos) && minutos >= 1 && minutos <= SLA_MAX_MINUTES;
+
+/**
+ * Constructor validado de un objetivo. Es la única forma de fabricar un
+ * `SlaTarget` que venga de fuera: `DEFAULT_SLA_POLICY` está en el código y ya se
+ * revisó al escribirlo, pero lo que teclea un administrador pasa por aquí.
+ *
+ * La regla que no puede vivir en el DTO es la última: los dos relojes son
+ * independientes, así que "resolver en 30 minutos y responder en 4 horas" se
+ * ejecutaría tan campante y nadie se enteraría hasta ver los incumplimientos.
+ */
+export const makeSlaTarget = (input: {
+  responseMinutes: number;
+  resolutionMinutes: number;
+}): Result<SlaTarget, InvalidSlaTargetError> => {
+  if (!esPlazoValido(input.responseMinutes)) {
+    return err(
+      new InvalidSlaTargetError(
+        `El plazo de respuesta debe ser un número entero de minutos entre 1 y ${SLA_MAX_MINUTES}.`,
+      ),
+    );
+  }
+  if (!esPlazoValido(input.resolutionMinutes)) {
+    return err(
+      new InvalidSlaTargetError(
+        `El plazo de resolución debe ser un número entero de minutos entre 1 y ${SLA_MAX_MINUTES}.`,
+      ),
+    );
+  }
+  if (input.resolutionMinutes < input.responseMinutes) {
+    return err(
+      new InvalidSlaTargetError(
+        'El plazo de resolución no puede ser menor que el de respuesta.',
+      ),
+    );
+  }
+
+  return ok({
+    responseMinutes: input.responseMinutes,
+    resolutionMinutes: input.resolutionMinutes,
+  });
+};
+
+/** ¿Este objetivo lo pactó la organización o es el que trae el producto? */
+export type SlaTargetSource = 'organization' | 'default';
+
+export interface EffectiveSlaTarget extends SlaTarget {
+  priority: TicketPriority;
+  source: SlaTargetSource;
+}
+
+/**
+ * La política que rige HOY, prioridad a prioridad y diciendo de dónde sale cada
+ * objetivo.
+ *
+ * `resolvePolicy` ya combina overrides y defaults, pero se come justo el dato
+ * que necesita quien va a editarla: sin `source`, un administrador no distingue
+ * "esto lo pactamos así" de "esto nadie lo tocó nunca", y no puede saber si
+ * cambiarlo rompe un acuerdo. Devuelve SIEMPRE las cuatro prioridades por el
+ * mismo motivo por el que existe `DEFAULT_SLA_POLICY`: no hay tenant sin SLA.
+ */
+export const effectivePolicy = (
+  overrides: Partial<Record<TicketPriority, SlaTarget>>,
+): EffectiveSlaTarget[] =>
+  TICKET_PRIORITIES.map((priority) => {
+    const propio = overrides[priority];
+    const target = propio ?? DEFAULT_SLA_POLICY[priority];
+    return {
+      priority,
+      responseMinutes: target.responseMinutes,
+      resolutionMinutes: target.resolutionMinutes,
+      source: propio === undefined ? 'default' : 'organization',
+    };
+  });

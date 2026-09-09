@@ -1,7 +1,17 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
+import { CLOCK } from '../../../../shared-kernel';
+// `import type` obligado: `Clock` se usa en una propiedad DECORADA y con
+// `emitDecoratorMetadata` + `isolatedModules` el compilador necesita saber que
+// el símbolo no existe en tiempo de ejecución (TS1272).
+import type { Clock } from '../../../../shared-kernel';
 import { PrismaRepository } from '../../../../infrastructure/prisma/prisma.repository';
 import { PrismaService } from '../../../../infrastructure/prisma/prisma.service';
 import { TenantId, TicketId } from '../../domain/ids';
+import {
+  SlaTimerView,
+  describeSlaTimer,
+  isSlaKind,
+} from '../../domain/sla/sla-timer.entity';
 import { TicketPriority, TicketStatus } from '../../domain/ticket-status';
 
 /**
@@ -45,6 +55,12 @@ export interface TicketDetail extends TicketSummary {
     body: string;
     createdAt: Date;
   }[];
+  /**
+   * Estado de sus relojes de SLA (fase 6). Va vacío en los tickets anteriores a
+   * esa fase y en los que el worker todavía no ha procesado: el detalle no
+   * miente diciendo que cumplen, simplemente no hay relojes que enseñar.
+   */
+  sla: SlaTimerView[];
 }
 
 export interface AuditEntryView {
@@ -59,7 +75,12 @@ export const TICKETS_PAGE_SIZE_MAX = 100;
 
 @Injectable()
 export class TicketReadModel extends PrismaRepository {
-  constructor(prisma: PrismaService) {
+  constructor(
+    prisma: PrismaService,
+    // El lado de lectura necesita la hora para decir cuánto margen queda. Sale
+    // del puerto y no de `new Date()` para que los tests puedan fijarla.
+    @Inject(CLOCK) private readonly clock: Clock,
+  ) {
     super(prisma);
   }
 
@@ -141,10 +162,31 @@ export class TicketReadModel extends PrismaRepository {
               createdAt: true,
             },
           },
+          slaTimers: {
+            select: {
+              kind: true,
+              dueAt: true,
+              stoppedAt: true,
+              breachedAt: true,
+            },
+          },
         },
       });
+      if (row === null) return null;
 
-      return row;
+      const now = this.clock.now();
+      const { slaTimers, ...ticket } = row;
+
+      return {
+        ...ticket,
+        // La regla de qué significa cada combinación de fechas es del dominio y
+        // se aplica aquí, no se reescribe: ver `describeSlaTimer`.
+        sla: slaTimers
+          .filter((timer) => isSlaKind(timer.kind))
+          .map((timer) =>
+            describeSlaTimer({ ...timer, kind: timer.kind }, now),
+          ),
+      };
     });
   }
 

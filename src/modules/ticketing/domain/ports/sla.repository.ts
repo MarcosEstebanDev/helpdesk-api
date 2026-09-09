@@ -12,6 +12,25 @@ export interface SlaPolicyRepository {
   overridesOf(
     tenantId: TenantId,
   ): Promise<Partial<Record<TicketPriority, SlaTarget>>>;
+
+  /**
+   * Fija el objetivo de UNA prioridad. Es un upsert porque al administrador le
+   * da igual si ya había una fila: lo que pide es "a partir de ahora, urgente
+   * son 5 minutos".
+   */
+  upsert(input: {
+    tenantId: TenantId;
+    priority: TicketPriority;
+    target: SlaTarget;
+    now: Date;
+  }): Promise<void>;
+
+  /**
+   * Quita el override de una prioridad, devolviéndola al valor por defecto del
+   * dominio. Devuelve si había algo que quitar, para que el caso de uso no
+   * escriba una entrada de auditoría por un cambio que no ocurrió.
+   */
+  remove(tenantId: TenantId, priority: TicketPriority): Promise<boolean>;
 }
 
 export const SLA_POLICY_REPOSITORY = Symbol('ticketing.SlaPolicyRepository');

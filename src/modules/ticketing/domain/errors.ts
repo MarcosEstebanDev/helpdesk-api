@@ -63,6 +63,23 @@ export class EmptyCommentError extends DomainError {
   }
 }
 
+/**
+ * El objetivo de SLA que intenta configurar la organización no es aplicable.
+ *
+ * Cubre tanto los valores imposibles (cero, negativos, fracciones de minuto,
+ * plazos de más de un año) como el caso interesante: prometer resolver ANTES de
+ * responder. Los dos relojes son independientes y el motor lo aceptaría sin
+ * rechistar, así que la incoherencia hay que atajarla aquí; el mensaje concreto
+ * viaja en el error porque el administrador está editando un formulario y
+ * necesita saber cuál de las dos cifras le rechazaron.
+ */
+export class InvalidSlaTargetError extends DomainError {
+  readonly code = 'ticketing.invalid_sla_target';
+  constructor(detail: string) {
+    super(detail);
+  }
+}
+
 export type TicketingError =
   | InvalidTicketSubjectError
   | InvalidTicketDescriptionError
@@ -70,4 +87,5 @@ export type TicketingError =
   | InvalidTicketTransitionError
   | TicketClosedError
   | AssigneeNotFoundError
-  | EmptyCommentError;
+  | EmptyCommentError
+  | InvalidSlaTargetError;

@@ -18,9 +18,12 @@ import { AutoAssignTicket } from './application/auto-assign-ticket.use-case';
 import { AuditRecorder } from './application/audit-recorder';
 import { ChangeTicketStatus } from './application/change-ticket-status.use-case';
 import { EventRecorder } from './application/event-recorder';
+import { GetSlaPolicy } from './application/sla/get-sla-policy.use-case';
 import { MarkSlaBreached } from './application/sla/mark-sla-breached.use-case';
+import { ResetSlaPolicy } from './application/sla/reset-sla-policy.use-case';
 import { StartSlaTimers } from './application/sla/start-sla-timers.use-case';
 import { StopSlaTimer } from './application/sla/stop-sla-timer.use-case';
+import { UpdateSlaPolicy } from './application/sla/update-sla-policy.use-case';
 import { CreateTicket } from './application/create-ticket.use-case';
 import {
   AUDIT_LOG_REPOSITORY,
@@ -48,6 +51,7 @@ import {
   TICKET_REPOSITORY,
   TicketRepository,
 } from './domain/ports/ticket.repository';
+import { SlaPolicyController } from './infrastructure/http/sla-policy.controller';
 import { TicketController } from './infrastructure/http/ticket.controller';
 import { SlaProcessor } from './infrastructure/queue/sla.processor';
 import { TicketRoutingProcessor } from './infrastructure/queue/ticket-routing.processor';
@@ -80,7 +84,7 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
  */
 @Module({
   imports: [IamModule],
-  controllers: [TicketController],
+  controllers: [TicketController, SlaPolicyController],
   providers: [
     // --- Adapters ---
     PrismaTicketRepository,
@@ -237,6 +241,44 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
         ids: IdGenerator,
       ): StartSlaTimers =>
         new StartSlaTimers(transactions, policies, timers, processed, ids),
+    },
+    {
+      provide: GetSlaPolicy,
+      inject: [SLA_POLICY_REPOSITORY],
+      useFactory: (policies: SlaPolicyRepository): GetSlaPolicy =>
+        new GetSlaPolicy(policies),
+    },
+    {
+      provide: UpdateSlaPolicy,
+      inject: [
+        TRANSACTION_MANAGER,
+        SLA_POLICY_REPOSITORY,
+        AuditRecorder,
+        CLOCK,
+      ],
+      useFactory: (
+        transactions: TransactionManager,
+        policies: SlaPolicyRepository,
+        audit: AuditRecorder,
+        clock: Clock,
+      ): UpdateSlaPolicy =>
+        new UpdateSlaPolicy(transactions, policies, audit, clock),
+    },
+    {
+      provide: ResetSlaPolicy,
+      inject: [
+        TRANSACTION_MANAGER,
+        SLA_POLICY_REPOSITORY,
+        AuditRecorder,
+        CLOCK,
+      ],
+      useFactory: (
+        transactions: TransactionManager,
+        policies: SlaPolicyRepository,
+        audit: AuditRecorder,
+        clock: Clock,
+      ): ResetSlaPolicy =>
+        new ResetSlaPolicy(transactions, policies, audit, clock),
     },
     {
       provide: StopSlaTimer,

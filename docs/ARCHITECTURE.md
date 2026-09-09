@@ -553,7 +553,36 @@ no es especulación: es la costura por la que entrará el horario laboral por te
 su zona horaria. Aislar hoy lo que sabemos que va a cambiar cuesta una interfaz; no
 aislarlo cuesta reescribir cada sitio donde se sumó tiempo a mano.
 
+**Decisión 6 — La política se configura POR PRIORIDAD, y leerla ya es cosa de
+`ADMIN`.** `GET /sla-policy` devuelve siempre las cuatro prioridades diciendo si cada
+objetivo lo pactó la organización o viene de fábrica (`source`); `PUT
+/sla-policy/:priority` fija una y `DELETE /sla-policy/:priority` la devuelve al valor
+por defecto. Tres detalles deliberados:
+
+- *Por prioridad y no la política entera.* Un `PUT` de las cuatro obligaría al cliente a
+  reenviar lo que no está tocando, y dos administradores editando prioridades distintas
+  se pisarían el trabajo sin enterarse.
+- *`source` en la respuesta.* Sin él, quien va a cambiar el SLA no distingue "esto lo
+  pactamos así" de "esto no lo ha tocado nadie", que es justo lo que necesita saber
+  antes de tocarlo.
+- *`ADMIN` también para LEER*, a diferencia del resto del módulo, donde leer es de
+  `VIEWER`. Aquí no se mira un ticket: se mira lo que la organización se ha comprometido
+  a cumplir. Un usuario final que lee "resolución en 4 horas" tiene en la mano un
+  argumento contractual que nadie le prometió por este canal.
+
+La validación que relaciona los dos plazos —no se puede prometer resolver ANTES de
+responder— vive en el dominio (`makeSlaTarget`), no en el DTO: los dos números son
+válidos por separado y `class-validator` los dejaría pasar. El cambio y su entrada de
+auditoría (`sla.policy_changed`) van en la misma transacción (ADR-0016). Esa entrada
+apunta al TENANT y no a la fila de `sla_policies`: la entidad auditada es "la política
+de esta organización", y el id de la fila no sirve como identidad estable porque un
+reset la borra y el siguiente cambio crea otra con id nuevo, partiendo el historial en
+trozos inconexos. La prioridad concreta viaja en `metadata` — `entity_id` es una
+columna `uuid` en todo el sistema, así que tampoco cabría ahí.
+
 **Alternativas descartadas.**
+- *Un `PUT /sla-policy` con la política completa.* Más REST de manual, pero convierte
+  cualquier edición en una carrera entre administradores.
 - *Objetivos como constantes del dominio, sin tabla.* Más simple, pero deja fuera lo
   que hace de esto un producto multi-tenant: que cada organización pacte lo suyo.
 - *Sembrar las cuatro filas al registrar la organización.* Obligaría a `iam` a conocer
@@ -569,7 +598,8 @@ aislarlo cuesta reescribir cada sitio donde se sumó tiempo a mano.
   añadir nada a lo que esta fase demuestra. Queda detrás de `SlaCalendar`.
 
 **Consecuencias.** (+) Cada organización configura su compromiso y el sistema sigue
-funcionando si no configura nada. (+) El cálculo del vencimiento es una función pura,
+funcionando si no configura nada. (+) Esa configuración es auditable y reversible: el
+`DELETE` devuelve al valor de fábrica y queda registrado quién lo hizo. (+) El cálculo del vencimiento es una función pura,
 testeable sin base de datos ni relojes reales. (+) Un reloj no puede quedar en un
 estado imposible: sus tres situaciones se derivan de dos fechas. (−) `comment.added`
 tiene dos versiones vivas, y el consumidor descarta las v1 (no existía ninguna con

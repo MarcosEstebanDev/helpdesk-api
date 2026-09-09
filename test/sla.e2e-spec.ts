@@ -48,6 +48,13 @@ class RelojDePrueba implements Clock {
   }
 }
 
+/** Un reloj tal y como lo ve quien abre el ticket (`GET /tickets/:id`). */
+interface SlaEnLaVista {
+  kind: string;
+  status: string;
+  remainingMinutes: number;
+}
+
 /**
  * Motor de SLA de punta a punta, contra Postgres y Redis reales (ADR-0020/0021).
  *
@@ -469,6 +476,70 @@ describe('SLA (e2e)', () => {
         }),
       );
       expect(eventos).toBe(2);
+    });
+  });
+  // ------------------------------------------------------- vista del ticket
+
+  describe('el detalle del ticket expone sus relojes', () => {
+    let ticketId: string;
+
+    beforeAll(async () => {
+      token = await tokenConRol('ADMIN');
+      ticketId = await ticketConSla({ subject: 'Para la vista' });
+    });
+
+    const detalle = async (): Promise<{ sla: SlaEnLaVista[] }> => {
+      const res = await request(app.getHttpServer())
+        .get(`/tickets/${ticketId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      return res.body as { sla: SlaEnLaVista[] };
+    };
+
+    it('muestra los dos relojes en marcha con el margen que queda', async () => {
+      const { sla } = await detalle();
+
+      expect(sla.map((t) => t.kind).sort()).toEqual(['RESOLUTION', 'RESPONSE']);
+      expect(sla.every((t) => t.status === 'running')).toBe(true);
+
+      const porTipo = new Map(sla.map((t) => [t.kind, t]));
+      expect(porTipo.get('RESPONSE')?.remainingMinutes).toBe(
+        DEFAULT_SLA_POLICY.NORMAL.responseMinutes,
+      );
+      expect(porTipo.get('RESOLUTION')?.remainingMinutes).toBe(
+        DEFAULT_SLA_POLICY.NORMAL.resolutionMinutes,
+      );
+    });
+
+    it('el margen de un reloj ya parado no empeora con el paso del tiempo', async () => {
+      reloj.avanzarMinutos(30);
+      await request(app.getHttpServer())
+        .post(`/tickets/${ticketId}/comments`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ body: 'Lo estamos mirando.' })
+        .expect(201);
+      await procesarSla(ticketId, 'comment.added');
+
+      const margenAlParar = DEFAULT_SLA_POLICY.NORMAL.responseMinutes - 30;
+      const recienParado = await detalle();
+      expect(recienParado.sla.find((t) => t.kind === 'RESPONSE')).toMatchObject(
+        { status: 'met', remainingMinutes: margenAlParar },
+      );
+
+      // Tres días después, ese SLA se sigue habiendo cumplido por el mismo
+      // margen: se mide contra la hora de PARADA, no contra ahora. Medirlo
+      // contra ahora pintaría en rojo un objetivo cumplido de sobra.
+      reloj.avanzarMinutos(3 * 24 * 60);
+
+      const despues = await detalle();
+      expect(despues.sla.find((t) => t.kind === 'RESPONSE')).toMatchObject({
+        status: 'met',
+        remainingMinutes: margenAlParar,
+      });
+      // El de resolución, en cambio, sigue corriendo y ya se pasó de largo.
+      const resolucion = despues.sla.find((t) => t.kind === 'RESOLUTION');
+      expect(resolucion?.status).toBe('running');
+      expect(resolucion?.remainingMinutes).toBeLessThan(0);
     });
   });
 });
