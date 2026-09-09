@@ -76,6 +76,10 @@ uso dependen de la interfaz, nunca del adapter.
   UPSERT que bloquea la fila dentro de la transacción del ticket.
 - ADR-0018 **Eventos de integración "gordos" y versionados** escritos en
   `outbox_messages` dentro de la transacción del cambio. Los emite el AGREGADO.
+- ADR-0019 **Publicador por polling** con `FOR UPDATE SKIP LOCKED` y rol dedicado
+  `helpdesk_outbox_publisher`; idempotencia en dos capas (jobId + tabla
+  `processed_messages` en la misma transacción que el efecto); 5 reintentos con
+  backoff exponencial y **DLQ**; primer consumidor: auto-asignación round-robin.
 
 ## Seguridad (modelo, "portfolio-pragmático")
 
@@ -102,8 +106,8 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 2. ✅ Auth + tenancy — **2a (Prisma + RLS), 2b (dominio + aplicación `iam`) y 2c (infraestructura + HTTP) CERRADAS**
 3. ✅ RBAC (`@MinRole` + `RolesGuard` global, jerarquía en el dominio)
 4. ✅ Tickets + Comentarios + AuditLog (máquina de estados, numeración por tenant)
-5. 🔄 Colas — **5a (outbox transaccional) CERRADA**; 5b (BullMQ, publicador, DLQ) pendiente
-6. ⬜ SLA engine (delayed jobs, breach, escalado)
+5. ✅ Colas — 5a (outbox transaccional) y 5b (BullMQ, publicador, consumidor idempotente, DLQ)
+6. 🔄 SLA engine (delayed jobs, breach, escalado)
 7. ⬜ Realtime (WebSocket gateway + cliente Next)
 8. ⬜ Observabilidad (Pino + OTel + health checks reales)
 9. ⬜ Billing Stripe per-seat con webhooks idempotentes (opcional)
@@ -113,6 +117,53 @@ Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
 ## Estado actual (2026-09-09)
+
+**Fase 5b (colas) — CERRADA.** El outbox ya se drena a BullMQ y hay un consumidor
+real. Decisiones del usuario respetadas: polling, idempotencia con tabla + jobId,
+auto-asignación round-robin.
+
+- **Publicador (`OutboxPublisher`)**: bucle de polling (`OUTBOX_POLL_INTERVAL_MS`,
+  1s por defecto) que reclama lotes con `FOR UPDATE SKIP LOCKED`, encola y marca.
+  `publishPending()` es PÚBLICO para que los tests pidan un ciclo concreto en vez de
+  esperar a un temporizador. `tick()` nunca lanza: una excepción mataría el bucle y
+  el outbox dejaría de drenarse en silencio.
+- **Rol `helpdesk_outbox_publisher`** (ADR-0019): el publicador no tiene contexto de
+  tenant, y con RLS fail-closed + FORCE no vería ni una fila. Rol NOLOGIN, sin
+  BYPASSRLS, GRANT por COLUMNA sobre `outbox_messages`, dueño de 3 funciones
+  `SECURITY DEFINER`. Mismo patrón que el ADR-0012.
+- **Idempotencia en dos capas**: `jobId` = id del mensaje (dedupe mientras Redis lo
+  recuerde) + tabla `processed_messages` con PK `(consumer, event_id)` escrita en la
+  MISMA transacción que el efecto. Esa es la garantía real.
+- **Consumidor `TicketRoutingProcessor`** con `autorun: false`: lo arranca
+  `onApplicationBootstrap` solo si `WORKER_ENABLED=1`. Separar el despliegue de
+  workers del de la API será cambiar una variable de entorno.
+- **`AutoAssignTicket`**: round-robin SIN estado por `(number - 1) % agentes.length`.
+  Determinista, así que reprocesar da el mismo agente. Los casos definitivos
+  (ticket borrado, sin agentes, ya asignado, cerrado) se devuelven como `skipped`
+  OK, no como error: un `err` revertiría la marca de procesado y el job acabaría en
+  la DLQ para nada. Se audita con `SYSTEM_ACTOR_ID` y `automatic: true`.
+- **DLQ**: cola `dead-letter`. Los fallos permanentes (versión desconocida, evento no
+  manejado) van al descarte en el PRIMER intento; los transitorios agotan 5 intentos
+  con backoff exponencial.
+- **Verificado:** lint:ci limpio, **114/114 unit**, **68/68 e2e** contra Postgres y
+  Redis reales, build OK, 5 migraciones desde cero sin drift.
+
+**Gotchas de 5b (varios caros):**
+- `@nestjs/bullmq@12` es **solo ESM** y Jest no lo parsea: fijado a `^11`. Es
+  exactamente el mismo problema que ya tuvimos con `@nestjs/jwt@12`.
+- `bullmq@6` dejó **`ioredis` como dependencia opcional**: hay que instalarla a mano
+  o falla en ejecución con un mensaje sobre "optional 'ioredis' package".
+- Prisma envía los números de JS como **`bigint`**: `outbox_claim_batch(${n})` busca
+  `(bigint, bigint)` y da 42883. Hay que castear en el SQL: `${n}::int`.
+- Un **jobId de BullMQ no puede contener `:`** (los usa como separador interno).
+- Capturar la violación de unicidad con `try/catch` NO sirve dentro de una
+  transacción de Postgres: el statement fallido la aborta entera. Hay que usar
+  `ON CONFLICT DO NOTHING` (`createMany({ skipDuplicates: true })`) y mirar el count.
+- Los e2e corren con **`--runInBand`**: el publicador es global por diseño, así que en
+  paralelo una suite publicaría los mensajes de otra. `global-setup` además fuerza
+  `WORKER_ENABLED=0` para que nada se auto-asigne por detrás.
+- `msgpackr-extract` (acelerador nativo de BullMQ) queda DENEGADO en
+  `pnpm-workspace.yaml`: obligaría a tener toolchain de C++ en CI y en Docker.
 
 **Fase 5a (outbox transaccional) — CERRADA.** Las 4 decisiones de la fase 5 se
 cerraron con OK del usuario: eventos gordos versionados, publicador por polling,
@@ -289,58 +340,59 @@ las policies usan `NULLIF(current_setting(...), '')` para colapsar "sin setear" 
 - **Remote en GitHub:** `origin` → https://github.com/MarcosEstebanDev/helpdesk-api (privado). `main` trackea `origin/main`.
 - **Verificado:** `pnpm lint:ci`, `pnpm build`, 7/7 unit, 1/1 e2e en verde.
 
-## PENDIENTE (retomar acá → Fase 5)
+## PENDIENTE (retomar acá → Fase 6)
 
-Fases 1, 2 (a/b/c), 3 y 4 cerradas. Auth, autorización y el producto base funcionan
-end-to-end.
+Fases 1, 2 (a/b/c), 3, 4 y 5 (a/b) cerradas. El producto ya es event-driven de punta
+a punta: crear un ticket dispara un evento que un worker consume y actúa.
 
-**Fase 5 — Colas (outbox + BullMQ)**. La fase 4 dejó puesto el andamio: la unidad de
-trabajo del ADR-0016 es justo donde se escribirá el evento del outbox.
+**Fase 6 — Motor de SLA.** Es la primera fase con jobs RETARDADOS y la primera con
+configuración por tenant.
 
 Decisiones abiertas, **pendientes de OK del usuario**:
 
-1. **Qué eventos publica `ticketing`** y con qué payload. `Ticket` ya extiende
-   `AggregateRoot` (tiene `pullDomainEvents`) pero todavía no emite nada: se dejó así
-   a propósito para no escribir maquinaria sin usar. ¿Eventos gordos (con el estado
-   del ticket) o finos (solo ids, el consumidor relee)?
-2. **Publicador del outbox**: polling cada N ms sobre la tabla, o `LISTEN/NOTIFY` de
-   Postgres. El polling es trivial y aguanta reinicios; NOTIFY es inmediato pero se
-   pierde si nadie escucha (hace falta el polling igual, como red).
-3. **Idempotencia de los consumidores**: tabla de mensajes procesados por
-   `(consumidor, eventId)`, o apoyarse en el `jobId` de BullMQ. Lo primero es
-   explícito y auditable; lo segundo depende de la política de retención de Redis.
-4. **Cuál es el primer job real**. Propuesta: auto-asignación por reglas simples
-   (round-robin entre agentes del tenant). Da material para DLQ y reintentos sin
-   inventar dominio nuevo.
-5. **Política de reintentos y DLQ**: cuántos intentos, qué backoff, y qué se hace con
-   lo que cae a la DLQ (¿endpoint de reproceso? ¿solo observabilidad?).
+1. **Dónde vive la política de SLA.** ¿Tabla `sla_policies` por tenant (prioridad ->
+   minutos de respuesta/resolución) o constantes en el dominio? Lo primero es lo
+   realista y estrena "configuración por organización"; lo segundo es más pobre.
+2. **Cómo se arma el temporizador.** ¿Un `delayed job` de BullMQ por ticket (Redis
+   sostiene el reloj) o una tabla `sla_timers` que un barrido periódico revisa? El
+   delayed job es directo pero pierde los relojes si Redis se vacía; la tabla es
+   durable y encaja con el outbox, a costa de un barrido más.
+3. **Qué cuenta como "respondido".** ¿El primer comentario de un AGENT, el paso a
+   IN_PROGRESS, o la asignación? Determina qué evento para el reloj de respuesta.
+4. **Qué pasa al incumplir.** ¿Solo marcar el breach y auditarlo, o además escalar
+   (subir prioridad, reasignar)? Escalar da material pero mete reglas nuevas.
+5. **Horario laboral.** ¿El SLA cuenta en horas naturales o solo en horario de
+   oficina por tenant, con su zona horaria? Lo segundo es lo que hace un producto de
+   verdad y lo que más complica el cálculo.
 
 Checklist tentativo:
-- [ ] Tabla `outbox` con RLS + escritura dentro de `TransactionManager.run`.
-- [ ] Publicador (worker) que marca publicado y respeta el orden por agregado.
-- [ ] `BullModule` + Redis ya está en docker-compose; cola con backoff exponencial.
-- [ ] Consumidor idempotente que re-establece el tenant context desde el payload.
-- [ ] DLQ + test de que un job envenenado acaba ahí y no bloquea la cola.
-- [ ] ADR-0018 (outbox concreto) y ADR-0019 (idempotencia).
+- [ ] `SlaPolicy` y `SlaTimer` en el dominio, con el cálculo puro y testeado.
+- [ ] Migración con RLS e índice para "temporizadores que vencen antes de X".
+- [ ] Consumidor de `ticket.created` / `ticket.status_changed` que arma y para relojes.
+- [ ] Job retardado o barrido que detecta el breach y lo registra.
+- [ ] e2e con reloj inyectado (el puerto `Clock` ya existe): vencer sin esperar.
+- [ ] ADR-0020 (modelo de SLA) y ADR-0021 (temporizadores).
 
 Recordar: proponer estructura/decisiones y **esperar OK** antes de codear.
 
 ## Al retomar (última sesión: 2026-09-09)
 
-Árbol limpio. Base de datos de desarrollo con los datos de los e2e ya limpiados
-(cada suite borra sus organizaciones al terminar).
+Árbol limpio. Los e2e limpian sus organizaciones y sus jobs al terminar.
 
 ```bash
 docker compose -f infra/docker-compose.yml up -d   # Postgres 17 + Redis 7
-pnpm prisma:deploy                                  # 3 migraciones
-pnpm test && pnpm test:e2e                          # 91 unit + 53 e2e en verde
+pnpm prisma:deploy                                  # 5 migraciones
+pnpm test && pnpm test:e2e                          # 114 unit + 68 e2e en verde
 ```
 
-Siguiente paso: decidir las 5 preguntas de la Fase 5 (arriba) y arrancar.
+Para ver el sistema entero funcionando (worker incluido): `pnpm start:dev`, crear un
+ticket con `POST /tickets` y observar cómo se auto-asigna en menos de dos segundos.
 
 **Recordatorio de entorno:** `pnpm` no está en el PATH — usar `corepack pnpm`.
-Docker Desktop hay que arrancarlo a mano antes de los e2e. Git en este repo
-(sobre OneDrive) es lento: usar timeouts largos.
+Docker Desktop hay que arrancarlo a mano. Git en este repo (sobre OneDrive) es lento:
+usar timeouts largos. `prisma migrate reset` está BLOQUEADO para agentes sin
+consentimiento explícito: para validar migraciones desde cero, crear una base de
+datos desechable, hacer `migrate deploy` contra ella y borrarla.
 
 ## Comandos
 

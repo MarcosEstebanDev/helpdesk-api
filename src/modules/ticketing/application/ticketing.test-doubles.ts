@@ -3,6 +3,7 @@ import {
   IdGenerator,
   OutboxRecord,
   OutboxWriter,
+  ProcessedMessages,
   TransactionManager,
 } from '../../../shared-kernel';
 import { AuditLog } from '../domain/entities/audit-log.entity';
@@ -152,11 +153,16 @@ export const fakeNumberGenerator = (start = 1): FakeNumberGenerator => {
   };
 };
 
-/** Directorio que solo reconoce a los usuarios que se le pasan. */
+/**
+ * Directorio que solo reconoce a los usuarios que se le pasan. `agents` son los
+ * que además pueden atender tickets; por defecto, todos.
+ */
 export const fakeMemberDirectory = (
   members: readonly UserId[],
+  agents: readonly UserId[] = members,
 ): MemberDirectory => ({
   isMember: (_tenantId, userId) => Promise.resolve(members.includes(userId)),
+  agentsOf: () => Promise.resolve([...agents]),
 });
 
 export interface FakeOutbox extends OutboxWriter {
@@ -171,6 +177,33 @@ export const fakeOutbox = (): FakeOutbox => {
     append: (batch) => {
       records.push(...batch);
       return Promise.resolve();
+    },
+  };
+};
+
+export interface FakeProcessedMessages extends ProcessedMessages {
+  readonly claims: string[];
+}
+
+/**
+ * Idempotencia en memoria. Imita la clave primaria `(consumer, event_id)`: el
+ * primer `claim` de un par devuelve true y los siguientes false.
+ */
+export const fakeProcessedMessages = (
+  yaProcesados: readonly string[] = [],
+): FakeProcessedMessages => {
+  const vistos = new Set(yaProcesados);
+  const claims: string[] = [];
+  return {
+    claims,
+    claim: ({ consumer, eventId }) => {
+      const clave = `${consumer}:${eventId}`;
+      claims.push(clave);
+      if (vistos.has(clave)) {
+        return Promise.resolve(false);
+      }
+      vistos.add(clave);
+      return Promise.resolve(true);
     },
   };
 };

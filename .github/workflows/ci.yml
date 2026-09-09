@@ -34,9 +34,21 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+      # Redis para las colas de la fase 5 (BullMQ).
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
       DATABASE_URL: postgresql://helpdesk_app:helpdesk_app@localhost:5432/helpdesk?schema=public
       MIGRATION_DATABASE_URL: postgresql://helpdesk:helpdesk@localhost:5432/helpdesk?schema=public
+      REDIS_URL: redis://localhost:6379
       # Secretos de test, no de produccion: el CI solo necesita que sean validos
       # (>=32 chars) y distintos entre si para ejercitar el flujo de ADR-0011.
       JWT_ACCESS_SECRET: ci-access-secret-de-pruebas-no-usar-en-produccion

@@ -2,7 +2,9 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { ConfigModule } from './infrastructure/config/config.module';
+import { OutboxModule } from './infrastructure/outbox/outbox.module';
 import { PrismaModule } from './infrastructure/prisma/prisma.module';
+import { QueueModule } from './infrastructure/queue/queue.module';
 import { SystemModule } from './infrastructure/system/system.module';
 import { GLOBAL_THROTTLE } from './modules/iam/infrastructure/http/throttle.policy';
 import { HealthModule } from './modules/health/health.module';
@@ -24,6 +26,7 @@ import { RolesGuard } from './modules/iam/infrastructure/auth/roles.guard';
     ConfigModule,
     PrismaModule,
     SystemModule,
+    QueueModule,
     ThrottlerModule.forRoot({
       throttlers: [{ ttl: GLOBAL_THROTTLE.ttl, limit: GLOBAL_THROTTLE.limit }],
       // Escape hatch SOLO para los tests de flujo, que encadenan varios logins.
@@ -37,6 +40,8 @@ import { RolesGuard } from './modules/iam/infrastructure/auth/roles.guard';
     HealthModule,
     IamModule,
     TicketingModule,
+    // Después de TicketingModule: el publicador drena eventos que produce aquel.
+    OutboxModule,
   ],
   // Orden de ejecución = orden de registro. El rate limiting va primero: no
   // tiene sentido gastar una comprobación de rol en una petición que ya excedió

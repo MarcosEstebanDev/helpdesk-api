@@ -435,6 +435,84 @@ particionar o a purgar de forma agresiva.
 
 ---
 
+## ADR-0019 — Publicador por polling, idempotencia en base de datos y DLQ
+
+**Contexto.** El ADR-0018 dejó los eventos en `outbox_messages`. Falta llevarlos a una
+cola, consumirlos sin repetir efectos y decidir qué pasa con lo que no se puede
+procesar. Tres decisiones acopladas.
+
+**Decisión 1 — El publicador hace polling.** Un bucle reclama lotes con
+`SELECT ... FOR UPDATE SKIP LOCKED`, los encola en BullMQ y los marca publicados.
+`SKIP LOCKED` permite varias instancias publicando a la vez sin duplicar trabajo:
+cada una se lleva filas distintas.
+
+*Alternativas descartadas.* `LISTEN/NOTIFY` solo: un NOTIFY que llega mientras el
+publicador reinicia se pierde, y ese evento no se publicaría nunca — justo la
+garantía por la que existe el outbox. Híbrido NOTIFY + polling de red: da latencia
+mínima, pero añade un trigger y dos caminos que deben converger, a cambio de un
+segundo de latencia que a este producto no le cambia nada.
+
+**Decisión 2 — El publicador usa un rol dedicado.** `outbox_messages` tiene RLS
+fail-closed y `FORCE ROW LEVEL SECURITY`, que aplica también al dueño de la tabla.
+El publicador corre fuera de toda request, sin JWT, así que `app.current_tenant` está
+vacío y **no vería ni una fila**. Se resuelve con `helpdesk_outbox_publisher`: rol
+NOLOGIN, sin BYPASSRLS, con GRANT a nivel de COLUMNA sobre esa única tabla, dueño de
+tres funciones `SECURITY DEFINER` (`outbox_claim_batch`, `outbox_mark_published`,
+`outbox_mark_failed`) que solo `helpdesk_app` puede ejecutar. Es exactamente el
+patrón del ADR-0012 para el login por slug.
+
+*Alternativa descartada.* Iterar tenants fijando el contexto uno a uno: correcto,
+pero el coste crece linealmente con el número de organizaciones y la mayoría no
+tendrá nada pendiente.
+
+**Decisión 3 — Idempotencia en dos capas.** El `jobId` de BullMQ es el id del mensaje,
+así que encolar dos veces el mismo evento no crea dos jobs. Pero esa ventana dura lo
+que la retención de jobs en Redis, así que la garantía REAL es la tabla
+`processed_messages`, con clave primaria `(consumer, event_id)`, escrita en la MISMA
+transacción que el efecto del job (ADR-0016). Si el trabajo revierte, la marca
+revierte con él y el reintento vuelve a intentarlo; marcarla fuera de la transacción
+sería peor que no marcarla, porque un fallo dejaría el evento como "hecho" sin estarlo.
+
+La clave es `(consumer, event_id)` y no solo `event_id` para que varios consumidores
+puedan procesar el mismo evento, cada uno una vez.
+
+*Alternativas descartadas.* Solo `jobId`: depende de la retención de Redis. Handlers
+"naturalmente idempotentes": elegante mientras el efecto sea un UPDATE, inservible en
+cuanto un job mande un email o llame a un tercero.
+
+**Decisión 4 — Reintentos y DLQ.** 5 intentos con backoff exponencial desde 1s. Al
+agotarlos, el job se copia a una cola `dead-letter` con el motivo y el número de
+intentos. Los fallos **permanentes** (versión de evento desconocida, evento que la
+cola no maneja) van a la DLQ en el primer intento: reintentar no los arregla.
+Hoy la DLQ es solo observabilidad; no hay endpoint de reproceso.
+
+**Decisión 5 — Primer consumidor: auto-asignación round-robin.** Al crearse un
+ticket, se reparte entre los miembros que pueden atender (AGENT y ADMIN, por la
+jerarquía del ADR-0014). El agente sale de `(number - 1) % agentes.length`, usando la
+numeración por tenant del ADR-0017. Es round-robin de verdad **sin estado**: sin
+contador que mantener, sin fila que bloquear, y determinista — reprocesar el mismo
+evento da el mismo agente, así que la idempotencia no depende solo de la tabla de
+procesados. El precio es que dar de alta o baja a un agente desplaza la rotación.
+
+**Consecuencias.** (+) Ningún evento se pierde: si el publicador muere, lo pendiente
+se recoge en el siguiente arranque. (+) `WORKER_ENABLED` permite separar mañana el
+despliegue de workers del de la API sin tocar código; hoy conviven en un proceso.
+(+) Los `skipped` del caso de uso (ticket borrado, sin agentes, ya asignado) se
+devuelven como éxito, no como error: son situaciones definitivas, y tratarlas como
+fallo las mandaría a la DLQ para nada. (−) La entrega es **at-least-once**: los jobs
+se encolan antes del commit que los marca publicados, así que un fallo justo ahí los
+duplica. Es deliberado — duplicar lo resuelve `processed_messages`, perder no lo
+resuelve nadie. (−) Los bloqueos del lote viven hasta el commit del publicador, así
+que encolar lento alarga la ventana. (−) `outbox_messages` y `processed_messages`
+crecen sin límite hasta que exista una política de purga.
+
+**Revisar si.** La latencia del polling molesta (→ añadir NOTIFY encima, conservando
+el polling como red), varias instancias se estorban en el mismo lote (→ reducir el
+tamaño de lote), o la DLQ se llena lo bastante como para necesitar reproceso
+automático.
+
+---
+
 ## Seguridad (resumen)
 
 Defensa en profundidad: ver ADR-0003 (RLS) y los puntos en `CLAUDE.md`. Items clave:

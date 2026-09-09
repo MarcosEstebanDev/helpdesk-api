@@ -46,6 +46,7 @@ model Organization {
   auditLogs     AuditLog[]
   ticketCounter TicketCounter?
   outbox        OutboxMessage[]
+  processed     ProcessedMessage[]
 
   @@map("organizations")
 }
@@ -265,4 +266,26 @@ model OutboxMessage {
   // Historial de eventos de un agregado concreto.
   @@index([tenantId, aggregateType, aggregateId, occurredAt])
   @@map("outbox_messages")
+}
+
+/// Registro de lo ya procesado por cada consumidor (ADR-0019).
+///
+/// La entrega desde una cola es AT-LEAST-ONCE: el mismo evento puede llegar dos
+/// veces (el publicador reintentó, el worker murió tras hacer el trabajo pero
+/// antes de confirmar...). La clave primaria compuesta es la garantía: el
+/// consumidor la inserta en la MISMA transacción que su efecto, así que el
+/// segundo intento choca contra ella y no repite nada.
+///
+/// La clave es (consumer, event_id) y no solo `event_id` porque varios
+/// consumidores distintos deben poder procesar el mismo evento cada uno una vez.
+model ProcessedMessage {
+  consumer    String
+  eventId     String   @map("event_id") @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  processedAt DateTime @default(now()) @map("processed_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([consumer, eventId])
+  @@map("processed_messages")
 }

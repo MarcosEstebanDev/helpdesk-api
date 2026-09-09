@@ -6,12 +6,15 @@ import {
   IdGenerator,
   OUTBOX_WRITER,
   OutboxWriter,
+  PROCESSED_MESSAGES,
+  ProcessedMessages,
   TRANSACTION_MANAGER,
   TransactionManager,
 } from '../../shared-kernel';
 import { IamModule } from '../iam/iam.module';
 import { AddComment } from './application/add-comment.use-case';
 import { AssignTicket } from './application/assign-ticket.use-case';
+import { AutoAssignTicket } from './application/auto-assign-ticket.use-case';
 import { AuditRecorder } from './application/audit-recorder';
 import { ChangeTicketStatus } from './application/change-ticket-status.use-case';
 import { EventRecorder } from './application/event-recorder';
@@ -37,6 +40,7 @@ import {
   TicketRepository,
 } from './domain/ports/ticket.repository';
 import { TicketController } from './infrastructure/http/ticket.controller';
+import { TicketRoutingProcessor } from './infrastructure/queue/ticket-routing.processor';
 import { PrismaAuditLogRepository } from './infrastructure/persistence/prisma-audit-log.repository';
 import { PrismaCommentRepository } from './infrastructure/persistence/prisma-comment.repository';
 import { PrismaMemberDirectory } from './infrastructure/persistence/prisma-member.directory';
@@ -70,6 +74,7 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
     PrismaTicketNumberGenerator,
     PrismaMemberDirectory,
     TicketReadModel,
+    TicketRoutingProcessor,
 
     // --- Puertos -> adapters ---
     { provide: TICKET_REPOSITORY, useExisting: PrismaTicketRepository },
@@ -147,6 +152,36 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
         new AssignTicket(transactions, tickets, members, audit, events, clock),
     },
     {
+      provide: AutoAssignTicket,
+      inject: [
+        TRANSACTION_MANAGER,
+        TICKET_REPOSITORY,
+        MEMBER_DIRECTORY,
+        PROCESSED_MESSAGES,
+        AuditRecorder,
+        EventRecorder,
+        CLOCK,
+      ],
+      useFactory: (
+        transactions: TransactionManager,
+        tickets: TicketRepository,
+        members: MemberDirectory,
+        processed: ProcessedMessages,
+        audit: AuditRecorder,
+        events: EventRecorder,
+        clock: Clock,
+      ): AutoAssignTicket =>
+        new AutoAssignTicket(
+          transactions,
+          tickets,
+          members,
+          processed,
+          audit,
+          events,
+          clock,
+        ),
+    },
+    {
       provide: ChangeTicketStatus,
       inject: [
         TRANSACTION_MANAGER,
@@ -195,5 +230,7 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
         ),
     },
   ],
+  // El publicador del outbox (fase 5b) lo necesita para dirigirlo desde los e2e.
+  exports: [AutoAssignTicket],
 })
 export class TicketingModule {}

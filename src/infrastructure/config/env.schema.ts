@@ -7,7 +7,9 @@ import { z } from 'zod';
  *
  * DATABASE_URL is required from Phase 2 on (the app talks to Postgres at boot).
  * MIGRATION_DATABASE_URL is only needed to RUN migrations (`prisma migrate`), not
- * at runtime, so it stays optional. REDIS_URL becomes required in Phase 5.
+ * at runtime, so it stays optional. REDIS_URL is required from Phase 5 on: sin
+ * Redis no hay colas, y arrancar sin ellas dejaría los eventos del outbox
+ * acumulándose en silencio — mejor fallar en el arranque.
  */
 export const envSchema = z.object({
   NODE_ENV: z
@@ -18,7 +20,25 @@ export const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   // Rol owner/superusuario — solo para `prisma migrate` (DDL). No usar en runtime.
   MIGRATION_DATABASE_URL: z.string().min(1).optional(),
-  REDIS_URL: z.string().min(1).optional(),
+  REDIS_URL: z.string().min(1),
+  // Publicador del outbox y worker (ADR-0019).
+  //
+  // `WORKER_ENABLED` permite arrancar la API sin consumir colas. Hoy el worker
+  // vive en el MISMO proceso que la API; el día que se separe, el despliegue web
+  // arrancará con 0 y el de workers con 1, sin tocar una línea de código. Los
+  // tests e2e también lo apagan para dirigir el publicador a mano.
+  WORKER_ENABLED: z
+    .enum(['0', '1'])
+    .default('1')
+    .transform((value) => value === '1'),
+  OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(1000),
+  OUTBOX_BATCH_SIZE: z.coerce.number().int().positive().max(1000).default(100),
+  // Tras estos intentos fallidos de ENCOLAR, el mensaje deja de reclamarse para
+  // que uno envenenado no frene a los que van detrás.
+  OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
+  // Reintentos del CONSUMIDOR antes de mandar el job a la dead-letter queue.
+  QUEUE_JOB_ATTEMPTS: z.coerce.number().int().positive().default(5),
+  QUEUE_BACKOFF_MS: z.coerce.number().int().positive().default(1000),
   // Secretos JWT (ADR-0011). Separados a propósito: un access token filtrado no
   // permite forjar refresh tokens. Mínimo 32 chars para que HS256 tenga margen.
   JWT_ACCESS_SECRET: z.string().min(32),

@@ -33,4 +33,16 @@ export class PrismaMemberDirectory
       return found !== null;
     });
   }
+
+  async agentsOf(tenantId: TenantId): Promise<UserId[]> {
+    return this.runInTenant(tenantId, async (tx) => {
+      const rows = await tx.membership.findMany({
+        where: { tenantId, role: { in: ['AGENT', 'ADMIN'] } },
+        // Orden estable: el reparto automático debe ser reproducible.
+        orderBy: { userId: 'asc' },
+        select: { userId: true },
+      });
+      return rows.map((row) => UserId(row.userId));
+    });
+  }
 }

@@ -2,9 +2,14 @@
 # unrs-resolver ships prebuilt native binaries (used by eslint) -> allowed.
 # prisma/@prisma/* corren postinstall para bajar engines y generar el client -> allowed.
 # @scarf/scarf is install-time telemetry we deliberately skip -> denied.
+# msgpackr-extract es un acelerador NATIVO opcional de msgpackr (lo usa BullMQ para
+#   serializar jobs). Sin él msgpackr funciona igual, en JS puro. Compilarlo obligaría
+#   a tener toolchain de C++ en el CI y en la imagen de Docker a cambio de unos
+#   microsegundos por job -> denied. Revisar si el throughput de colas llega a importar.
 allowBuilds:
   '@prisma/client': true
   '@prisma/engines': true
   '@scarf/scarf': false
+  msgpackr-extract: false
   prisma: true
   unrs-resolver: true

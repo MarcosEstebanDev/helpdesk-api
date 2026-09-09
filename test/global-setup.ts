@@ -10,13 +10,19 @@ import { PrismaClient } from '@prisma/client';
  * conexión críptico que no dice qué hacer. Este setup lo convierte en una
  * instrucción concreta.
  *
+ * Las suites corren EN SERIE (`--runInBand` en el script `test:e2e`). Se aíslan
+ * entre sí por tenant, pero el publicador del outbox es GLOBAL por diseño: en
+ * paralelo, un ciclo de publicación de una suite marcaría como publicados los
+ * mensajes de otra, y las que comprueban el estado pendiente fallarían de forma
+ * intermitente.
+ *
  * Corre ANTES de que Nest cargue `ConfigModule`, así que `process.env` todavía
  * no tiene las variables del `.env`: hay que leerlo a mano. Se hace con un
  * parser mínimo en vez de añadir `dotenv` como dependencia directa.
  */
 
 const AYUDA = `
-  Los tests e2e necesitan PostgreSQL corriendo.
+  Los tests e2e necesitan PostgreSQL y Redis corriendo.
 
     1. docker compose -f infra/docker-compose.yml up -d
     2. pnpm prisma:deploy
@@ -50,6 +56,19 @@ function loadEnvFile(path: string): void {
 
 export default async function globalSetup(): Promise<void> {
   loadEnvFile(join(__dirname, '..', '.env'));
+
+  // Ningún test e2e arranca el publicador del outbox ni el worker de colas.
+  //
+  // No es por evitar la dependencia de Redis —los tests de cola sí la usan—,
+  // sino por DETERMINISMO: con el worker corriendo, un ticket recién creado se
+  // auto-asigna por detrás en un momento impredecible, y las suites que
+  // comprueban su estado inicial fallarían unas veces sí y otras no. Los tests
+  // de la fase 5b piden cada paso a mano (`publishPending`, `process`) en vez de
+  // esperar a que salte un temporizador, que es de donde salen los tests
+  // intermitentes.
+  //
+  // Se respeta un valor puesto a mano, por si alguna vez se quiere lo contrario.
+  process.env.WORKER_ENABLED ??= '0';
 
   if (process.env.DATABASE_URL === undefined) {
     throw new Error(

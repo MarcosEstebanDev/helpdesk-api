@@ -10,3 +10,4 @@ export * from './ports/clock';
 export * from './ports/id-generator';
 export * from './ports/transaction-manager';
 export * from './ports/outbox';
+export * from './ports/processed-messages';
