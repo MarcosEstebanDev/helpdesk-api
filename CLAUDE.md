@@ -127,6 +127,33 @@ Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
 ## Estado actual (2026-09-09)
 
+**Cabos sueltos de la fase 6 — CERRADOS 2 de 3.** Se añadió la configuración por API
+de la política de SLA y la exposición de los relojes en la vista del ticket.
+
+- **`GET|PUT|DELETE /sla-policy[/:priority]`** (`SlaPolicyController`, todo `ADMIN`,
+  ver **Decisión 6 del ADR-0020**). Se configura POR PRIORIDAD, la respuesta dice
+  con `source` si cada objetivo es pactado o de fábrica, y el `DELETE` devuelve al
+  valor por defecto. Casos de uso `GetSlaPolicy` / `UpdateSlaPolicy` / `ResetSlaPolicy`.
+- **Dominio nuevo**: `makeSlaTarget` (constructor validado; la regla "no puedes
+  prometer resolver antes que responder" NO está en el DTO), `SLA_MAX_MINUTES`,
+  `effectivePolicy` (las cuatro prioridades + `source`) y `describeSlaTimer`
+  (`status` + `remainingMinutes` derivados de las fechas).
+- **`GET /tickets/:id` ahora trae `sla[]`**: el margen de un reloj PARADO se mide
+  contra su hora de parada, no contra ahora; si no, un ticket resuelto la semana
+  pasada iría empeorando cada vez que alguien abre la pantalla.
+- **Auditoría `sla.policy_changed`** en la misma transacción que el cambio,
+  apuntando al TENANT (`entity_id` es `uuid` en todo el sistema) con la prioridad
+  en `metadata`. El reset solo audita si de verdad había un override.
+- **Verificado:** lint:ci limpio, `tsc --noEmit` limpio, **164/164 unit**,
+  **93/93 e2e**, build OK. Sin migraciones nuevas: `sla_policies` ya existía.
+
+**⚠️ Aviso de entorno (pasó de verdad el 2026-09-09).** Este repo vive en OneDrive y
+una sincronización revirtió parte del árbol de trabajo: borró los ficheros NUEVOS sin
+commitear y devolvió varios ficheros ya versionados a un estado anterior (incluido
+este `CLAUDE.md` y un `test/jest-e2e.json` con un escape roto). Lo commiteado no
+sufrió nada. **Commitear pronto y a menudo**; si al retomar el árbol referencia
+módulos que no existen, mirar `git status` antes de suponer que es un bug.
+
 **Fase 6 (motor de SLA) — CERRADA.** Es la primera fase con configuración por
 organización y la primera que reacciona al PASO DEL TIEMPO, no a una acción.
 
@@ -153,6 +180,17 @@ organización y la primera que reacciona al PASO DEL TIEMPO, no a una acción.
   `migrate diff` vacío.
 
 **Gotchas de la fase 6:**
+- **`build` + `test` + `lint:ci` NO comprueban los tipos del proyecto entero.**
+  `pnpm build` usa `tsconfig.build.json` (que excluye specs y `*.test-doubles.ts`) y
+  además compila de forma incremental; `pnpm test` no diagnostica los ficheros que
+  solo importa; y `lint:ci`, aunque usa reglas type-aware, no reporta errores de
+  TypeScript. Dos errores reales (`fakeSlaPolicies` sin implementar el puerto
+  ampliado, y un `Err<SlaTarget, …>` devuelto donde se esperaba
+  `Err<EffectiveSlaTarget[], …>`) pasaron los tres en verde. **Arreglado:** hay
+  script `pnpm typecheck` y un paso propio en el workflow de CI, entre lint y los
+  tests. Ejecutarlo antes de dar una fase por cerrada.
+- Al ampliar un PUERTO hay que ampliar también su doble de prueba; ese es
+  justamente el error que los comandos de arriba no ven.
 - El e2e usa un **reloj inyectado** (`overrideProvider(CLOCK)`): se sustituye el
   PUERTO, no la clase, así que la app entera sigue pidiendo `CLOCK` sin
   enterarse. Un SLA de 24 h se verifica en milisegundos y además se ejercita el
@@ -397,14 +435,13 @@ Fases 1, 2 (a/b/c), 3, 4, 5 (a/b) y 6 cerradas. El backend ya hace lo suyo solo:
 un ticket nuevo se auto-asigna, arranca sus relojes de SLA, y si nadie lo atiende
 el barrido registra el incumplimiento sin que nadie pregunte.
 
-**Cabos sueltos de la fase 6 (decidir si entran o se dejan documentados):**
-- No hay endpoint para configurar `sla_policies`: la tabla existe y el motor la
-  respeta, pero hoy solo se escribe por SQL. Un `GET/PUT /sla-policies` (ADMIN)
-  sería media hora y cierra la historia de "configuración por organización".
-- La vista del ticket no expone su SLA (`dueAt`, cuánto margen queda, si
-  incumplió). Es lo que haría útil el motor de cara al front de la fase 7.
-- Nadie consume `sla.breached` todavía: el evento se publica y se queda ahí. Su
-  consumidor natural es la notificación/escalado.
+**Cabos sueltos de la fase 6:** quedan 1 de 3.
+- ✅ Endpoint de configuración de `sla_policies` — hecho (Decisión 6 del ADR-0020).
+- ✅ La vista del ticket expone su SLA — hecho (`sla[]` en `GET /tickets/:id`).
+- ⬜ **Nadie consume `sla.breached` todavía**: el evento se publica y se queda ahí.
+  Su consumidor natural es la notificación/escalado, y encaja de lleno con la fase 7:
+  un incumplimiento es justo lo que hay que empujar a la pantalla sin que nadie
+  pregunte.
 
 **Fase 7 — Realtime.** WebSocket gateway (Socket.io) + cliente en `helpdesk-web`.
 Es la primera fase que empuja datos hacia el cliente en vez de responder a
@@ -450,8 +487,15 @@ Recordar: proponer estructura/decisiones y **esperar OK** antes de codear.
 ```bash
 docker compose -f infra/docker-compose.yml up -d   # Postgres 17 + Redis 7
 pnpm prisma:deploy                                  # 6 migraciones
-pnpm test && pnpm test:e2e                          # 144 unit + 81 e2e en verde
+pnpm test && pnpm test:e2e                          # 164 unit + 93 e2e en verde
+pnpm typecheck                                      # specs y dobles incluidos
 ```
+
+Para ver la configuración de SLA: `GET /sla-policy` con un token de ADMIN devuelve
+las cuatro prioridades diciendo cuáles son de fábrica; un `PUT /sla-policy/URGENT`
+con `{"responseMinutes":5,"resolutionMinutes":30}` la endurece, y el `DELETE` la
+devuelve. Los tickets creados DESPUÉS estrenan relojes con el objetivo nuevo; los
+que ya estaban corriendo conservan el suyo (ADR-0020, decisión 4).
 
 Para ver el sistema entero funcionando (workers incluidos): `pnpm start:dev`, crear
 un ticket con `POST /tickets` y observar cómo se auto-asigna en menos de dos segundos
@@ -474,4 +518,5 @@ pnpm build
 pnpm test           # unit
 pnpm test:e2e       # e2e
 pnpm lint
+pnpm typecheck      # tsc --noEmit sobre TODO (specs y dobles incluidos)
 ```

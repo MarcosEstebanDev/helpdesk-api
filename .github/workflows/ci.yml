@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   verify:
-    name: lint · test · build
+    name: lint · typecheck · test · build
     runs-on: ubuntu-latest
 
     # Postgres real para los e2e (RLS no se puede mockear). El usuario `helpdesk`
@@ -79,6 +79,13 @@ jobs:
 
       - name: Lint
         run: pnpm lint:ci
+
+      # `build` NO basta como comprobación de tipos: usa `tsconfig.build.json`,
+      # que excluye a propósito los `*.spec.ts` y los `*.test-doubles.ts`. Sin
+      # este paso, ampliar un puerto y olvidarse de su doble de prueba pasa el CI
+      # entero en verde.
+      - name: Typecheck (incluye tests y dobles)
+        run: pnpm typecheck
 
       - name: Unit tests
         run: pnpm test
