@@ -162,10 +162,21 @@ recomendadas). Falta el cliente en `helpdesk-web`.
 - **ADRs nuevos: 0022** (transporte y autenticación) y **0023** (qué se emite y a
   quién). Total 23.
 - **Verificado:** lint:ci limpio, `typecheck` limpio, **171/171 unit**,
-  **99/99 e2e** (6 nuevos de realtime con clientes Socket.io reales), build OK.
+  **102/102 e2e** (6 de realtime con clientes Socket.io reales + 3 de CORS), build OK.
   Sin migraciones: la fase no toca la base de datos.
 
 **Gotchas de la fase 7:**
+- **`enableCors()` sin opciones rompía el frontend entero, y ningún test lo veía.**
+  Devolvía `Access-Control-Allow-Origin: *` y ninguna cabecera de credenciales;
+  el front manda `credentials: 'include'` para la cookie httpOnly del refresh, y
+  ante esa combinación el navegador DESCARTA la respuesta. Funcionaba con curl y
+  con los 99 e2e porque **supertest no aplica la política de CORS**. Ahora hay
+  `CORS_ORIGINS` (lista separada por comas, default `http://localhost:3001`) y
+  una suite `cors.e2e-spec.ts` que comprueba las cabeceras.
+- **No correr `pnpm test:e2e` con el backend levantado.** Un `start:dev`/`start:prod`
+  en paralelo tiene `WORKER_ENABLED=1` y drena el outbox por detrás, así que las
+  suites que dirigen el publicador a mano fallan (pasó: 4 tests en rojo sin
+  ninguna causa aparente en el código).
 - **El adapter de Redis abre dos conexiones que NADIE cierra por ti.** Se crean
   fuera del contenedor de Nest, así que hay que cerrarlas en `close()` del adapter.
   Sin eso el proceso no termina: en los tests sale como "Jest did not exit", y en
@@ -534,7 +545,7 @@ de codear.
 ```bash
 docker compose -f infra/docker-compose.yml up -d   # Postgres 17 + Redis 7
 pnpm prisma:deploy                                  # 6 migraciones
-pnpm test && pnpm test:e2e                          # 171 unit + 99 e2e en verde
+pnpm test && pnpm test:e2e                          # 171 unit + 102 e2e en verde
 pnpm typecheck                                      # specs y dobles incluidos
 ```
 

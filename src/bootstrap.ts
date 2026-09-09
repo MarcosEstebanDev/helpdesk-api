@@ -1,6 +1,8 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import cookieParser from 'cookie-parser';
 import type { NextFunction, Request, Response } from 'express';
+import type { Env } from './infrastructure/config/env.schema';
 import { TenantContextMiddleware } from './modules/iam/infrastructure/auth/tenant-context.middleware';
 
 /**
@@ -19,7 +21,15 @@ export function configureApp(app: INestApplication): void {
       transform: true,
     }),
   );
-  app.enableCors();
+  // CORS con credenciales: el navegador exige el origen EXACTO (nunca `*`) y
+  // `Access-Control-Allow-Credentials` para dejar viajar la cookie httpOnly del
+  // refresh token. Con `enableCors()` a secas el front no puede ni renovar
+  // sesión, y no hay test de backend que lo detecte: supertest no aplica CORS.
+  const config = app.get(ConfigService<Env, true>);
+  app.enableCors({
+    origin: config.get('CORS_ORIGINS', { infer: true }),
+    credentials: true,
+  });
 
   // El refresh token viaja en cookie httpOnly (ADR-0011): hay que parsearla
   // antes de que los controllers la lean.

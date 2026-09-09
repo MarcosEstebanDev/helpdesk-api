@@ -55,6 +55,23 @@ export const envSchema = z.object({
   // TTLs en formato de `ms` (ej. '15m', '30d') — los consume @nestjs/jwt.
   JWT_ACCESS_TTL: z.string().min(1).default('15m'),
   JWT_REFRESH_TTL: z.string().min(1).default('30d'),
+  // Orígenes del navegador autorizados, separados por coma.
+  //
+  // El frontend manda `credentials: 'include'` para que viaje la cookie httpOnly
+  // del refresh, y el navegador SOLO acepta esa respuesta si el servidor
+  // devuelve el origen EXACTO junto a `Access-Control-Allow-Credentials`. Con el
+  // comodín `*` la respuesta se descarta entera, así que no se puede permitir
+  // "cualquier origen" y tener cookies a la vez: hay que enumerarlos.
+  CORS_ORIGINS: z
+    .string()
+    .min(1)
+    .default('http://localhost:3001')
+    .transform((valor) =>
+      valor
+        .split(',')
+        .map((origen) => origen.trim())
+        .filter((origen) => origen !== ''),
+    ),
 });
 
 export type Env = z.infer<typeof envSchema>;
