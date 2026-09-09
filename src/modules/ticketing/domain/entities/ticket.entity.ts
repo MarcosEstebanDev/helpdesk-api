@@ -8,6 +8,7 @@ import {
 } from '../errors';
 import {
   CommentAdded,
+  SlaBreached,
   TicketAssigned,
   TicketCreated,
   TicketStatusChanged,
@@ -197,6 +198,8 @@ export class Ticket extends AggregateRoot<TicketId, TicketingEvent> {
   registerComment(
     commentId: CommentId,
     authorId: UserId,
+    /** Rol del autor EN EL MOMENTO de comentar; lo usa el SLA (ADR-0020). */
+    authorRole: string,
     now: Date,
   ): Result<void, TicketingError> {
     if (!this.acceptsComments()) {
@@ -207,9 +210,32 @@ export class Ticket extends AggregateRoot<TicketId, TicketingEvent> {
       new CommentAdded(this.id, this.props.tenantId, now, {
         commentId,
         authorId,
+        authorRole,
       }),
     );
     return ok(undefined);
+  }
+
+  /**
+   * Registra que un reloj de SLA de este ticket incumplió (ADR-0021).
+   *
+   * El evento lo emite el TICKET y no el temporizador porque un incumplimiento
+   * solo es accionable con el contexto del ticket: quién lo tiene asignado y con
+   * qué prioridad. Un consumidor de escalado no debería tener que ir a buscarlo.
+   */
+  recordSlaBreach(
+    breach: { timerId: string; kind: string; dueAt: Date },
+    now: Date,
+  ): void {
+    this.addDomainEvent(
+      new SlaBreached(this.id, this.props.tenantId, now, {
+        timerId: breach.timerId,
+        kind: breach.kind,
+        dueAt: breach.dueAt.toISOString(),
+        assigneeId: this.props.assigneeId,
+        priority: this.props.priority,
+      }),
+    );
   }
 
   /**

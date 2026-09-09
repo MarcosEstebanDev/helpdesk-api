@@ -80,6 +80,15 @@ uso dependen de la interfaz, nunca del adapter.
   `helpdesk_outbox_publisher`; idempotencia en dos capas (jobId + tabla
   `processed_messages` en la misma transacción que el efecto); 5 reintentos con
   backoff exponencial y **DLQ**; primer consumidor: auto-asignación round-robin.
+- ADR-0020 **Modelo de SLA**: dos relojes por ticket (respuesta y resolución),
+  `sla_policies` con SOLO los overrides del tenant sobre los valores por defecto
+  del dominio, "respondido" = comentario de quien responde en nombre de la
+  organización (de ahí `comment.added` v2 con `authorRole`), `due_at` inmutable y
+  el calendario detrás de la interfaz `SlaCalendar` (hoy 24/7).
+- ADR-0021 **Temporizadores durables + barrido**, no jobs retardados: `sla_timers`
+  es la fuente de verdad, rol `helpdesk_sla_sweeper` + `sla_due_timers`
+  (SECURITY DEFINER, devuelve solo `id` y `tenant_id`), idempotencia por condición
+  —no por bloqueo—, y todo fechado con el `occurredAt` del evento.
 
 ## Seguridad (modelo, "portfolio-pragmático")
 
@@ -107,8 +116,8 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 3. ✅ RBAC (`@MinRole` + `RolesGuard` global, jerarquía en el dominio)
 4. ✅ Tickets + Comentarios + AuditLog (máquina de estados, numeración por tenant)
 5. ✅ Colas — 5a (outbox transaccional) y 5b (BullMQ, publicador, consumidor idempotente, DLQ)
-6. 🔄 SLA engine (delayed jobs, breach, escalado)
-7. ⬜ Realtime (WebSocket gateway + cliente Next)
+6. ✅ SLA engine (política por tenant, relojes durables, barrido de incumplimientos)
+7. 🔄 Realtime (WebSocket gateway + cliente Next)
 8. ⬜ Observabilidad (Pino + OTel + health checks reales)
 9. ⬜ Billing Stripe per-seat con webhooks idempotentes (opcional)
 10. ⬜ Docs finales (ARCHITECTURE.md con ADRs y diagrama, README)
@@ -117,6 +126,48 @@ Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
 ## Estado actual (2026-09-09)
+
+**Fase 6 (motor de SLA) — CERRADA.** Es la primera fase con configuración por
+organización y la primera que reacciona al PASO DEL TIEMPO, no a una acción.
+
+- **Dominio (`ticketing/domain/sla/`)**: `SlaTimer` (estado derivado de
+  `stoppedAt`/`breachedAt`, nunca un campo `status`), `SlaPolicy` con
+  `DEFAULT_SLA_POLICY` + `resolvePolicy` (merge POR PRIORIDAD), `SlaCalendar` con
+  `CALENDAR_24_7`, e `isResponder` (¿este rol contesta en nombre de la
+  organización?). Todo puro y testeado sin base de datos.
+- **Aplicación**: `StartSlaTimers` (2 relojes al crear el ticket),
+  `StopSlaTimer` (primera respuesta de un agente / resolución) y
+  `MarkSlaBreached` (lo llama el barrido; audita + emite `sla.breached`).
+- **`comment.added` sube a v2** con `authorRole`: sin él no se distingue la
+  respuesta del agente del mensaje del propio cliente, y parar el reloj con el
+  segundo dejaría cumplir el SLA a base de que el cliente insista. El rol sale
+  del JWT verificado, nunca del body.
+- **Infraestructura**: `SlaProcessor` (cola `sla`, `autorun: false`, DLQ propia
+  con prefijo `dlq-sla-` para no pisar la de routing), `SlaSweeper`
+  (`sweep(now)` público para los tests, `tick()` que nunca lanza), repos Prisma,
+  migración `20260909220000_sla` con RLS + rol `helpdesk_sla_sweeper`.
+- **`QueueRegistry`**: el publicador del outbox ya no conoce una cola fija; un
+  mismo evento puede ir a varias (`ticket.created` → routing + sla).
+- **Verificado:** lint:ci limpio, **144/144 unit**, **81/81 e2e** contra Postgres
+  y Redis reales, build OK, **6 migraciones desde cero** en una BD desechable con
+  `migrate diff` vacío.
+
+**Gotchas de la fase 6:**
+- El e2e usa un **reloj inyectado** (`overrideProvider(CLOCK)`): se sustituye el
+  PUERTO, no la clase, así que la app entera sigue pidiendo `CLOCK` sin
+  enterarse. Un SLA de 24 h se verifica en milisegundos y además se ejercita el
+  CÁLCULO del vencimiento — falsear `due_at` en la BD solo probaría el barrido.
+- Con una cola más (y su worker), arrancar la app en los e2e pasa de 5s: hubo que
+  poner `testTimeout: 30000` en `test/jest-e2e.json`. Sin eso, `queue.e2e-spec`
+  fallaba en el `beforeAll` con un mensaje que no señala la causa real.
+- `ORDER BY kind` en Postgres ordena un enum por su ORDEN DE DECLARACIÓN, no
+  alfabéticamente. En los tests, ordenar en JS.
+- La fase 6 invalidó un test de la 5b: `ticket.status_changed` ya tiene
+  consumidor, así que el caso "evento sin consumidor" pasó a usar
+  `ticket.assigned`. Al añadir un consumidor, revisar qué tests asumían que ese
+  evento no tenía ninguno.
+- `ticket.created` se encola en DOS colas con el mismo jobId: la limpieza de jobs
+  de los e2e tiene que borrarlo de las dos.
 
 **Fase 5b (colas) — CERRADA.** El outbox ya se drena a BullMQ y hay un consumidor
 real. Decisiones del usuario respetadas: polling, idempotencia con tabla + jobId,
@@ -340,38 +391,55 @@ las policies usan `NULLIF(current_setting(...), '')` para colapsar "sin setear" 
 - **Remote en GitHub:** `origin` → https://github.com/MarcosEstebanDev/helpdesk-api (privado). `main` trackea `origin/main`.
 - **Verificado:** `pnpm lint:ci`, `pnpm build`, 7/7 unit, 1/1 e2e en verde.
 
-## PENDIENTE (retomar acá → Fase 6)
+## PENDIENTE (retomar acá → Fase 7)
 
-Fases 1, 2 (a/b/c), 3, 4 y 5 (a/b) cerradas. El producto ya es event-driven de punta
-a punta: crear un ticket dispara un evento que un worker consume y actúa.
+Fases 1, 2 (a/b/c), 3, 4, 5 (a/b) y 6 cerradas. El backend ya hace lo suyo solo:
+un ticket nuevo se auto-asigna, arranca sus relojes de SLA, y si nadie lo atiende
+el barrido registra el incumplimiento sin que nadie pregunte.
 
-**Fase 6 — Motor de SLA.** Es la primera fase con jobs RETARDADOS y la primera con
-configuración por tenant.
+**Cabos sueltos de la fase 6 (decidir si entran o se dejan documentados):**
+- No hay endpoint para configurar `sla_policies`: la tabla existe y el motor la
+  respeta, pero hoy solo se escribe por SQL. Un `GET/PUT /sla-policies` (ADMIN)
+  sería media hora y cierra la historia de "configuración por organización".
+- La vista del ticket no expone su SLA (`dueAt`, cuánto margen queda, si
+  incumplió). Es lo que haría útil el motor de cara al front de la fase 7.
+- Nadie consume `sla.breached` todavía: el evento se publica y se queda ahí. Su
+  consumidor natural es la notificación/escalado.
+
+**Fase 7 — Realtime.** WebSocket gateway (Socket.io) + cliente en `helpdesk-web`.
+Es la primera fase que empuja datos hacia el cliente en vez de responder a
+peticiones, y la primera en la que el aislamiento por tenant tiene que
+sostenerse FUERA del ciclo request/response.
 
 Decisiones abiertas, **pendientes de OK del usuario**:
 
-1. **Dónde vive la política de SLA.** ¿Tabla `sla_policies` por tenant (prioridad ->
-   minutos de respuesta/resolución) o constantes en el dominio? Lo primero es lo
-   realista y estrena "configuración por organización"; lo segundo es más pobre.
-2. **Cómo se arma el temporizador.** ¿Un `delayed job` de BullMQ por ticket (Redis
-   sostiene el reloj) o una tabla `sla_timers` que un barrido periódico revisa? El
-   delayed job es directo pero pierde los relojes si Redis se vacía; la tabla es
-   durable y encaja con el outbox, a costa de un barrido más.
-3. **Qué cuenta como "respondido".** ¿El primer comentario de un AGENT, el paso a
-   IN_PROGRESS, o la asignación? Determina qué evento para el reloj de respuesta.
-4. **Qué pasa al incumplir.** ¿Solo marcar el breach y auditarlo, o además escalar
-   (subir prioridad, reasignar)? Escalar da material pero mete reglas nuevas.
-5. **Horario laboral.** ¿El SLA cuenta en horas naturales o solo en horario de
-   oficina por tenant, con su zona horaria? Lo segundo es lo que hace un producto de
-   verdad y lo que más complica el cálculo.
+1. **Cómo se autentica el socket.** ¿Access token en el handshake (`auth.token`),
+   cookie, o un ticket de conexión de un solo uso emitido por HTTP? El JWT en el
+   handshake es lo directo; el problema conocido es qué pasa cuando expira con la
+   conexión abierta.
+2. **Quién emite.** ¿Un consumidor más del outbox (cola `realtime`, coherente con
+   todo lo hecho: lo que se emite es exactamente lo que ocurrió y se puede
+   reprocesar) o emitir desde los casos de uso (menos piezas, pero vuelve a meter
+   un efecto no transaccional dentro del caso de uso — justo lo que el ADR-0018
+   existe para evitar)?
+3. **Qué se manda por el cable.** ¿El evento de integración tal cual (gordo, y
+   puede llevar campos que ese usuario no debería ver) o un DTO de vista filtrado
+   por rol? Lo segundo obliga a decidir qué ve un VIEWER.
+4. **Granularidad de las rooms.** ¿Solo `tenant:<id>`, o también `ticket:<id>` y
+   `user:<id>` para avisar al asignado? Más rooms = menos ruido en el cliente,
+   más contabilidad en el servidor.
+5. **Escalado.** ¿Adapter de Redis para Socket.io desde ya (varias instancias
+   comparten las rooms) o un solo proceso y se documenta como deuda?
 
 Checklist tentativo:
-- [ ] `SlaPolicy` y `SlaTimer` en el dominio, con el cálculo puro y testeado.
-- [ ] Migración con RLS e índice para "temporizadores que vencen antes de X".
-- [ ] Consumidor de `ticket.created` / `ticket.status_changed` que arma y para relojes.
-- [ ] Job retardado o barrido que detecta el breach y lo registra.
-- [ ] e2e con reloj inyectado (el puerto `Clock` ya existe): vencer sin esperar.
-- [ ] ADR-0020 (modelo de SLA) y ADR-0021 (temporizadores).
+- [ ] Gateway con guard de handshake que reusa `JwtTokenService` y mete al socket
+      en la room de SU tenant (el `tenantId` sale del token, nunca del cliente).
+- [ ] Consumidor `realtime` que traduce eventos de integración a mensajes de vista.
+- [ ] e2e con cliente Socket.io real: dos tenants conectados, uno crea un ticket,
+      el otro NO lo recibe. El equivalente WebSocket de `rls-isolation`.
+- [ ] Cliente en `helpdesk-web`: el `ws-provider` placeholder de la fase 1 pasa a
+      ser real, con invalidación de las queries de TanStack Query.
+- [ ] ADR-0022 (transporte y autenticación) y ADR-0023 (qué se emite y a quién).
 
 Recordar: proponer estructura/decisiones y **esperar OK** antes de codear.
 
@@ -381,12 +449,15 @@ Recordar: proponer estructura/decisiones y **esperar OK** antes de codear.
 
 ```bash
 docker compose -f infra/docker-compose.yml up -d   # Postgres 17 + Redis 7
-pnpm prisma:deploy                                  # 5 migraciones
-pnpm test && pnpm test:e2e                          # 114 unit + 68 e2e en verde
+pnpm prisma:deploy                                  # 6 migraciones
+pnpm test && pnpm test:e2e                          # 144 unit + 81 e2e en verde
 ```
 
-Para ver el sistema entero funcionando (worker incluido): `pnpm start:dev`, crear un
-ticket con `POST /tickets` y observar cómo se auto-asigna en menos de dos segundos.
+Para ver el sistema entero funcionando (workers incluidos): `pnpm start:dev`, crear
+un ticket con `POST /tickets` y observar cómo se auto-asigna en menos de dos segundos
+y estrena sus dos relojes de SLA en `sla_timers`. Para ver un incumplimiento sin
+esperar cuatro horas: bajar `response_minutes` en `sla_policies` (o `UPDATE
+sla_timers SET due_at = now()`) y esperar un ciclo del barrido.
 
 **Recordatorio de entorno:** `pnpm` no está en el PATH — usar `corepack pnpm`.
 Docker Desktop hay que arrancarlo a mano. Git en este repo (sobre OneDrive) es lento:

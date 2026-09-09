@@ -12,6 +12,7 @@ import { OutboxPublisher } from '../src/infrastructure/outbox/outbox-publisher.s
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 import {
   DEAD_LETTER_QUEUE,
+  SLA_QUEUE,
   TICKET_ROUTING_QUEUE,
 } from '../src/infrastructure/queue/queues';
 import { AUTO_ASSIGN_CONSUMER } from '../src/modules/ticketing/application/auto-assign-ticket.use-case';
@@ -36,6 +37,7 @@ describe('Colas y outbox (e2e)', () => {
   let publisher: OutboxPublisher;
   let processor: TicketRoutingProcessor;
   let routing: Queue;
+  let sla: Queue;
   let deadLetter: Queue;
 
   const run = randomUUID().slice(0, 8);
@@ -83,6 +85,7 @@ describe('Colas y outbox (e2e)', () => {
     publisher = app.get(OutboxPublisher);
     processor = app.get(TicketRoutingProcessor);
     routing = app.get<Queue>(getQueueToken(TICKET_ROUTING_QUEUE));
+    sla = app.get<Queue>(getQueueToken(SLA_QUEUE));
     deadLetter = app.get<Queue>(getQueueToken(DEAD_LETTER_QUEUE));
 
     const res = await request(app.getHttpServer())
@@ -123,6 +126,10 @@ describe('Colas y outbox (e2e)', () => {
     // lo que hubiera en el Redis de desarrollo.
     for (const { queue, id } of jobsCreados) {
       await queue.remove(id).catch(() => undefined);
+      // Desde la fase 6, `ticket.created` se encola TAMBIÉN en la cola de SLA
+      // con el mismo jobId. Borrar de las dos evita dejar jobs huérfanos en el
+      // Redis de desarrollo.
+      await sla.remove(id).catch(() => undefined);
     }
     await prisma.withTenant(tenantId, (tx) =>
       tx.organization.deleteMany({ where: { id: tenantId } }),
@@ -176,27 +183,28 @@ describe('Colas y outbox (e2e)', () => {
     });
 
     it('un evento sin consumidor se marca publicado igualmente', async () => {
-      // Si no, se reclamaría en cada tick para siempre. `ticket.status_changed`
-      // no está en el mapa de enrutado.
+      // Si no, se reclamaría en cada tick para siempre. `ticket.assigned` no
+      // está en el mapa de enrutado. (Hasta la fase 6 este caso se probaba con
+      // `ticket.status_changed`, pero ese evento ya tiene consumidor: es el que
+      // para el reloj de resolución del SLA.)
       const res = await crearTicket().expect(201);
       const ticketId = (res.body as { id: string }).id;
       await publisher.publishPending();
 
       await request(app.getHttpServer())
-        .patch(`/tickets/${ticketId}/status`)
+        .post(`/tickets/${ticketId}/assign`)
         .set('Authorization', `Bearer ${token}`)
-        .send({ status: 'IN_PROGRESS' })
+        .send({ assigneeId: agenteId })
         .expect(200);
 
       await publisher.publishPending();
 
       const mensajes = await outboxDe(ticketId);
-      const cambio = mensajes.find(
-        (m) => m.eventName === 'ticket.status_changed',
-      );
-      expect(cambio?.publishedAt).not.toBeNull();
-      // Y no se creó job para él.
-      expect(await routing.getJob(cambio?.id ?? '')).toBeUndefined();
+      const asignado = mensajes.find((m) => m.eventName === 'ticket.assigned');
+      expect(asignado?.publishedAt).not.toBeNull();
+      // Y no se creó job para él en ninguna cola.
+      expect(await routing.getJob(asignado?.id ?? '')).toBeUndefined();
+      expect(await sla.getJob(asignado?.id ?? '')).toBeUndefined();
 
       const creado = mensajes.find((m) => m.eventName === 'ticket.created');
       if (creado !== undefined)

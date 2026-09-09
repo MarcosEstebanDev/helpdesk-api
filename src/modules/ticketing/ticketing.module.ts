@@ -18,6 +18,9 @@ import { AutoAssignTicket } from './application/auto-assign-ticket.use-case';
 import { AuditRecorder } from './application/audit-recorder';
 import { ChangeTicketStatus } from './application/change-ticket-status.use-case';
 import { EventRecorder } from './application/event-recorder';
+import { MarkSlaBreached } from './application/sla/mark-sla-breached.use-case';
+import { StartSlaTimers } from './application/sla/start-sla-timers.use-case';
+import { StopSlaTimer } from './application/sla/stop-sla-timer.use-case';
 import { CreateTicket } from './application/create-ticket.use-case';
 import {
   AUDIT_LOG_REPOSITORY,
@@ -36,16 +39,28 @@ import {
   TicketNumberGenerator,
 } from './domain/ports/ticket-number.generator';
 import {
+  SLA_POLICY_REPOSITORY,
+  SLA_TIMER_REPOSITORY,
+  SlaPolicyRepository,
+  SlaTimerRepository,
+} from './domain/ports/sla.repository';
+import {
   TICKET_REPOSITORY,
   TicketRepository,
 } from './domain/ports/ticket.repository';
 import { TicketController } from './infrastructure/http/ticket.controller';
+import { SlaProcessor } from './infrastructure/queue/sla.processor';
 import { TicketRoutingProcessor } from './infrastructure/queue/ticket-routing.processor';
+import { SlaSweeper } from './infrastructure/sla/sla-sweeper.service';
 import { PrismaAuditLogRepository } from './infrastructure/persistence/prisma-audit-log.repository';
 import { PrismaCommentRepository } from './infrastructure/persistence/prisma-comment.repository';
 import { PrismaMemberDirectory } from './infrastructure/persistence/prisma-member.directory';
 import { PrismaTicketNumberGenerator } from './infrastructure/persistence/prisma-ticket-number.generator';
 import { PrismaTicketRepository } from './infrastructure/persistence/prisma-ticket.repository';
+import {
+  PrismaSlaPolicyRepository,
+  PrismaSlaTimerRepository,
+} from './infrastructure/persistence/prisma-sla.repository';
 import { TicketReadModel } from './infrastructure/persistence/ticket.read-model';
 
 /**
@@ -74,7 +89,11 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
     PrismaTicketNumberGenerator,
     PrismaMemberDirectory,
     TicketReadModel,
+    PrismaSlaPolicyRepository,
+    PrismaSlaTimerRepository,
     TicketRoutingProcessor,
+    SlaProcessor,
+    SlaSweeper,
 
     // --- Puertos -> adapters ---
     { provide: TICKET_REPOSITORY, useExisting: PrismaTicketRepository },
@@ -85,6 +104,8 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
       useExisting: PrismaTicketNumberGenerator,
     },
     { provide: MEMBER_DIRECTORY, useExisting: PrismaMemberDirectory },
+    { provide: SLA_POLICY_REPOSITORY, useExisting: PrismaSlaPolicyRepository },
+    { provide: SLA_TIMER_REPOSITORY, useExisting: PrismaSlaTimerRepository },
 
     // --- Aplicación (clases puras, construidas a mano) ---
     {
@@ -200,6 +221,60 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
         new ChangeTicketStatus(transactions, tickets, audit, events, clock),
     },
     {
+      provide: StartSlaTimers,
+      inject: [
+        TRANSACTION_MANAGER,
+        SLA_POLICY_REPOSITORY,
+        SLA_TIMER_REPOSITORY,
+        PROCESSED_MESSAGES,
+        ID_GENERATOR,
+      ],
+      useFactory: (
+        transactions: TransactionManager,
+        policies: SlaPolicyRepository,
+        timers: SlaTimerRepository,
+        processed: ProcessedMessages,
+        ids: IdGenerator,
+      ): StartSlaTimers =>
+        new StartSlaTimers(transactions, policies, timers, processed, ids),
+    },
+    {
+      provide: StopSlaTimer,
+      inject: [TRANSACTION_MANAGER, SLA_TIMER_REPOSITORY, PROCESSED_MESSAGES],
+      useFactory: (
+        transactions: TransactionManager,
+        timers: SlaTimerRepository,
+        processed: ProcessedMessages,
+      ): StopSlaTimer => new StopSlaTimer(transactions, timers, processed),
+    },
+    {
+      provide: MarkSlaBreached,
+      inject: [
+        TRANSACTION_MANAGER,
+        SLA_TIMER_REPOSITORY,
+        TICKET_REPOSITORY,
+        AuditRecorder,
+        EventRecorder,
+        CLOCK,
+      ],
+      useFactory: (
+        transactions: TransactionManager,
+        timers: SlaTimerRepository,
+        tickets: TicketRepository,
+        audit: AuditRecorder,
+        events: EventRecorder,
+        clock: Clock,
+      ): MarkSlaBreached =>
+        new MarkSlaBreached(
+          transactions,
+          timers,
+          tickets,
+          audit,
+          events,
+          clock,
+        ),
+    },
+    {
       provide: AddComment,
       inject: [
         TRANSACTION_MANAGER,
@@ -231,6 +306,6 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
     },
   ],
   // El publicador del outbox (fase 5b) lo necesita para dirigirlo desde los e2e.
-  exports: [AutoAssignTicket],
+  exports: [AutoAssignTicket, SlaSweeper, StartSlaTimers, StopSlaTimer],
 })
 export class TicketingModule {}

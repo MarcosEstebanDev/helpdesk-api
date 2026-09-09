@@ -13,6 +13,7 @@ export const AUDIT_ACTIONS = [
   'ticket.status_changed',
   'ticket.priority_changed',
   'comment.added',
+  'sla.breached',
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

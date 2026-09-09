@@ -513,6 +513,142 @@ automático.
 
 ---
 
+## ADR-0020 — Modelo de SLA: dos relojes, política por tenant y calendario enchufable
+
+**Contexto.** La fase 6 mide si la organización atiende a tiempo. Es la primera fase
+con **configuración por tenant**, y la primera en la que una regla de negocio depende
+de QUIÉN hizo algo y de CUÁNDO lo hizo, no solo de qué pasó.
+
+**Decisión 1 — Dos relojes independientes por ticket.** `RESPONSE` (cuánto tarda la
+organización en contestar) y `RESOLUTION` (cuánto tarda en arreglarlo). Se miden por
+separado porque incumplen por motivos distintos: responder rápido y resolver tarde es
+un problema de capacidad; tardar en responder es un problema de atención, y el cliente
+lo nota mucho antes. Un solo reloj mezclaría las dos señales.
+
+**Decisión 2 — `sla_policies` guarda solo lo que el tenant sobreescribe.** Los valores
+por defecto (`DEFAULT_SLA_POLICY`) viven en el DOMINIO y el merge es **por prioridad**
+(`resolvePolicy`): una organización puede endurecer solo `URGENT` y quedarse con el
+resto. Así, una organización que nunca configuró nada —o que se registró antes de esta
+fase— tiene SLA igualmente, y `iam` no necesita saber que el SLA existe para sembrar
+filas al provisionar.
+
+**Decisión 3 — "Respondido" = el primer comentario de quien responde EN NOMBRE de la
+organización.** Un comentario del propio solicitante no para el reloj: si lo parara,
+bastaría con que el cliente insistiera para que su SLA se diera por cumplido. Eso
+obliga a saber el rol del autor, así que `comment.added` sube a **v2** y lo lleva en el
+payload: el rol de una persona cambia con el tiempo y lo que cuenta es el que tenía AL
+COMENTAR (mismo razonamiento que los eventos gordos del ADR-0018). El rol sale del JWT
+verificado, nunca del cuerpo de la petición.
+
+**Decisión 4 — El vencimiento se calcula al arrancar y se persiste.** `due_at` es
+inmutable: si el tenant cambia su política mañana, los relojes ya en marcha conservan
+el objetivo con el que nacieron. Cambiar las reglas a mitad de partida es justo lo que
+un SLA no debe permitir. Por lo mismo, el estado del reloj se **deriva** de las fechas
+(`stopped_at`, `breached_at`) en vez de guardarse en un campo `status` que podría
+contradecirlas.
+
+**Decisión 5 — El calendario es una interfaz, hoy con una sola implementación.** Los
+minutos se cuentan sobre `SlaCalendar`; existe `CALENDAR_24_7` y nada más. La interfaz
+no es especulación: es la costura por la que entrará el horario laboral por tenant con
+su zona horaria. Aislar hoy lo que sabemos que va a cambiar cuesta una interfaz; no
+aislarlo cuesta reescribir cada sitio donde se sumó tiempo a mano.
+
+**Alternativas descartadas.**
+- *Objetivos como constantes del dominio, sin tabla.* Más simple, pero deja fuera lo
+  que hace de esto un producto multi-tenant: que cada organización pacte lo suyo.
+- *Sembrar las cuatro filas al registrar la organización.* Obligaría a `iam` a conocer
+  el SLA (dos bounded contexts acoplados) y dejaría sin política a los tenants
+  anteriores a la fase.
+- *Parar el reloj de respuesta con la asignación o con el paso a `IN_PROGRESS`.*
+  Ninguna de las dos cosas la ve el cliente. Se puede asignar un ticket y no
+  contestarlo en un día.
+- *Consultar el rol del autor al procesar el evento en vez de llevarlo dentro.* Daría
+  el rol ACTUAL: reprocesar el mismo evento meses después podría dar otro resultado.
+- *Horario laboral desde el primer día.* Es lo que hace un producto de verdad, pero
+  multiplica el coste del cálculo (festivos, zonas horarias, cambios de hora) sin
+  añadir nada a lo que esta fase demuestra. Queda detrás de `SlaCalendar`.
+
+**Consecuencias.** (+) Cada organización configura su compromiso y el sistema sigue
+funcionando si no configura nada. (+) El cálculo del vencimiento es una función pura,
+testeable sin base de datos ni relojes reales. (+) Un reloj no puede quedar en un
+estado imposible: sus tres situaciones se derivan de dos fechas. (−) `comment.added`
+tiene dos versiones vivas, y el consumidor descarta las v1 (no existía ninguna con
+consumidor, pero la regla queda escrita). (−) Los relojes en marcha ignoran los
+cambios de política, lo que es correcto pero puede sorprender a quien acaba de
+endurecer su SLA. (−) Con 24/7, un ticket abierto un viernes por la tarde incumple el
+sábado por la noche.
+
+**Revisar si.** Aparece un tenant que necesita horario laboral (→ implementar otro
+`SlaCalendar`), o hacen falta más relojes que respuesta y resolución (→ el `kind` ya es
+un enum, pero habrá que decidir quién los arranca).
+
+---
+
+## ADR-0021 — Temporizadores durables en base de datos y barrido, no jobs retardados
+
+**Contexto.** Hay que detectar que un reloj venció SIN que nadie toque el ticket: el
+incumplimiento se caracteriza justamente por que no pasó nada. Es la primera vez que el
+sistema tiene que reaccionar al paso del tiempo.
+
+**Decisión 1 — La tabla es la fuente de verdad; un barrido periódico la revisa.**
+`sla_timers` guarda cada reloj y `SlaSweeper` pregunta cada `SLA_SWEEP_INTERVAL_MS`
+qué venció. La alternativa evidente —un `delayed job` de BullMQ por reloj— pone el
+reloj en Redis: si Redis se vacía, desaparecen TODOS los vencimientos pendientes en
+silencio y nadie se entera hasta que un cliente reclama. Con la tabla, un Redis nuevo
+no pierde nada, y además se puede preguntar "qué tickets están a punto de vencer", que
+es media pantalla de cualquier panel de soporte. El precio es la precisión: el
+incumplimiento se detecta con el retraso del intervalo, que para objetivos medidos en
+horas sobra.
+
+**Decisión 2 — El barrido cruza tenants para LEER; el trabajo se hace por tenant.**
+Mismo problema que el publicador del outbox (ADR-0019): el barrido corre fuera de toda
+request, sin `app.current_tenant`, y con policies fail-closed no vería nada. Se
+resuelve igual —rol `helpdesk_sla_sweeper` NOLOGIN, sin `BYPASSRLS`, dueño de una
+función `SECURITY DEFINER` con `search_path` fijo— pero la exposición es **mucho
+menor**: `sla_due_timers` devuelve solo `(id, tenant_id)`. Con ese par, cada reloj se
+procesa dentro de `withTenant`, bajo RLS normal, como cualquier request. El rol ni
+siquiera necesita `UPDATE`.
+
+**Decisión 3 — Idempotencia por condición, no por bloqueo.** La función no usa
+`FOR UPDATE`: `MarkSlaBreached` vuelve a comprobar dentro de su transacción que el
+reloj sigue corriendo y sigue vencido. Entre que el barrido lee la lista y llega al
+trabajo, alguien puede haber respondido; confiar en la lectura del barrido registraría
+incumplimientos de SLA que sí se cumplieron. Como efecto secundario, dos barridos
+concurrentes son inofensivos y el barrido no mantiene una transacción abierta mientras
+trabaja.
+
+**Decisión 4 — Arrancar y parar relojes son consumidores de la cola `sla`.** Reaccionan
+a `ticket.created`, `comment.added` y `ticket.status_changed` con la idempotencia del
+ADR-0019 (`processed_messages` en la misma transacción), reforzada por el `UNIQUE
+(ticket_id, kind)` de la tabla. **Todo se fecha con el `occurredAt` del evento, no con
+el instante del job**: si la cola va lenta, contar desde el job regalaría ese tiempo y
+bastaría con un worker saturado para que ningún SLA incumpliera nunca.
+
+**Alternativas descartadas.**
+- *Un `delayed job` por reloj.* Preciso al segundo y sin barrido, pero el estado del
+  SLA viviría en Redis y cancelar un reloj sería localizar y borrar un job.
+- *Un cron externo (o `pg_cron`).* Menos código, pero mete una pieza de infraestructura
+  fuera del despliegue de la aplicación y sin acceso al dominio.
+- *Calcular el incumplimiento al leer el ticket (perezoso).* Cero infraestructura, pero
+  un breach que nadie mira no existe: no se puede auditar, ni notificar, ni escalar.
+- *Marcar el breach directamente en SQL desde el barrido.* Más rápido, pero saltaría la
+  auditoría y el evento de dominio, que es lo que hace accionable un incumplimiento.
+
+**Consecuencias.** (+) Los relojes sobreviven a un Redis vacío y son consultables. (+)
+El incumplimiento deja rastro completo: fila marcada, `AuditLog` a nombre del sistema y
+evento `sla.breached` en el outbox, listo para que la fase de notificaciones o de
+escalado se enganche sin tocar el motor. (+) El barrido se apaga con `WORKER_ENABLED`,
+igual que el resto de los workers. (−) Precisión limitada por el intervalo. (−) Una
+consulta más cruzando tenants, aunque reducida a dos columnas. (−) `sla_timers` crece
+con cada ticket y hoy nadie la purga.
+
+**Revisar si.** Hace falta detectar el vencimiento al segundo (→ delayed job encima del
+barrido, conservándolo como red), el barrido no llega a tiempo con el volumen (→ lotes
+más grandes o varias instancias, que ya son seguras), o aparecen avisos previos al
+vencimiento del tipo "queda el 20%" (→ un segundo umbral en la misma tabla).
+
+---
+
 ## Seguridad (resumen)
 
 Defensa en profundidad: ver ADR-0003 (RLS) y los puntos en `CLAUDE.md`. Items clave:

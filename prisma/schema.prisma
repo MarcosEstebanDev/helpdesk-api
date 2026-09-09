@@ -47,6 +47,8 @@ model Organization {
   ticketCounter TicketCounter?
   outbox        OutboxMessage[]
   processed     ProcessedMessage[]
+  slaPolicies   SlaPolicy[]
+  slaTimers     SlaTimer[]
 
   @@map("organizations")
 }
@@ -161,6 +163,7 @@ model Ticket {
   requester    User         @relation("TicketRequester", fields: [requesterId], references: [id], onDelete: Cascade)
   assignee     User?        @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
   comments     Comment[]
+  slaTimers    SlaTimer[]
 
   // El número es único DENTRO del tenant, nunca global.
   @@unique([tenantId, number])
@@ -288,4 +291,65 @@ model ProcessedMessage {
 
   @@id([consumer, eventId])
   @@map("processed_messages")
+}
+
+/// Los dos relojes que corren sobre un ticket (ADR-0020).
+enum SlaKind {
+  RESPONSE
+  RESOLUTION
+
+  @@map("sla_kind")
+}
+
+/// Objetivos de SLA que una organización sobreescribe (ADR-0020).
+///
+/// Solo se guardan las prioridades que el tenant quiera cambiar: las que falten
+/// se completan con `DEFAULT_SLA_POLICY`, que vive en el DOMINIO. Así una
+/// organización creada antes de esta fase —o que nunca configuró nada— tiene SLA
+/// igualmente, y `iam` no necesita saber que el SLA existe para sembrar filas.
+model SlaPolicy {
+  id                String         @id @default(uuid()) @db.Uuid
+  tenantId          String         @map("tenant_id") @db.Uuid
+  priority          TicketPriority
+  responseMinutes   Int            @map("response_minutes")
+  resolutionMinutes Int            @map("resolution_minutes")
+  createdAt         DateTime       @default(now()) @map("created_at")
+  updatedAt         DateTime       @map("updated_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, priority])
+  @@map("sla_policies")
+}
+
+/// Reloj de SLA de un ticket (ADR-0021).
+///
+/// El estado NO se guarda como un campo: se DERIVA de las fechas. Corriendo =
+/// `stopped_at IS NULL AND breached_at IS NULL`; parado a tiempo = `stopped_at`;
+/// incumplido = `breached_at`. Un campo `status` aparte podría contradecirlas.
+///
+/// `due_at` se calcula al arrancar y se persiste: si el tenant cambia su política
+/// después, los relojes ya en marcha conservan el objetivo con el que nacieron.
+model SlaTimer {
+  id         String    @id @default(uuid()) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  ticketId   String    @map("ticket_id") @db.Uuid
+  kind       SlaKind
+  startedAt  DateTime  @map("started_at")
+  dueAt      DateTime  @map("due_at")
+  stoppedAt  DateTime? @map("stopped_at")
+  breachedAt DateTime? @map("breached_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ticket       Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  // Un ticket tiene como mucho un reloj de cada tipo. La restricción es la
+  // garantía de idempotencia al arrancarlos: un evento reprocesado choca aquí.
+  @@unique([ticketId, kind])
+  // Consulta del barrido: los que vencen antes de ahora. Sería mejor un índice
+  // parcial (`WHERE stopped_at IS NULL AND breached_at IS NULL`), pero Prisma no
+  // los modela y declararlo solo en SQL produciría drift permanente.
+  @@index([dueAt])
+  @@index([tenantId, ticketId])
+  @@map("sla_timers")
 }

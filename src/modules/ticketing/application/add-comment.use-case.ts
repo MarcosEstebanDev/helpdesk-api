@@ -22,6 +22,8 @@ import { runTransactional } from './transactional';
 export interface AddCommentInput {
   tenantId: TenantId;
   actorId: UserId;
+  /** Rol del actor, tal y como viene del JWT verificado. Lo usa el SLA. */
+  actorRole: string;
   ticketId: TicketId;
   body: string;
 }
@@ -80,7 +82,12 @@ export class AddComment {
       // actualiza su `updatedAt` y emite el evento. Vuelve a comprobar que el
       // ticket admite comentarios —de ahí que se maneje su `Result`— aunque a
       // estas alturas ya sabemos que sí; la entidad no confía en el llamador.
-      const registered = ticket.registerComment(comment.id, input.actorId, now);
+      const registered = ticket.registerComment(
+        comment.id,
+        input.actorId,
+        input.actorRole,
+        now,
+      );
       if (registered.isErr()) {
         return err(registered.error);
       }

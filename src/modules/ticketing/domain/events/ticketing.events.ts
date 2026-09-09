@@ -80,8 +80,36 @@ export class TicketStatusChanged implements IntegrationEvent {
   ) {}
 }
 
+/**
+ * v2: añade `authorRole` (ADR-0020).
+ *
+ * El motor de SLA necesita saber si quien comentó responde EN NOMBRE de la
+ * organización o es el propio cliente. Viaja en el evento en vez de consultarse
+ * después porque el rol de una persona cambia con el tiempo, y lo que importa es
+ * cuál tenía AL COMENTAR — el mismo razonamiento que justifica los eventos
+ * gordos del ADR-0018. Consultarlo más tarde daría el rol actual, que puede ser
+ * otro, y reprocesar el evento daría un resultado distinto.
+ */
 export class CommentAdded implements IntegrationEvent {
   readonly eventName = 'comment.added';
+  readonly aggregateType = AGGREGATE_TYPE;
+  readonly version = 2;
+
+  constructor(
+    readonly aggregateId: string,
+    readonly tenantId: string,
+    readonly occurredAt: Date,
+    readonly payload: {
+      commentId: string;
+      authorId: string;
+      authorRole: string;
+    },
+  ) {}
+}
+
+/** El reloj de un SLA venció sin pararse (ADR-0021). */
+export class SlaBreached implements IntegrationEvent {
+  readonly eventName = 'sla.breached';
   readonly aggregateType = AGGREGATE_TYPE;
   readonly version = 1;
 
@@ -89,7 +117,13 @@ export class CommentAdded implements IntegrationEvent {
     readonly aggregateId: string,
     readonly tenantId: string,
     readonly occurredAt: Date,
-    readonly payload: { commentId: string; authorId: string },
+    readonly payload: {
+      timerId: string;
+      kind: string;
+      dueAt: string;
+      assigneeId: string | null;
+      priority: TicketPriority;
+    },
   ) {}
 }
 
@@ -98,4 +132,5 @@ export type TicketingEvent =
   | TicketAssigned
   | TicketUnassigned
   | TicketStatusChanged
-  | CommentAdded;
+  | CommentAdded
+  | SlaBreached;

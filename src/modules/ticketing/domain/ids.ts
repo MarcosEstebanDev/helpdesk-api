@@ -23,3 +23,6 @@ export const CommentId = (raw: string): CommentId => brand<'CommentId'>(raw);
 
 export type AuditLogId = Brand<string, 'AuditLogId'>;
 export const AuditLogId = (raw: string): AuditLogId => brand<'AuditLogId'>(raw);
+
+export type SlaTimerId = Brand<string, 'SlaTimerId'>;
+export const SlaTimerId = (raw: string): SlaTimerId => brand<'SlaTimerId'>(raw);

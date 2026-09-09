@@ -13,6 +13,13 @@ import { TenantId, TicketId, UserId } from '../domain/ids';
 import { AuditLogRepository } from '../domain/ports/audit-log.repository';
 import { CommentRepository } from '../domain/ports/comment.repository';
 import { MemberDirectory } from '../domain/ports/member.directory';
+import {
+  SlaPolicyRepository,
+  SlaTimerRepository,
+} from '../domain/ports/sla.repository';
+import { SlaTarget } from '../domain/sla/sla-policy';
+import { SlaKind, SlaTimer } from '../domain/sla/sla-timer.entity';
+import { TicketPriority } from '../domain/ticket-status';
 import { TicketNumberGenerator } from '../domain/ports/ticket-number.generator';
 import { TicketRepository } from '../domain/ports/ticket.repository';
 
@@ -205,5 +212,53 @@ export const fakeProcessedMessages = (
       vistos.add(clave);
       return Promise.resolve(true);
     },
+  };
+};
+
+/** Política de SLA en memoria: por defecto, sin ningún override. */
+export const fakeSlaPolicies = (
+  overrides: Partial<Record<TicketPriority, SlaTarget>> = {},
+): SlaPolicyRepository => ({
+  overridesOf: () => Promise.resolve(overrides),
+});
+
+export interface FakeSlaTimers extends SlaTimerRepository {
+  readonly saved: SlaTimer[];
+  seed(timer: SlaTimer): void;
+}
+
+export const fakeSlaTimers = (): FakeSlaTimers => {
+  const store = new Map<string, SlaTimer>();
+  const saved: SlaTimer[] = [];
+  const clave = (timer: SlaTimer) => `${timer.tenantId}:${timer.id}`;
+
+  return {
+    saved,
+    seed: (timer) => {
+      store.set(clave(timer), timer);
+    },
+    save: (timer) => {
+      store.set(clave(timer), timer);
+      saved.push(timer);
+      return Promise.resolve();
+    },
+    findByTicket: (tenantId, ticketId) =>
+      Promise.resolve(
+        [...store.values()].filter(
+          (t) => t.tenantId === tenantId && t.ticketId === ticketId,
+        ),
+      ),
+    findRunning: (tenantId, ticketId, kind: SlaKind) =>
+      Promise.resolve(
+        [...store.values()].find(
+          (t) =>
+            t.tenantId === tenantId &&
+            t.ticketId === ticketId &&
+            t.kind === kind &&
+            t.isRunning(),
+        ) ?? null,
+      ),
+    findById: (tenantId, id) =>
+      Promise.resolve(store.get(`${tenantId}:${id}`) ?? null),
   };
 };

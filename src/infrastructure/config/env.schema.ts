@@ -39,6 +39,15 @@ export const envSchema = z.object({
   // Reintentos del CONSUMIDOR antes de mandar el job a la dead-letter queue.
   QUEUE_JOB_ATTEMPTS: z.coerce.number().int().positive().default(5),
   QUEUE_BACKOFF_MS: z.coerce.number().int().positive().default(1000),
+  // Barrido de SLA (ADR-0021). El intervalo fija la PRECISIÓN con la que se
+  // detecta un incumplimiento; con objetivos medidos en horas, 30s sobra.
+  SLA_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(30_000),
+  SLA_SWEEP_BATCH_SIZE: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(1000)
+    .default(100),
   // Secretos JWT (ADR-0011). Separados a propósito: un access token filtrado no
   // permite forjar refresh tokens. Mínimo 32 chars para que HS256 tenga margen.
   JWT_ACCESS_SECRET: z.string().min(32),

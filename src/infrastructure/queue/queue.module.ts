@@ -2,7 +2,8 @@ import { Global, Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.schema';
-import { DEAD_LETTER_QUEUE, TICKET_ROUTING_QUEUE } from './queues';
+import { QueueRegistry } from './queue-registry';
+import { DEAD_LETTER_QUEUE, SLA_QUEUE, TICKET_ROUTING_QUEUE } from './queues';
 
 /**
  * Conexión a Redis y registro de colas (ADR-0019).
@@ -30,9 +31,11 @@ import { DEAD_LETTER_QUEUE, TICKET_ROUTING_QUEUE } from './queues';
     }),
     BullModule.registerQueue(
       { name: TICKET_ROUTING_QUEUE },
+      { name: SLA_QUEUE },
       { name: DEAD_LETTER_QUEUE },
     ),
   ],
-  exports: [BullModule],
+  providers: [QueueRegistry],
+  exports: [BullModule, QueueRegistry],
 })
 export class QueueModule {}

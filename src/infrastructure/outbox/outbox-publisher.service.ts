@@ -5,10 +5,9 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
 import type { Env } from '../config/env.schema';
-import { TICKET_ROUTING_QUEUE, queuesFor } from '../queue/queues';
+import { QueueRegistry } from '../queue/queue-registry';
+import { queuesFor } from '../queue/queues';
 import { ClaimedMessage, OutboxReader } from './outbox-reader';
 
 /**
@@ -51,7 +50,7 @@ export class OutboxPublisher
   constructor(
     private readonly reader: OutboxReader,
     private readonly config: ConfigService<Env, true>,
-    @InjectQueue(TICKET_ROUTING_QUEUE) private readonly routing: Queue,
+    private readonly queues: QueueRegistry,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -128,11 +127,15 @@ export class OutboxPublisher
       occurredAt: message.occurredAt.toISOString(),
     };
 
-    for (const cola of colas) {
-      if (cola !== TICKET_ROUTING_QUEUE) {
-        throw new Error(`Cola no registrada en el publicador: ${cola}`);
+    for (const nombre of colas) {
+      const cola = this.queues.get(nombre);
+      if (cola === null) {
+        // El mapa de enrutado nombra una cola que nadie registró: es un error de
+        // programación, y lanzar hace que el mensaje sume un intento en vez de
+        // darse por publicado sin que nadie lo haya recibido.
+        throw new Error(`Cola no registrada: ${nombre}`);
       }
-      await this.routing.add(message.eventName, data, {
+      await cola.add(message.eventName, data, {
         // Primera capa de deduplicación: BullMQ rechaza un jobId que ya conoce.
         // Solo dura lo que la retención de Redis, de ahí que la garantía REAL
         // sea `processed_messages` en el consumidor (ADR-0019).

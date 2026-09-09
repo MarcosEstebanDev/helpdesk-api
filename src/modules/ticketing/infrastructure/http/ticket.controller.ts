@@ -202,6 +202,9 @@ export class TicketController {
     const result = await this.addComment.execute({
       tenantId: TenantId(user.tenantId),
       actorId: UserId(user.userId),
+      // Del contexto verificado, nunca del cuerpo: si el cliente pudiera decir
+      // su propio rol, cumpliría su SLA de respuesta comentándose a sí mismo.
+      actorRole: user.role,
       ticketId: TicketId(id),
       body: dto.body,
     });

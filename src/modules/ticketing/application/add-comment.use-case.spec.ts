@@ -73,6 +73,7 @@ describe('AddComment', () => {
     const result = await sut.execute({
       tenantId: TENANT,
       actorId: ACTOR,
+      actorRole: 'AGENT',
       ticketId: TICKET_ID,
       body: '  Ya lo estamos mirando.  ',
     });
@@ -98,6 +99,7 @@ describe('AddComment', () => {
     const result = await sut.execute({
       tenantId: TENANT,
       actorId: ACTOR,
+      actorRole: 'AGENT',
       ticketId: TICKET_ID,
       body: 'Ya lo estamos mirando.',
     });
@@ -112,7 +114,11 @@ describe('AddComment', () => {
       expect(evento.payload).toEqual({
         commentId: result.value.id,
         authorId: ACTOR,
+        authorRole: 'AGENT',
       });
+      // v2: el rol viaja EN el evento porque lo que importa es cuál tenía al
+      // comentar, no el que tenga cuando el consumidor lo procese.
+      expect(evento.version).toBe(2);
     }
   });
 
@@ -122,6 +128,7 @@ describe('AddComment', () => {
     const result = await sut.execute({
       tenantId: TENANT,
       actorId: ACTOR,
+      actorRole: 'AGENT',
       ticketId: TICKET_ID,
       body: '   ',
     });
@@ -140,6 +147,7 @@ describe('AddComment', () => {
     const result = await sut.execute({
       tenantId: TENANT,
       actorId: ACTOR,
+      actorRole: 'AGENT',
       ticketId: TICKET_ID,
       body: 'Una cosa más...',
     });
@@ -158,6 +166,7 @@ describe('AddComment', () => {
     const result = await sut.execute({
       tenantId: TENANT,
       actorId: ACTOR,
+      actorRole: 'AGENT',
       ticketId: TicketId('55555555-5555-5555-5555-555555555555'),
       body: 'Hola',
     });
