@@ -1,3 +1,4 @@
+import { Clock } from '../../../shared-kernel';
 import {
   RefreshFamilyId,
   RefreshTokenId,
@@ -5,7 +6,6 @@ import {
   UserId,
 } from '../domain/ids';
 import { RefreshToken } from '../domain/entities/refresh-token.entity';
-import { Clock } from '../domain/ports/clock';
 import { RefreshTokenRepository } from '../domain/ports/refresh-token.repository';
 import { TokenService } from '../domain/ports/token.service';
 import { Logout } from './logout.use-case';

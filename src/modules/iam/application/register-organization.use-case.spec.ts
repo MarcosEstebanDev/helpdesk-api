@@ -1,7 +1,6 @@
+import { Clock, IdGenerator } from '../../../shared-kernel';
 import { RefreshToken } from '../domain/entities/refresh-token.entity';
 import { PasswordHash } from '../domain/value-objects/password-hash.vo';
-import { Clock } from '../domain/ports/clock';
-import { IdGenerator } from '../domain/ports/id-generator';
 import { OrganizationRepository } from '../domain/ports/organization.repository';
 import { PasswordHasher } from '../domain/ports/password-hasher';
 import { RefreshTokenRepository } from '../domain/ports/refresh-token.repository';

@@ -1,7 +1,6 @@
-import { Result, ok } from '../../../shared-kernel';
+import { Clock, Result, ok } from '../../../shared-kernel';
 import { TenantId } from '../domain/ids';
 import { IamError } from '../domain/errors';
-import { Clock } from '../domain/ports/clock';
 import { RefreshTokenRepository } from '../domain/ports/refresh-token.repository';
 import { TokenService } from '../domain/ports/token.service';
 

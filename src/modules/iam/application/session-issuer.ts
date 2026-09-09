@@ -1,3 +1,4 @@
+import { Clock, IdGenerator } from '../../../shared-kernel';
 import {
   RefreshFamilyId,
   RefreshTokenId,
@@ -6,8 +7,6 @@ import {
 } from '../domain/ids';
 import { Role } from '../domain/role';
 import { RefreshToken } from '../domain/entities/refresh-token.entity';
-import { Clock } from '../domain/ports/clock';
-import { IdGenerator } from '../domain/ports/id-generator';
 import { RefreshTokenRepository } from '../domain/ports/refresh-token.repository';
 import { TokenService } from '../domain/ports/token.service';
 import { AuthTokens } from './auth-tokens';

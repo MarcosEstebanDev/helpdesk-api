@@ -1,4 +1,4 @@
-import { Result, err, ok } from '../../../shared-kernel';
+import { Clock, Result, err, ok } from '../../../shared-kernel';
 import { TenantId } from '../domain/ids';
 import {
   IamError,
@@ -6,7 +6,6 @@ import {
   RefreshTokenInvalidError,
   RefreshTokenReuseError,
 } from '../domain/errors';
-import { Clock } from '../domain/ports/clock';
 import { MembershipRepository } from '../domain/ports/membership.repository';
 import { RefreshTokenRepository } from '../domain/ports/refresh-token.repository';
 import { TokenService } from '../domain/ports/token.service';

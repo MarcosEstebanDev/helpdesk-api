@@ -5,3 +5,6 @@ export * from './domain/aggregate-root';
 export * from './domain/value-object';
 export * from './domain/domain-event';
 export * from './domain/branded-id';
+export * from './ports/clock';
+export * from './ports/id-generator';
+export * from './ports/transaction-manager';

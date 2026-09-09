@@ -1,4 +1,6 @@
 import { Global, Module } from '@nestjs/common';
+import { TRANSACTION_MANAGER } from '../../shared-kernel';
+import { PrismaTransactionManager } from './prisma-transaction.manager';
 import { PrismaService } from './prisma.service';
 
 /**
@@ -8,7 +10,11 @@ import { PrismaService } from './prisma.service';
  */
 @Global()
 @Module({
-  providers: [PrismaService],
-  exports: [PrismaService],
+  providers: [
+    PrismaService,
+    PrismaTransactionManager,
+    { provide: TRANSACTION_MANAGER, useExisting: PrismaTransactionManager },
+  ],
+  exports: [PrismaService, TRANSACTION_MANAGER],
 })
 export class PrismaModule {}

@@ -5,8 +5,7 @@ import { Logout } from './application/logout.use-case';
 import { RefreshTokens } from './application/refresh-tokens.use-case';
 import { RegisterOrganization } from './application/register-organization.use-case';
 import { SessionIssuer } from './application/session-issuer';
-import { CLOCK, Clock } from './domain/ports/clock';
-import { ID_GENERATOR, IdGenerator } from './domain/ports/id-generator';
+import { CLOCK, Clock, ID_GENERATOR, IdGenerator } from '../../shared-kernel';
 import {
   MEMBERSHIP_REPOSITORY,
   MembershipRepository,
@@ -39,8 +38,6 @@ import { PrismaMembershipRepository } from './infrastructure/persistence/prisma-
 import { PrismaOrganizationRepository } from './infrastructure/persistence/prisma-organization.repository';
 import { PrismaRefreshTokenRepository } from './infrastructure/persistence/prisma-refresh-token.repository';
 import { PrismaUserRepository } from './infrastructure/persistence/prisma-user.repository';
-import { SystemClock } from './infrastructure/system/system-clock';
-import { UuidGenerator } from './infrastructure/system/uuid-generator';
 
 /**
  * Composición del bounded context IAM.
@@ -69,12 +66,8 @@ import { UuidGenerator } from './infrastructure/system/uuid-generator';
     TenantContextMiddleware,
     JwtAuthGuard,
     RolesGuard,
-    SystemClock,
-    UuidGenerator,
 
-    // --- Puertos -> adapters ---
-    { provide: CLOCK, useExisting: SystemClock },
-    { provide: ID_GENERATOR, useExisting: UuidGenerator },
+    // --- Puertos -> adapters (CLOCK e ID_GENERATOR los da SystemModule) ---
     { provide: PASSWORD_HASHER, useExisting: Argon2PasswordHasher },
     { provide: TOKEN_SERVICE, useExisting: JwtTokenService },
     {
