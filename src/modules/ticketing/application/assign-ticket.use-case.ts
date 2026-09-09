@@ -15,6 +15,7 @@ import { TenantId, TicketId, UserId } from '../domain/ids';
 import { MemberDirectory } from '../domain/ports/member.directory';
 import { TicketRepository } from '../domain/ports/ticket.repository';
 import { AuditRecorder } from './audit-recorder';
+import { EventRecorder } from './event-recorder';
 import { runTransactional } from './transactional';
 
 export interface AssignTicketInput {
@@ -40,6 +41,7 @@ export class AssignTicket {
     private readonly tickets: TicketRepository,
     private readonly members: MemberDirectory,
     private readonly audit: AuditRecorder,
+    private readonly events: EventRecorder,
     private readonly clock: Clock,
   ) {}
 
@@ -86,6 +88,7 @@ export class AssignTicket {
         metadata: { assigneeId: input.assigneeId },
         now,
       });
+      await this.events.record(ticket);
 
       return ok(ticket);
     });

@@ -1,4 +1,5 @@
 import { AuditRecorder } from './audit-recorder';
+import { EventRecorder } from './event-recorder';
 import { CreateTicket } from './create-ticket.use-case';
 import {
   ACTOR,
@@ -6,6 +7,7 @@ import {
   TENANT,
   fakeAuditLogRepository,
   fakeNumberGenerator,
+  fakeOutbox,
   fakeTicketRepository,
   fakeTransactions,
   fixedClock,
@@ -19,17 +21,19 @@ const buildSut = () => {
   const auditLogs = fakeAuditLogRepository();
   const ids = sequentialIds();
   const audit = new AuditRecorder(ids, auditLogs);
+  const outbox = fakeOutbox();
 
   const sut = new CreateTicket(
     transactions.manager,
     tickets,
     numbers,
     audit,
+    new EventRecorder(ids, outbox),
     ids,
     fixedClock(),
   );
 
-  return { sut, transactions, tickets, numbers, auditLogs };
+  return { sut, transactions, tickets, numbers, auditLogs, outbox };
 };
 
 const entrada = (overrides: Partial<{ subject: string }> = {}) => ({
@@ -93,6 +97,24 @@ describe('CreateTicket', () => {
     if (segundo.isOk()) expect(segundo.value.number).toBe(2);
   });
 
+  it('deja el evento en el outbox, dentro de la misma transacción', async () => {
+    const { sut, transactions, outbox } = buildSut();
+
+    const result = await sut.execute(entrada());
+
+    expect(transactions.commits).toBe(1);
+    expect(outbox.records).toHaveLength(1);
+
+    const evento = outbox.records[0];
+    expect(evento.eventName).toBe('ticket.created');
+    expect(evento.tenantId).toBe(TENANT);
+    expect(evento.version).toBe(1);
+    expect(evento.id).not.toBe(evento.aggregateId); // id de MENSAJE, no del ticket
+    if (result.isOk()) {
+      expect(evento.aggregateId).toBe(result.value.id);
+    }
+  });
+
   describe('cuando la validación del dominio falla', () => {
     it('revierte la transacción para no dejar el número consumido', async () => {
       const { sut, transactions, numbers } = buildSut();
@@ -118,6 +140,16 @@ describe('CreateTicket', () => {
 
       expect(tickets.saved).toHaveLength(0);
       expect(auditLogs.entries).toHaveLength(0);
+    });
+
+    it('tampoco publica el evento', async () => {
+      // La garantía del outbox en su forma más pura: no puede quedar un mensaje
+      // anunciando la creación de un ticket que la transacción revirtió.
+      const { sut, outbox } = buildSut();
+
+      await sut.execute(entrada({ subject: '' }));
+
+      expect(outbox.records).toHaveLength(0);
     });
   });
 });

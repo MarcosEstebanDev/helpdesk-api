@@ -376,6 +376,65 @@ bloqueo de fila → bloques de numeración reservados por instancia, aceptando h
 
 ---
 
+## ADR-0018 — Eventos de integración "gordos" en un outbox transaccional
+
+**Contexto.** La fase 5 necesita reaccionar a lo que pasa en `ticketing` sin acoplar
+al caso de uso con quien reacciona. La tentación es publicar en la cola desde el
+propio caso de uso, pero eso rompe en los dos sentidos: si la transacción revierte
+después de publicar, queda un mensaje anunciando algo que nunca ocurrió; y si el
+proceso muere entre el commit y el publish, el evento se pierde sin dejar rastro.
+Son dos sistemas (Postgres y Redis) sin transacción común.
+
+**Decisión.** Tres piezas.
+
+1. **El agregado emite.** `Ticket` extiende `AggregateRoot<TicketId, TicketingEvent>` y
+   registra `ticket.created`, `ticket.assigned`, `ticket.unassigned`,
+   `ticket.status_changed` y `comment.added` en los mismos métodos que aplican el
+   cambio. El segundo parámetro de tipo acota qué puede emitir, así que
+   `pullDomainEvents()` sale tipado y añadir un evento sin declararlo no compila.
+2. **Se escriben en `outbox_messages` dentro de la transacción del cambio**
+   (ADR-0016), vía `EventRecorder` + el puerto `OutboxWriter`. Un solo commit decide
+   si existen las dos cosas o ninguna.
+3. **Eventos "gordos" y versionados.** El `payload` lleva el estado relevante EN EL
+   MOMENTO del evento, y `version` versiona su forma.
+
+**Alternativas descartadas.**
+- *Publicar en la cola desde el caso de uso.* Es el fallo que el patrón existe para
+  evitar: no hay transacción que abarque Postgres y Redis.
+- *Eventos "finos" (solo ids).* Filas más pequeñas y sin duplicar datos, pero el
+  consumidor tendría que releer el ticket y vería el estado ACTUAL, no el del momento
+  del evento — reaccionaría a algo que ya no es cierto. Además le obligaría a abrir
+  contexto de tenant solo para leer.
+- *Emitir los eventos desde el caso de uso.* El ticket creado desde el email entrante
+  o movido por el motor de SLA no pasa por el mismo caso de uso; la regla se
+  duplicaría y algún día divergiría. Es el mismo razonamiento del ADR-0015.
+- *Publicar los eventos desde el repositorio* al guardar. Atómico, pero mete
+  orquestación en un adapter y esconde en un `save()` un efecto que no se ve.
+
+**Consecuencias.** (+) Ningún cambio se queda sin su evento y ningún evento anuncia un
+cambio revertido; lo garantiza el motor, no la disciplina. (+) El consumidor no
+depende del esquema de la base de datos: puede reaccionar aunque el ticket haya
+cambiado o se haya borrado. (+) `tenantId` viaja en el evento, que es lo único que
+permite a un worker —sin JWT— reabrir el contexto de RLS. (−) El payload duplica
+datos que también están en `tickets`: si el evento se diseñó mal, corregirlo obliga a
+subir `version` y a mantener dos formas vivas mientras haya consumidores viejos. (−)
+La tabla crece indefinidamente hasta que exista una política de purga de mensajes ya
+publicados. (−) La entrega es **at-least-once**: el mismo evento puede llegar dos
+veces, así que los consumidores tienen que ser idempotentes (ADR-0019).
+
+**Nota de seguridad (se resuelve en 5b).** `outbox_messages` tiene RLS como todo lo
+demás, así que el rol de aplicación solo ve el outbox de su tenant. Correcto para
+escribir, pero significa que el publicador —que corre fuera de toda request y por
+tanto sin `app.current_tenant`— no ve NI UNA fila: las policies son fail-closed y
+`FORCE RLS` aplica también al dueño de la tabla. Se resolverá con un rol dedicado y
+funciones `SECURITY DEFINER`, el mismo patrón de mínimo privilegio del ADR-0012.
+
+**Revisar si.** Los payloads empiezan a necesitar campos de otros agregados (→ señal
+de que falta un bounded context o una vista), o si el volumen del outbox obliga a
+particionar o a purgar de forma agresiva.
+
+---
+
 ## Seguridad (resumen)
 
 Defensa en profundidad: ver ADR-0003 (RLS) y los puntos en `CLAUDE.md`. Items clave:

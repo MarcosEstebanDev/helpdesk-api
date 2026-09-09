@@ -2,6 +2,7 @@ import { Ticket } from '../domain/entities/ticket.entity';
 import { TicketId } from '../domain/ids';
 import { AssignTicket } from './assign-ticket.use-case';
 import { AuditRecorder } from './audit-recorder';
+import { EventRecorder } from './event-recorder';
 import {
   ACTOR,
   AGENTE,
@@ -9,6 +10,7 @@ import {
   TENANT,
   fakeAuditLogRepository,
   fakeMemberDirectory,
+  fakeOutbox,
   fakeTicketRepository,
   fakeTransactions,
   fixedClock,
@@ -35,6 +37,10 @@ const nuevoTicket = (cerrado = false): Ticket => {
     created.value.changeStatus('RESOLVED', ANTES);
     created.value.changeStatus('CLOSED', ANTES);
   }
+  // Se descartan los eventos de la creación: un ticket que viene del
+  // repositorio se REHIDRATA, así que no arrastra el `ticket.created` que ya se
+  // publicó en su día. Sin esto el doble mentiría respecto a producción.
+  created.value.pullDomainEvents();
   return created.value;
 };
 
@@ -43,7 +49,9 @@ const buildSut = (semilla: Ticket) => {
   const tickets = fakeTicketRepository();
   tickets.seed(semilla);
   const auditLogs = fakeAuditLogRepository();
-  const audit = new AuditRecorder(sequentialIds(), auditLogs);
+  const ids = sequentialIds();
+  const audit = new AuditRecorder(ids, auditLogs);
+  const outbox = fakeOutbox();
 
   const sut = new AssignTicket(
     transactions.manager,
@@ -51,10 +59,11 @@ const buildSut = (semilla: Ticket) => {
     // Solo AGENTE pertenece a la organización; AJENO no.
     fakeMemberDirectory([AGENTE]),
     audit,
+    new EventRecorder(ids, outbox),
     fixedClock(),
   );
 
-  return { sut, transactions, tickets, auditLogs };
+  return { sut, transactions, tickets, auditLogs, outbox };
 };
 
 describe('AssignTicket', () => {

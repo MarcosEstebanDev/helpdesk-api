@@ -74,6 +74,8 @@ uso dependen de la interfaz, nunca del adapter.
   que el cambio. Es el andamio del outbox (ADR-0007).
 - ADR-0017 **Numeración visible** correlativa por tenant con `ticket_counters` y un
   UPSERT que bloquea la fila dentro de la transacción del ticket.
+- ADR-0018 **Eventos de integración "gordos" y versionados** escritos en
+  `outbox_messages` dentro de la transacción del cambio. Los emite el AGREGADO.
 
 ## Seguridad (modelo, "portfolio-pragmático")
 
@@ -100,7 +102,7 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 2. ✅ Auth + tenancy — **2a (Prisma + RLS), 2b (dominio + aplicación `iam`) y 2c (infraestructura + HTTP) CERRADAS**
 3. ✅ RBAC (`@MinRole` + `RolesGuard` global, jerarquía en el dominio)
 4. ✅ Tickets + Comentarios + AuditLog (máquina de estados, numeración por tenant)
-5. 🔄 Colas (outbox, routing job, DLQ, backoff)
+5. 🔄 Colas — **5a (outbox transaccional) CERRADA**; 5b (BullMQ, publicador, DLQ) pendiente
 6. ⬜ SLA engine (delayed jobs, breach, escalado)
 7. ⬜ Realtime (WebSocket gateway + cliente Next)
 8. ⬜ Observabilidad (Pino + OTel + health checks reales)
@@ -111,6 +113,43 @@ Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
 ## Estado actual (2026-09-09)
+
+**Fase 5a (outbox transaccional) — CERRADA.** Las 4 decisiones de la fase 5 se
+cerraron con OK del usuario: eventos gordos versionados, publicador por polling,
+idempotencia con tabla de procesados + jobId, y auto-asignación round-robin como
+primer job. 5a entrega solo la escritura; el publicador va en 5b porque sin cola no
+hay a dónde publicar.
+
+- **`AggregateRoot<Id, E>`** ahora acota los eventos que un agregado puede emitir
+  (por defecto `DomainEvent`, así que nada anterior cambia). `Ticket` es
+  `AggregateRoot<TicketId, TicketingEvent>`: `pullDomainEvents()` sale tipado y
+  emitir un evento no declarado no compila.
+- **Los eventos los emite el AGREGADO**, no el caso de uso: así el ticket creado
+  desde el email entrante (fase 5+) emitirá los mismos que el creado por HTTP.
+- **`registerComment(...)` en `Ticket`:** comentar es actividad SOBRE el ticket, así
+  que pasa por la raíz del agregado, actualiza `updatedAt` y emite `comment.added`.
+  El evento se ancla al TICKET, no al comentario.
+- **`EventRecorder`** (application) vuelca los eventos al outbox dentro de la
+  transacción ya abierta, igual que `AuditRecorder`. Puerto `OutboxWriter` en el
+  shared-kernel con SOLO `append`: leer y marcar es cosa del publicador, que tiene
+  otros privilegios.
+- **Migración `20260909180000_outbox`:** tabla `outbox_messages` con RLS ENABLE+FORCE
+  como todo lo demás. Cadena de 4 migraciones validada DESDE CERO contra una base de
+  datos desechable y `migrate diff` vacío.
+- **Verificado:** lint:ci limpio, **103/103 unit**, **59/59 e2e**, build OK.
+
+**Gotchas de 5a:**
+- Postgres trunca los identificadores a **63 caracteres**: si el nombre de un índice
+  en el SQL es más largo que el que Prisma espera, `migrate diff` marca drift para
+  siempre. Hay que escribir en la migración el nombre YA truncado.
+- Prisma **bloquea `migrate reset`** pidiendo consentimiento explícito del usuario.
+  Para validar la cadena desde cero sin destruir nada: crear una BD desechable,
+  `migrate deploy` contra ella, comprobar drift y borrarla.
+- El índice del outbox debería ser PARCIAL (`WHERE published_at IS NULL`), pero
+  Prisma no los modela y declararlo solo en SQL produciría drift permanente.
+- Los dobles que siembran un ticket con `Ticket.open()` arrastran su
+  `ticket.created` sin publicar. Hay que hacer `pullDomainEvents()` al sembrar, para
+  que el doble no mienta respecto a producción (donde el repo REHIDRATA, sin eventos).
 
 **Fase 4 (Tickets + AuditLog) — CERRADA.** Acá empieza el producto. Las cuatro
 decisiones que estaban abiertas se cerraron con OK del usuario: máquina de estados

@@ -2,11 +2,13 @@ import { Ticket } from '../domain/entities/ticket.entity';
 import { TicketId } from '../domain/ids';
 import { AuditRecorder } from './audit-recorder';
 import { ChangeTicketStatus } from './change-ticket-status.use-case';
+import { EventRecorder } from './event-recorder';
 import {
   ACTOR,
   AHORA,
   TENANT,
   fakeAuditLogRepository,
+  fakeOutbox,
   fakeTicketRepository,
   fakeTransactions,
   fixedClock,
@@ -32,6 +34,10 @@ const ticketEn = (...transiciones: Parameters<Ticket['changeStatus']>[0][]) => {
   for (const destino of transiciones) {
     created.value.changeStatus(destino, ANTES);
   }
+  // Se descartan los eventos de la creación: un ticket que viene del
+  // repositorio se REHIDRATA, así que no arrastra el `ticket.created` que ya se
+  // publicó en su día. Sin esto el doble mentiría respecto a producción.
+  created.value.pullDomainEvents();
   return created.value;
 };
 
@@ -40,16 +46,19 @@ const buildSut = (semilla: Ticket) => {
   const tickets = fakeTicketRepository();
   tickets.seed(semilla);
   const auditLogs = fakeAuditLogRepository();
-  const audit = new AuditRecorder(sequentialIds(), auditLogs);
+  const ids = sequentialIds();
+  const audit = new AuditRecorder(ids, auditLogs);
+  const outbox = fakeOutbox();
 
   const sut = new ChangeTicketStatus(
     transactions.manager,
     tickets,
     audit,
+    new EventRecorder(ids, outbox),
     fixedClock(),
   );
 
-  return { sut, transactions, tickets, auditLogs };
+  return { sut, transactions, tickets, auditLogs, outbox };
 };
 
 describe('ChangeTicketStatus', () => {
@@ -76,6 +85,38 @@ describe('ChangeTicketStatus', () => {
       to: 'IN_PROGRESS',
     });
     expect(auditLogs.entries[0].occurredAt).toBe(AHORA);
+  });
+
+  it('publica ticket.status_changed con el estado anterior y el nuevo', async () => {
+    const { sut, outbox } = buildSut(ticketEn());
+
+    await sut.execute({
+      tenantId: TENANT,
+      actorId: ACTOR,
+      ticketId: TICKET_ID,
+      status: 'IN_PROGRESS',
+    });
+
+    expect(outbox.records).toHaveLength(1);
+    expect(outbox.records[0].eventName).toBe('ticket.status_changed');
+    expect(outbox.records[0].payload).toEqual({
+      from: 'OPEN',
+      to: 'IN_PROGRESS',
+      assigneeId: null,
+    });
+  });
+
+  it('una transición rechazada no deja nada en el outbox', async () => {
+    const { sut, outbox } = buildSut(ticketEn());
+
+    await sut.execute({
+      tenantId: TENANT,
+      actorId: ACTOR,
+      ticketId: TICKET_ID,
+      status: 'CLOSED',
+    });
+
+    expect(outbox.records).toHaveLength(0);
   });
 
   it('rechaza una transición ilegal y revierte, sin guardar ni auditar', async () => {

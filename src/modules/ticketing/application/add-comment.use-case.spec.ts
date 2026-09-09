@@ -2,12 +2,14 @@ import { Ticket } from '../domain/entities/ticket.entity';
 import { TicketId } from '../domain/ids';
 import { AddComment } from './add-comment.use-case';
 import { AuditRecorder } from './audit-recorder';
+import { EventRecorder } from './event-recorder';
 import {
   ACTOR,
   AHORA,
   TENANT,
   fakeAuditLogRepository,
   fakeCommentRepository,
+  fakeOutbox,
   fakeTicketRepository,
   fakeTransactions,
   fixedClock,
@@ -34,6 +36,10 @@ const nuevoTicket = (cerrado = false): Ticket => {
     created.value.changeStatus('RESOLVED', ANTES);
     created.value.changeStatus('CLOSED', ANTES);
   }
+  // Se descartan los eventos de la creación: un ticket que viene del
+  // repositorio se REHIDRATA, así que no arrastra el `ticket.created` que ya se
+  // publicó en su día. Sin esto el doble mentiría respecto a producción.
+  created.value.pullDomainEvents();
   return created.value;
 };
 
@@ -45,17 +51,19 @@ const buildSut = (semilla: Ticket) => {
   const auditLogs = fakeAuditLogRepository();
   const ids = sequentialIds();
   const audit = new AuditRecorder(ids, auditLogs);
+  const outbox = fakeOutbox();
 
   const sut = new AddComment(
     transactions.manager,
     tickets,
     comments,
     audit,
+    new EventRecorder(ids, outbox),
     ids,
     fixedClock(),
   );
 
-  return { sut, transactions, comments, auditLogs };
+  return { sut, transactions, comments, auditLogs, outbox };
 };
 
 describe('AddComment', () => {
@@ -82,6 +90,30 @@ describe('AddComment', () => {
     // ticket incluye su conversación sin tener que cruzar dos consultas.
     expect(auditLogs.entries[0].entityId).toBe(TICKET_ID);
     expect(transactions.commits).toBe(1);
+  });
+
+  it('publica comment.added desde la raíz del agregado', async () => {
+    const { sut, outbox } = buildSut(nuevoTicket());
+
+    const result = await sut.execute({
+      tenantId: TENANT,
+      actorId: ACTOR,
+      ticketId: TICKET_ID,
+      body: 'Ya lo estamos mirando.',
+    });
+
+    expect(outbox.records).toHaveLength(1);
+    const evento = outbox.records[0];
+    expect(evento.eventName).toBe('comment.added');
+    // El agregado es el TICKET, no el comentario: así los eventos de un ticket
+    // llegan ordenados por un mismo `aggregateId`.
+    expect(evento.aggregateId).toBe(TICKET_ID);
+    if (result.isOk()) {
+      expect(evento.payload).toEqual({
+        commentId: result.value.id,
+        authorId: ACTOR,
+      });
+    }
   });
 
   it('rechaza un comentario vacío y revierte', async () => {

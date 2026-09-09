@@ -45,6 +45,7 @@ model Organization {
   comments      Comment[]
   auditLogs     AuditLog[]
   ticketCounter TicketCounter?
+  outbox        OutboxMessage[]
 
   @@map("organizations")
 }
@@ -227,4 +228,41 @@ model TicketCounter {
   organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@map("ticket_counters")
+}
+
+/// Outbox transaccional (ADR-0007 / ADR-0018). Cada fila es un evento de
+/// integración escrito en la MISMA transacción que el cambio que lo produjo, de
+/// modo que no puede existir un cambio cuyo evento se perdió ni un evento que
+/// anuncie algo que se revirtió.
+///
+/// `payload` guarda el estado relevante EN EL MOMENTO del evento (eventos
+/// "gordos") y `version` versiona su forma: un consumidor que reciba una versión
+/// que no conoce debe poder rechazarla en vez de malinterpretarla.
+///
+/// `attempts` y `last_error` los usa el publicador de la fase 5b para no
+/// reintentar en bucle un mensaje envenenado.
+model OutboxMessage {
+  id            String    @id @db.Uuid
+  tenantId      String    @map("tenant_id") @db.Uuid
+  aggregateType String    @map("aggregate_type")
+  aggregateId   String    @map("aggregate_id") @db.Uuid
+  eventName     String    @map("event_name")
+  version       Int
+  payload       Json
+  occurredAt    DateTime  @map("occurred_at")
+  publishedAt   DateTime? @map("published_at")
+  attempts      Int       @default(0)
+  lastError     String?   @map("last_error")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Consulta del publicador: pendientes, más antiguos primero. Sería mejor un
+  // índice PARCIAL (`WHERE published_at IS NULL`), que se mantendría pequeño
+  // porque las filas salen de él al publicarse; se usa uno normal porque Prisma
+  // no los modela y declararlo solo en el SQL haría que `migrate diff` viera
+  // drift permanente contra el schema.
+  @@index([publishedAt, occurredAt])
+  // Historial de eventos de un agregado concreto.
+  @@index([tenantId, aggregateType, aggregateId, occurredAt])
+  @@map("outbox_messages")
 }

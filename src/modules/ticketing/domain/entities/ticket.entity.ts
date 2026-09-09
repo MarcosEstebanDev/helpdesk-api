@@ -6,7 +6,15 @@ import {
   TicketClosedError,
   TicketingError,
 } from '../errors';
-import { TenantId, TicketId, UserId } from '../ids';
+import {
+  CommentAdded,
+  TicketAssigned,
+  TicketCreated,
+  TicketStatusChanged,
+  TicketUnassigned,
+  TicketingEvent,
+} from '../events/ticketing.events';
+import { CommentId, TenantId, TicketId, UserId } from '../ids';
 import {
   TicketPriority,
   TicketStatus,
@@ -40,8 +48,14 @@ interface TicketProps {
  * decide si el cambio es legal, y el caso de uso solo orquesta. Esa es la razón
  * de que no haya setters públicos — con un `ticket.status = 'CLOSED'` la máquina
  * de estados sería decorativa.
+ *
+ * Además REGISTRA lo que le va pasando como eventos de integración (ADR-0018).
+ * Los emite el agregado y no el caso de uso: así el ticket creado desde el email
+ * entrante emite exactamente los mismos eventos que el creado por HTTP, sin que
+ * nadie tenga que acordarse. El segundo parámetro de tipo los acota a
+ * `TicketingEvent`, de modo que `pullDomainEvents()` sale ya tipado.
  */
-export class Ticket extends AggregateRoot<TicketId> {
+export class Ticket extends AggregateRoot<TicketId, TicketingEvent> {
   private constructor(
     id: TicketId,
     private readonly props: TicketProps,
@@ -122,6 +136,13 @@ export class Ticket extends AggregateRoot<TicketId> {
     this.props.status = next;
     this.applyLifecycleTimestamps(next, now);
     this.touch(now);
+    this.addDomainEvent(
+      new TicketStatusChanged(this.id, this.props.tenantId, now, {
+        from: current,
+        to: next,
+        assigneeId: this.props.assigneeId,
+      }),
+    );
     return ok(undefined);
   }
 
@@ -136,6 +157,12 @@ export class Ticket extends AggregateRoot<TicketId> {
     }
     this.props.assigneeId = assigneeId;
     this.touch(now);
+    this.addDomainEvent(
+      new TicketAssigned(this.id, this.props.tenantId, now, {
+        assigneeId,
+        status: this.props.status,
+      }),
+    );
     return ok(undefined);
   }
 
@@ -145,12 +172,44 @@ export class Ticket extends AggregateRoot<TicketId> {
     }
     this.props.assigneeId = null;
     this.touch(now);
+    this.addDomainEvent(
+      new TicketUnassigned(this.id, this.props.tenantId, now, {
+        status: this.props.status,
+      }),
+    );
     return ok(undefined);
   }
 
   /** ¿Admite todavía comentarios? Un ticket cerrado no. */
   acceptsComments(): boolean {
     return !isTerminal(this.props.status);
+  }
+
+  /**
+   * Registra en el agregado que se ha comentado el ticket.
+   *
+   * El comentario es una entidad aparte —una conversación crece sin límite y no
+   * tiene sentido cargarla entera—, pero comentar ES actividad sobre el ticket:
+   * por eso pasa por aquí, actualiza `updatedAt` (una bandeja ordenada por
+   * actividad reciente lo necesita) y emite el evento desde la raíz del agregado,
+   * como todos los demás.
+   */
+  registerComment(
+    commentId: CommentId,
+    authorId: UserId,
+    now: Date,
+  ): Result<void, TicketingError> {
+    if (!this.acceptsComments()) {
+      return err(new TicketClosedError());
+    }
+    this.touch(now);
+    this.addDomainEvent(
+      new CommentAdded(this.id, this.props.tenantId, now, {
+        commentId,
+        authorId,
+      }),
+    );
+    return ok(undefined);
   }
 
   /**
@@ -210,22 +269,32 @@ export class Ticket extends AggregateRoot<TicketId> {
       return err(new InvalidTicketDescriptionError());
     }
 
-    return ok(
-      new Ticket(input.id, {
-        tenantId: input.tenantId,
+    const ticket = new Ticket(input.id, {
+      tenantId: input.tenantId,
+      number: input.number,
+      subject,
+      description,
+      status: 'OPEN',
+      priority: input.priority,
+      requesterId: input.requesterId,
+      assigneeId: null,
+      createdAt: input.now,
+      updatedAt: input.now,
+      resolvedAt: null,
+      closedAt: null,
+    });
+
+    ticket.addDomainEvent(
+      new TicketCreated(ticket.id, input.tenantId, input.now, {
         number: input.number,
         subject,
-        description,
-        status: 'OPEN',
         priority: input.priority,
+        status: 'OPEN',
         requesterId: input.requesterId,
-        assigneeId: null,
-        createdAt: input.now,
-        updatedAt: input.now,
-        resolvedAt: null,
-        closedAt: null,
       }),
     );
+
+    return ok(ticket);
   }
 
   static rehydrate(input: { id: TicketId } & TicketProps): Ticket {

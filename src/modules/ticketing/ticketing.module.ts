@@ -4,6 +4,8 @@ import {
   Clock,
   ID_GENERATOR,
   IdGenerator,
+  OUTBOX_WRITER,
+  OutboxWriter,
   TRANSACTION_MANAGER,
   TransactionManager,
 } from '../../shared-kernel';
@@ -12,6 +14,7 @@ import { AddComment } from './application/add-comment.use-case';
 import { AssignTicket } from './application/assign-ticket.use-case';
 import { AuditRecorder } from './application/audit-recorder';
 import { ChangeTicketStatus } from './application/change-ticket-status.use-case';
+import { EventRecorder } from './application/event-recorder';
 import { CreateTicket } from './application/create-ticket.use-case';
 import {
   AUDIT_LOG_REPOSITORY,
@@ -88,12 +91,19 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
       ): AuditRecorder => new AuditRecorder(ids, auditLogs),
     },
     {
+      provide: EventRecorder,
+      inject: [ID_GENERATOR, OUTBOX_WRITER],
+      useFactory: (ids: IdGenerator, outbox: OutboxWriter): EventRecorder =>
+        new EventRecorder(ids, outbox),
+    },
+    {
       provide: CreateTicket,
       inject: [
         TRANSACTION_MANAGER,
         TICKET_REPOSITORY,
         TICKET_NUMBER_GENERATOR,
         AuditRecorder,
+        EventRecorder,
         ID_GENERATOR,
         CLOCK,
       ],
@@ -102,10 +112,19 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
         tickets: TicketRepository,
         numbers: TicketNumberGenerator,
         audit: AuditRecorder,
+        events: EventRecorder,
         ids: IdGenerator,
         clock: Clock,
       ): CreateTicket =>
-        new CreateTicket(transactions, tickets, numbers, audit, ids, clock),
+        new CreateTicket(
+          transactions,
+          tickets,
+          numbers,
+          audit,
+          events,
+          ids,
+          clock,
+        ),
     },
     {
       provide: AssignTicket,
@@ -114,6 +133,7 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
         TICKET_REPOSITORY,
         MEMBER_DIRECTORY,
         AuditRecorder,
+        EventRecorder,
         CLOCK,
       ],
       useFactory: (
@@ -121,20 +141,28 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
         tickets: TicketRepository,
         members: MemberDirectory,
         audit: AuditRecorder,
+        events: EventRecorder,
         clock: Clock,
       ): AssignTicket =>
-        new AssignTicket(transactions, tickets, members, audit, clock),
+        new AssignTicket(transactions, tickets, members, audit, events, clock),
     },
     {
       provide: ChangeTicketStatus,
-      inject: [TRANSACTION_MANAGER, TICKET_REPOSITORY, AuditRecorder, CLOCK],
+      inject: [
+        TRANSACTION_MANAGER,
+        TICKET_REPOSITORY,
+        AuditRecorder,
+        EventRecorder,
+        CLOCK,
+      ],
       useFactory: (
         transactions: TransactionManager,
         tickets: TicketRepository,
         audit: AuditRecorder,
+        events: EventRecorder,
         clock: Clock,
       ): ChangeTicketStatus =>
-        new ChangeTicketStatus(transactions, tickets, audit, clock),
+        new ChangeTicketStatus(transactions, tickets, audit, events, clock),
     },
     {
       provide: AddComment,
@@ -143,6 +171,7 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
         TICKET_REPOSITORY,
         COMMENT_REPOSITORY,
         AuditRecorder,
+        EventRecorder,
         ID_GENERATOR,
         CLOCK,
       ],
@@ -151,10 +180,19 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
         tickets: TicketRepository,
         comments: CommentRepository,
         audit: AuditRecorder,
+        events: EventRecorder,
         ids: IdGenerator,
         clock: Clock,
       ): AddComment =>
-        new AddComment(transactions, tickets, comments, audit, ids, clock),
+        new AddComment(
+          transactions,
+          tickets,
+          comments,
+          audit,
+          events,
+          ids,
+          clock,
+        ),
     },
   ],
 })

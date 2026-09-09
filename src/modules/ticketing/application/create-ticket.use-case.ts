@@ -12,6 +12,7 @@ import { TicketNumberGenerator } from '../domain/ports/ticket-number.generator';
 import { TicketRepository } from '../domain/ports/ticket.repository';
 import { TicketPriority } from '../domain/ticket-status';
 import { AuditRecorder } from './audit-recorder';
+import { EventRecorder } from './event-recorder';
 import { runTransactional } from './transactional';
 
 export interface CreateTicketInput {
@@ -36,6 +37,7 @@ export class CreateTicket {
     private readonly tickets: TicketRepository,
     private readonly numbers: TicketNumberGenerator,
     private readonly audit: AuditRecorder,
+    private readonly events: EventRecorder,
     private readonly ids: IdGenerator,
     private readonly clock: Clock,
   ) {}
@@ -75,6 +77,9 @@ export class CreateTicket {
         metadata: { number: ticket.number, priority: ticket.priority },
         now,
       });
+      // En la MISMA transacción que el ticket: si esto revierte, no queda un
+      // evento anunciando un ticket que nunca existió (ADR-0007 / ADR-0018).
+      await this.events.record(ticket);
 
       return ok(ticket);
     });

@@ -11,6 +11,7 @@ import { TenantId, TicketId, UserId } from '../domain/ids';
 import { TicketRepository } from '../domain/ports/ticket.repository';
 import { TicketStatus } from '../domain/ticket-status';
 import { AuditRecorder } from './audit-recorder';
+import { EventRecorder } from './event-recorder';
 import { runTransactional } from './transactional';
 
 export interface ChangeTicketStatusInput {
@@ -32,6 +33,7 @@ export class ChangeTicketStatus {
     private readonly transactions: TransactionManager,
     private readonly tickets: TicketRepository,
     private readonly audit: AuditRecorder,
+    private readonly events: EventRecorder,
     private readonly clock: Clock,
   ) {}
 
@@ -71,6 +73,7 @@ export class ChangeTicketStatus {
         metadata: { from, to: input.status },
         now,
       });
+      await this.events.record(ticket);
 
       return ok(ticket);
     });

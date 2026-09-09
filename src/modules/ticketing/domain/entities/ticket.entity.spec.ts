@@ -177,6 +177,103 @@ describe('Ticket', () => {
     });
   });
 
+  describe('eventos de integración', () => {
+    it('abrir un ticket registra ticket.created con su estado inicial', () => {
+      const ticket = abrirOk();
+
+      const eventos = ticket.pullDomainEvents();
+
+      expect(eventos).toHaveLength(1);
+      expect(eventos[0].eventName).toBe('ticket.created');
+      expect(eventos[0].tenantId).toBe(TENANT);
+      expect(eventos[0].aggregateId).toBe(ticket.id);
+      expect(eventos[0].payload).toEqual({
+        number: 1,
+        subject: 'No puedo entrar',
+        priority: 'NORMAL',
+        status: 'OPEN',
+        requesterId: REQUESTER,
+      });
+    });
+
+    it('pullDomainEvents vacía la lista: no se publica dos veces', () => {
+      const ticket = abrirOk();
+
+      expect(ticket.pullDomainEvents()).toHaveLength(1);
+      expect(ticket.pullDomainEvents()).toHaveLength(0);
+    });
+
+    it('el evento de cambio de estado lleva de dónde a dónde', () => {
+      const ticket = abrirOk();
+      ticket.pullDomainEvents(); // se descarta el de creación
+
+      ticket.changeStatus('IN_PROGRESS', T1);
+
+      const [evento] = ticket.pullDomainEvents();
+      expect(evento.eventName).toBe('ticket.status_changed');
+      expect(evento.payload).toEqual({
+        from: 'OPEN',
+        to: 'IN_PROGRESS',
+        assigneeId: null,
+      });
+      expect(evento.occurredAt).toBe(T1);
+    });
+
+    it('una transición rechazada no registra nada', () => {
+      const ticket = abrirOk();
+      ticket.pullDomainEvents();
+
+      ticket.changeStatus('CLOSED', T1);
+
+      expect(ticket.pullDomainEvents()).toHaveLength(0);
+    });
+
+    it('pedir el estado actual tampoco registra nada', () => {
+      const ticket = abrirOk();
+      ticket.pullDomainEvents();
+
+      ticket.changeStatus('OPEN', T1);
+
+      expect(ticket.pullDomainEvents()).toHaveLength(0);
+    });
+
+    it('asignar y desasignar registran eventos distintos', () => {
+      const ticket = abrirOk();
+      ticket.pullDomainEvents();
+
+      ticket.assignTo(AGENTE, T1);
+      expect(ticket.pullDomainEvents()[0].eventName).toBe('ticket.assigned');
+
+      ticket.unassign(T2);
+      expect(ticket.pullDomainEvents()[0].eventName).toBe('ticket.unassigned');
+    });
+
+    it('rehidratar NO registra eventos', () => {
+      // Cargar un ticket de la base de datos no es un hecho nuevo del dominio;
+      // si emitiera eventos, cada lectura republicaría el pasado.
+      const ticket = abrirOk();
+      ticket.pullDomainEvents();
+
+      const recargado = Ticket.rehydrate({
+        id: ticket.id,
+        tenantId: ticket.tenantId,
+        number: ticket.number,
+        subject: ticket.subject,
+        description: ticket.description,
+        status: ticket.status,
+        priority: ticket.priority,
+        requesterId: ticket.requesterId,
+        assigneeId: ticket.assigneeId,
+        createdAt: ticket.createdAt,
+        updatedAt: ticket.updatedAt,
+        resolvedAt: ticket.resolvedAt,
+        closedAt: ticket.closedAt,
+      });
+
+      expect(recargado.pullDomainEvents()).toHaveLength(0);
+    });
+  });
+
   describe('comentarios', () => {
     it('los admite mientras no esté cerrado', () => {
       const ticket = abrirOk();

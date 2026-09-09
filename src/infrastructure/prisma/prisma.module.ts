@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
-import { TRANSACTION_MANAGER } from '../../shared-kernel';
+import { OUTBOX_WRITER, TRANSACTION_MANAGER } from '../../shared-kernel';
+import { PrismaOutboxWriter } from './prisma-outbox.writer';
 import { PrismaTransactionManager } from './prisma-transaction.manager';
 import { PrismaService } from './prisma.service';
 
@@ -13,8 +14,10 @@ import { PrismaService } from './prisma.service';
   providers: [
     PrismaService,
     PrismaTransactionManager,
+    PrismaOutboxWriter,
     { provide: TRANSACTION_MANAGER, useExisting: PrismaTransactionManager },
+    { provide: OUTBOX_WRITER, useExisting: PrismaOutboxWriter },
   ],
-  exports: [PrismaService, TRANSACTION_MANAGER],
+  exports: [PrismaService, TRANSACTION_MANAGER, OUTBOX_WRITER],
 })
 export class PrismaModule {}

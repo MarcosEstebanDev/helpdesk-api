@@ -1,4 +1,10 @@
-import { Clock, IdGenerator, TransactionManager } from '../../../shared-kernel';
+import {
+  Clock,
+  IdGenerator,
+  OutboxRecord,
+  OutboxWriter,
+  TransactionManager,
+} from '../../../shared-kernel';
 import { AuditLog } from '../domain/entities/audit-log.entity';
 import { Comment } from '../domain/entities/comment.entity';
 import { Ticket } from '../domain/entities/ticket.entity';
@@ -152,3 +158,19 @@ export const fakeMemberDirectory = (
 ): MemberDirectory => ({
   isMember: (_tenantId, userId) => Promise.resolve(members.includes(userId)),
 });
+
+export interface FakeOutbox extends OutboxWriter {
+  readonly records: OutboxRecord[];
+}
+
+/** Outbox en memoria: permite afirmar QUÉ eventos se habrían publicado. */
+export const fakeOutbox = (): FakeOutbox => {
+  const records: OutboxRecord[] = [];
+  return {
+    records,
+    append: (batch) => {
+      records.push(...batch);
+      return Promise.resolve();
+    },
+  };
+};
