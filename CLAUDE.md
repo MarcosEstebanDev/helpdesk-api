@@ -37,8 +37,10 @@ src/
 │  ├─ domain/            # entidades, value objects, eventos de dominio, PORTS (interfaces)
 │  ├─ application/       # casos de uso (commands/queries) — depende solo de domain
 │  └─ infrastructure/    # ADAPTERS: repos Prisma, controllers HTTP, mappers
-├─ shared-kernel/        # Entity, AggregateRoot, ValueObject, DomainEvent, Result, branded-id
-├─ infrastructure/       # cross-cutting: config (Zod), y luego Prisma, logger, tenant-context
+├─ shared-kernel/
+│  ├─ domain/            # Entity, AggregateRoot, ValueObject, DomainEvent, Result, branded-id
+│  └─ ports/             # Clock, IdGenerator, TransactionManager (genéricos, sin dueño)
+├─ infrastructure/       # cross-cutting: config (Zod), Prisma (+ tx manager), system, tenant-context
 └─ main.ts               # bootstrap + ValidationPipe + Swagger (OpenAPI)
 ```
 
@@ -65,6 +67,13 @@ uso dependen de la interfaz, nunca del adapter.
   almacenamiento en memoria (revisar al escalar a varias instancias).
 - ADR-0014 **Autorización por jerarquía** ADMIN > AGENT > VIEWER con `@MinRole(...)`
   (rango mínimo), no permisos granulares. El orden vive en el dominio.
+- ADR-0015 **Ciclo de vida del ticket** como máquina de estados con la tabla de
+  transiciones en el dominio; `CLOSED` es terminal y los timestamps se derivan.
+- ADR-0016 **Unidad de trabajo explícita**: puerto `TransactionManager` +
+  `AsyncLocalStorage`, para que el `AuditLog` se escriba en la MISMA transacción
+  que el cambio. Es el andamio del outbox (ADR-0007).
+- ADR-0017 **Numeración visible** correlativa por tenant con `ticket_counters` y un
+  UPSERT que bloquea la fila dentro de la transacción del ticket.
 
 ## Seguridad (modelo, "portfolio-pragmático")
 
@@ -90,8 +99,8 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 1. ✅ Scaffold + docker-compose + CI mínimo
 2. ✅ Auth + tenancy — **2a (Prisma + RLS), 2b (dominio + aplicación `iam`) y 2c (infraestructura + HTTP) CERRADAS**
 3. ✅ RBAC (`@MinRole` + `RolesGuard` global, jerarquía en el dominio)
-4. 🔄 Tickets CRUD + AuditLog
-5. ⬜ Colas (routing job, DLQ, backoff)
+4. ✅ Tickets + Comentarios + AuditLog (máquina de estados, numeración por tenant)
+5. 🔄 Colas (outbox, routing job, DLQ, backoff)
 6. ⬜ SLA engine (delayed jobs, breach, escalado)
 7. ⬜ Realtime (WebSocket gateway + cliente Next)
 8. ⬜ Observabilidad (Pino + OTel + health checks reales)
@@ -101,7 +110,59 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
-## Estado actual (2026-09-08)
+## Estado actual (2026-09-09)
+
+**Fase 4 (Tickets + AuditLog) — CERRADA.** Acá empieza el producto. Las cuatro
+decisiones que estaban abiertas se cerraron con OK del usuario: máquina de estados
+estricta, unidad de trabajo con `TransactionManager` + ALS, numeración por tenant
+con bloqueo de fila, y alcance Ticket + AuditLog + Comment.
+
+- **Refactor previo (importante).** `Clock` e `IdGenerator` estaban en
+  `iam/domain/ports/`, pero no son conceptos de identidad: si `ticketing` los
+  importaba de ahí, dos bounded contexts quedaban acoplados. Se movieron a
+  `shared-kernel/ports/` (tokens `shared.*`) y sus adapters a
+  `src/infrastructure/system/`, expuestos por un `SystemModule` global.
+- **`TransactionManager` (ADR-0016).** Puerto en el shared-kernel; adapter Prisma
+  que abre `withTenant` y publica el tx client en `AsyncLocalStorage`. Los repos
+  extienden `PrismaRepository` y usan `runInTenant`, que se engancha a la
+  transacción viva o abre una propia. Es **reentrante**: anidar `withTenant` pediría
+  una segunda conexión del pool, rompería la atomicidad y podría hacer deadlock.
+- **`runTransactional`** (`ticketing/application/transactional.ts`): convierte un
+  `Result` de error en ROLLBACK. Sin él, un `err` haría COMMIT —nadie lanza— y el
+  número de ticket ya reservado quedaría consumido.
+- **Dominio `ticketing`:** `ticket-status.ts` con las transiciones como DATOS,
+  entidad `Ticket` (sin setters; `changeStatus` es el único camino y los timestamps
+  del ciclo de vida se derivan), `Comment` inmutable, `AuditLog` con acciones
+  cerradas, 5 puertos (Ticket/Comment/AuditLog repos, `TicketNumberGenerator`,
+  `MemberDirectory`).
+- **`MemberDirectory`:** ticketing NO importa los repos de `iam`; declara el mínimo
+  que necesita (¿este usuario es de este tenant?) y el acoplamiento queda en un solo
+  adapter.
+- **Numeración (ADR-0017):** `ticket_counters`, una fila por tenant, UPSERT con
+  `ON CONFLICT DO UPDATE ... RETURNING next_number - 1` dentro de la transacción del
+  ticket. Crea la fila sola, toma el bloqueo exclusivo en un único viaje a la BD.
+- **HTTP:** `POST /tickets`, `GET /tickets` (paginado por CURSOR, no offset),
+  `GET /tickets/:id`, `GET /tickets/:id/history`, `POST|DELETE /tickets/:id/assign`,
+  `PATCH /tickets/:id/status`, `POST /tickets/:id/comments`. `JwtAuthGuard` a nivel
+  de CLASE. Permisos: VIEWER lee/abre/comenta, AGENT opera la cola.
+- **Lectura (CQRS-lite, ADR-0008):** `TicketReadModel` en `infrastructure/`, inyectado
+  directo en el controller. En `application/` rompería la regla de dependencias.
+- **Migración `20260909120000_ticketing`:** 4 tablas + 2 enums, RLS ENABLE+FORCE y
+  policies fail-closed idénticas al resto, índices con prefijo `tenant_id`.
+  `prisma migrate diff` contra el schema devuelve vacío (sin drift).
+- **Verificado:** `lint:ci` limpio, **91/91 unit**, **53/53 e2e** contra Postgres real,
+  `build` OK, migración aplicada desde cero.
+
+**Gotchas resueltos en la fase 4:**
+- Un `Result.err` devuelto desde dentro de una transacción hace **COMMIT**: para la BD
+  no ha pasado nada malo. De ahí `runTransactional`.
+- Cerrar un ticket NO debe borrar `resolvedAt` (la fase 6 lo necesita para el SLA);
+  reabrir sí lo limpia. Los timestamps se derivan en un `switch` sobre el destino.
+- Con `emitDecoratorMetadata` + `isolatedModules`, un tipo usado en una propiedad
+  DECORADA debe importarse con `import type` (mismo origen que el gotcha de argon2).
+- Los dobles de prueba compartidos van en `*.test-doubles.ts`, excluido en
+  `tsconfig.build.json`: un `*.spec.ts` sin `it()` haría fallar a Jest.
+- En supertest, un helper que deba encadenar `.expect(...)` **no** puede ser `async`.
 
 **Fase 3 (RBAC) — CERRADA.**
 - `domain/role.ts`: `ROLE_RANK` + `hasAtLeastRole()`. El orden de autoridad es una
@@ -189,54 +250,58 @@ las policies usan `NULLIF(current_setting(...), '')` para colapsar "sin setear" 
 - **Remote en GitHub:** `origin` → https://github.com/MarcosEstebanDev/helpdesk-api (privado). `main` trackea `origin/main`.
 - **Verificado:** `pnpm lint:ci`, `pnpm build`, 7/7 unit, 1/1 e2e en verde.
 
-## PENDIENTE (retomar acá → Fase 4)
+## PENDIENTE (retomar acá → Fase 5)
 
-Fases 1, 2 (a/b/c) y 3 cerradas. Autenticación y autorización funcionan end-to-end.
+Fases 1, 2 (a/b/c), 3 y 4 cerradas. Auth, autorización y el producto base funcionan
+end-to-end.
 
-**Fase 4 — Tickets + AuditLog** (acá empieza el producto).
+**Fase 5 — Colas (outbox + BullMQ)**. La fase 4 dejó puesto el andamio: la unidad de
+trabajo del ADR-0016 es justo donde se escribirá el evento del outbox.
 
-Propuesta planteada el 2026-09-08, **pendiente de OK del usuario**. Las cinco
-decisiones abiertas:
+Decisiones abiertas, **pendientes de OK del usuario**:
 
-1. **Máquina de estados.** ¿`OPEN → IN_PROGRESS → RESOLVED → CLOSED` con transiciones
-   validadas en el dominio, o un campo `status` editable sin reglas? La primera es
-   coherente con el resto del proyecto (invariantes en la entidad) y da material para
-   el ADR-0015; la segunda es más rápida y más pobre.
-2. **Dónde vive la validación.** Propuesta: métodos en la entidad `Ticket`
-   (`assignTo()`, `resolve()`, `close()`) que devuelven `Result`, coherente con
-   ADR-0005. El caso de uso orquesta; la entidad decide si la transición es legal.
-3. **AuditLog en la MISMA transacción** que el cambio que registra. Es el ensayo del
-   transactional outbox (ADR-0007) que llega en la fase 5: si el ticket se guarda,
-   su registro de auditoría existe; no hay estado intermedio.
-4. **Numeración visible.** Un usuario de helpdesk espera `#1042`, no un UUID. Eso
-   necesita un contador POR TENANT (secuencia por organización o `max+1` dentro de la
-   transacción). Decidir si entra ahora o se pospone.
-5. **Índices.** `(tenant_id, status, created_at)` para el listado por defecto, con
-   prefijo `tenant_id` como en `refresh_tokens`. Revisar con `EXPLAIN ANALYZE` sobre
-   datos sembrados, no por intuición.
+1. **Qué eventos publica `ticketing`** y con qué payload. `Ticket` ya extiende
+   `AggregateRoot` (tiene `pullDomainEvents`) pero todavía no emite nada: se dejó así
+   a propósito para no escribir maquinaria sin usar. ¿Eventos gordos (con el estado
+   del ticket) o finos (solo ids, el consumidor relee)?
+2. **Publicador del outbox**: polling cada N ms sobre la tabla, o `LISTEN/NOTIFY` de
+   Postgres. El polling es trivial y aguanta reinicios; NOTIFY es inmediato pero se
+   pierde si nadie escucha (hace falta el polling igual, como red).
+3. **Idempotencia de los consumidores**: tabla de mensajes procesados por
+   `(consumidor, eventId)`, o apoyarse en el `jobId` de BullMQ. Lo primero es
+   explícito y auditable; lo segundo depende de la política de retención de Redis.
+4. **Cuál es el primer job real**. Propuesta: auto-asignación por reglas simples
+   (round-robin entre agentes del tenant). Da material para DLQ y reintentos sin
+   inventar dominio nuevo.
+5. **Política de reintentos y DLQ**: cuántos intentos, qué backoff, y qué se hace con
+   lo que cae a la DLQ (¿endpoint de reproceso? ¿solo observabilidad?).
 
-Checklist de implementación una vez decidido:
-- [ ] Dominio: `Ticket` (estado, prioridad, asignado), `Comment`, `AuditLog`.
-- [ ] Migración con RLS igual que el resto e índices con prefijo `tenant_id`.
-- [ ] Casos de uso: crear, listar, asignar, comentar, cambiar estado.
-- [ ] Rutas con `@MinRole`: VIEWER lee, AGENT opera, ADMIN configura.
-- [ ] e2e: aislamiento entre tenants sobre tickets + transiciones inválidas rechazadas.
-- [ ] ADR-0015 con el modelo de estados y las transiciones válidas.
+Checklist tentativo:
+- [ ] Tabla `outbox` con RLS + escritura dentro de `TransactionManager.run`.
+- [ ] Publicador (worker) que marca publicado y respeta el orden por agregado.
+- [ ] `BullModule` + Redis ya está en docker-compose; cola con backoff exponencial.
+- [ ] Consumidor idempotente que re-establece el tenant context desde el payload.
+- [ ] DLQ + test de que un job envenenado acaba ahí y no bloquea la cola.
+- [ ] ADR-0018 (outbox concreto) y ADR-0019 (idempotencia).
 
 Recordar: proponer estructura/decisiones y **esperar OK** antes de codear.
 
-## Al retomar (última sesión: 2026-09-08)
+## Al retomar (última sesión: 2026-09-09)
 
-Todo commiteado y **pusheado** a `origin/main` (`9f90060`). Árbol limpio, base de
-datos de desarrollo vacía (se limpiaron los datos de demo).
+Árbol limpio. Base de datos de desarrollo con los datos de los e2e ya limpiados
+(cada suite borra sus organizaciones al terminar).
 
 ```bash
 docker compose -f infra/docker-compose.yml up -d   # Postgres 17 + Redis 7
-pnpm prisma:deploy                                  # solo si la BD es nueva
-pnpm test && pnpm test:e2e                          # 43 unit + 29 e2e en verde
+pnpm prisma:deploy                                  # 3 migraciones
+pnpm test && pnpm test:e2e                          # 91 unit + 53 e2e en verde
 ```
 
-Siguiente paso: decidir las 5 preguntas de la Fase 4 (arriba) y arrancar.
+Siguiente paso: decidir las 5 preguntas de la Fase 5 (arriba) y arrancar.
+
+**Recordatorio de entorno:** `pnpm` no está en el PATH — usar `corepack pnpm`.
+Docker Desktop hay que arrancarlo a mano antes de los e2e. Git en este repo
+(sobre OneDrive) es lento: usar timeouts largos.
 
 ## Comandos
 

@@ -66,9 +66,9 @@ export default async function globalSetup(): Promise<void> {
 
   try {
     // No basta con conectar: si faltan las migraciones, los tests fallan más
-    // tarde y con peor mensaje. Se comprueba la función del ADR-0012 porque es
-    // lo último que crea la migración más reciente.
-    await prisma.$queryRaw`SELECT iam_resolve_tenant_by_slug('__precondicion__')`;
+    // tarde y con peor mensaje. Se comprueba una tabla de la migración MÁS
+    // RECIENTE (fase 4), que es lo que delata una base de datos a medio migrar.
+    await prisma.$queryRaw`SELECT 1 FROM ticket_counters LIMIT 1`;
   } catch {
     throw new Error(
       `La base de datos existe pero le faltan migraciones.\n\n  Ejecutá: pnpm prisma:deploy\n`,

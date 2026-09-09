@@ -248,6 +248,134 @@ crítica (→ lista de revocación, o lookup del membership solo en esas rutas).
 
 ---
 
+## ADR-0015 — Ciclo de vida del ticket como máquina de estados en el dominio
+
+**Contexto.** Un ticket pasa por estados y no todos los saltos tienen sentido: cerrar
+algo que nunca se resolvió, o reabrir un caso archivado hace meses, son incoherencias
+que después ensucian cualquier métrica. La alternativa habitual —un campo `status`
+que el cliente escribe libremente— traslada esa responsabilidad al front, es decir,
+la pierde.
+**Decisión.** Estados `OPEN`, `IN_PROGRESS`, `RESOLVED`, `CLOSED` con las transiciones
+declaradas como **datos** en `domain/ticket-status.ts`:
+
+| Desde | Hacia |
+| --- | --- |
+| `OPEN` | `IN_PROGRESS`, `RESOLVED` |
+| `IN_PROGRESS` | `RESOLVED`, `OPEN` |
+| `RESOLVED` | `CLOSED`, `OPEN` |
+| `CLOSED` | — (terminal) |
+
+La entidad `Ticket` es la única que puede cambiar el estado, a través de
+`changeStatus(next, now)`, que devuelve `Result` (ADR-0005). No hay setters públicos:
+con un `ticket.status = 'CLOSED'` la máquina de estados sería decorativa. Los
+timestamps del ciclo de vida (`resolvedAt`, `closedAt`) se **derivan** de la
+transición, nunca llegan de fuera.
+**Alternativas descartadas.**
+- *`status` editable sin reglas.* Más rápido, pero la invariante deja de existir: la
+  primera integración que escriba por API la rompe.
+- *Transiciones en el caso de uso.* El ticket creado desde el email entrante (fase 5)
+  y el movido por el motor de SLA (fase 6) no pasan por el mismo caso de uso, así que
+  la regla habría que repetirla —y algún día divergiría.
+- *Constraint `CHECK` en Postgres.* Valida el valor, no el salto: la base de datos no
+  sabe de qué estado venía la fila.
+**Consecuencias.** (+) La tabla de transiciones se lee de un vistazo y se testea
+exhaustivamente recorriendo el producto cartesiano de estados: añadir un estado sin
+decidir sus transiciones hace fallar la suite. (+) La fase 6 podrá consultar la misma
+tabla sin duplicar la regla. (+) Una transición ilegal es un 409, no un 400 ni un 500.
+(−) `CLOSED` es terminal, así que "reabrir" una incidencia zanjada obliga a crear un
+ticket nuevo. Es deliberado: reabrir mezclaría dos incidencias en una fila, con sus
+tiempos de SLA solapados. (−) Añadir un estado toca dominio, enum de Prisma y
+migración.
+**Revisar si.** Aparecen estados dependientes de configuración por tenant (workflows
+personalizables) → la tabla dejaría de ser una constante y pasaría a ser datos.
+
+---
+
+## ADR-0016 — Unidad de trabajo explícita: el AuditLog en la misma transacción
+
+**Contexto.** Cada cambio sobre un ticket debe dejar rastro. Si el ticket y su
+registro de auditoría se escriben por separado, existe un instante en el que uno está
+guardado y el otro no; un fallo justo ahí deja el historial incompleto **para
+siempre**, y sin forma de detectarlo. El problema es que ambos viven en repositorios
+distintos, y hasta ahora cada repositorio abría su propia transacción con
+`PrismaService.withTenant` (ADR-0009).
+**Decisión.** Un puerto `TransactionManager` en el shared-kernel con un único método,
+`run(tenantId, fn)`. Su adapter Prisma abre la transacción, fija el contexto de tenant
+y publica el cliente transaccional en un `AsyncLocalStorage`; los repositorios lo
+recogen a través de `PrismaRepository.runInTenant`, que se engancha a la transacción
+en curso si la hay y abre una propia si no. El adapter es **reentrante**: si ya hay
+transacción viva, se reutiliza.
+
+Los casos de uso envuelven su trabajo en `runTransactional`, que traduce un `Result`
+de error en un ROLLBACK. Hace falta porque con ADR-0005 los errores de negocio son
+valores, no excepciones, y una transacción solo revierte si algo se lanza: sin ese
+puente, un caso de uso que reserva un número de ticket y luego rechaza la entrada
+haría COMMIT y dejaría el número consumido.
+**Alternativas descartadas.**
+- *Pasar el cliente de transacción como parámetro de cada método de repositorio.* El
+  parámetro sería del tipo `Prisma.TransactionClient`, así que las interfaces de los
+  puertos —que viven en el dominio— tendrían que nombrar un tipo de Prisma. Rompe la
+  regla de dependencias justo donde más importa.
+- *Que el repositorio de tickets escriba también la auditoría.* Atómico y sin
+  abstracción nueva, pero mete una regla de negocio dentro de un adapter y no sirve
+  como base para el outbox.
+- *Auditoría asíncrona por cola.* Es lo correcto a gran escala, pero introduce
+  justo la ventana de inconsistencia que se quería eliminar.
+**Consecuencias.** (+) No existe un cambio sin su rastro: lo garantiza el motor, no
+la disciplina de quien programa. (+) Es el andamio exacto que necesita el
+transactional outbox (ADR-0007): en la fase 5 el evento se escribirá en la misma
+transacción. (+) Los repositorios sirven igual dentro y fuera de una unidad de
+trabajo, y ningún caso de uso sabe en cuál de los dos modos corre. (−) El
+`AsyncLocalStorage` es contexto implícito: leyendo un repositorio aislado no se ve de
+dónde sale su transacción. Se mitiga concentrándolo en un solo fichero y
+documentándolo. (−) Anidar transacciones largas alarga los bloqueos; el contador de
+numeración es el punto sensible.
+**Revisar si.** Aparecen transacciones que cruzan bounded contexts (→ señal de que
+hay que separar servicios y pasar a consistencia eventual), o si el
+`AsyncLocalStorage` se pierde en algún borde nuevo (workers de BullMQ, gateway de
+WebSocket) que habrá que instrumentar igual que el middleware de tenant.
+
+---
+
+## ADR-0017 — Numeración visible correlativa por tenant
+
+**Contexto.** Quien usa un helpdesk se refiere a "el ticket #1042", no a un UUID. Hace
+falta un número corto, legible y **por organización**: la serie de cada tenant empieza
+en 1 y no revela cuántos tickets tienen los demás.
+**Decisión.** Una tabla `ticket_counters` con una fila por tenant. El número se reserva
+con un UPSERT que toma el bloqueo exclusivo de esa fila y devuelve el valor asignado:
+
+```sql
+INSERT INTO ticket_counters (tenant_id, next_number) VALUES ($1, 2)
+ON CONFLICT (tenant_id) DO UPDATE SET next_number = ticket_counters.next_number + 1
+RETURNING next_number - 1;
+```
+
+Corre **dentro de la transacción que crea el ticket** (ADR-0016), así que el bloqueo se
+mantiene hasta el commit y dos altas simultáneas del mismo tenant se serializan. El
+UUID sigue siendo la clave primaria y lo que viaja por la API; el número es solo para
+las personas. La unicidad la respalda además un índice `UNIQUE (tenant_id, number)`.
+**Alternativas descartadas.**
+- *Una `SEQUENCE` de Postgres.* Es global al esquema, no por tenant; no es
+  transaccional, así que cada rollback deja un hueco; y una secuencia por organización
+  significa ejecutar DDL cada vez que alguien se registra.
+- *`SELECT MAX(number) + 1`.* Necesita el nivel de aislamiento más estricto o un
+  índice único más reintentos ante colisión, y se degrada según crece la tabla.
+- *`SELECT ... FOR UPDATE` explícito seguido de `UPDATE`.* Misma garantía que el
+  UPSERT pero en dos viajes a la base de datos, y sin resolver la creación de la fila
+  la primera vez.
+**Consecuencias.** (+) Serie correlativa y sin huecos por tenant, incluso con altas
+concurrentes y con altas rechazadas (el rollback devuelve el número). (+) La fila del
+contador se crea sola: registrarse no tiene que sembrar nada. (+) Tenants distintos
+tocan filas distintas y no se estorban. (−) Las altas **del mismo tenant** se
+serializan en esa fila: es el cuello de botella conocido de este diseño. Con el
+volumen de un helpdesk es irrelevante; con miles de altas por segundo por
+organización, no. (−) El número no puede reasignarse ni reutilizarse.
+**Revisar si.** Un solo tenant necesita más altas concurrentes de las que aguanta el
+bloqueo de fila → bloques de numeración reservados por instancia, aceptando huecos.
+
+---
+
 ## Seguridad (resumen)
 
 Defensa en profundidad: ver ADR-0003 (RLS) y los puntos en `CLAUDE.md`. Items clave:

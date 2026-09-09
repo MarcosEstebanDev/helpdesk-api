@@ -41,6 +41,10 @@ model Organization {
   users         User[]
   memberships   Membership[]
   refreshTokens RefreshToken[]
+  tickets       Ticket[]
+  comments      Comment[]
+  auditLogs     AuditLog[]
+  ticketCounter TicketCounter?
 
   @@map("organizations")
 }
@@ -55,9 +59,12 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  organization  Organization   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  memberships   Membership[]
-  refreshTokens RefreshToken[]
+  organization     Organization   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  memberships      Membership[]
+  refreshTokens    RefreshToken[]
+  requestedTickets Ticket[]       @relation("TicketRequester")
+  assignedTickets  Ticket[]       @relation("TicketAssignee")
+  comments         Comment[]
 
   @@unique([tenantId, email])
   @@map("users")
@@ -103,4 +110,121 @@ model RefreshToken {
   @@index([tenantId, tokenHash])
   @@index([tenantId, familyId])
   @@map("refresh_tokens")
+}
+
+/// Estados de un ticket (ADR-0015). El enum aquí es solo la forma de la columna;
+/// las TRANSICIONES válidas viven en el dominio (`ticket-status.ts`), porque son
+/// una regla de negocio y no una restricción de almacenamiento.
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+
+  @@map("ticket_status")
+}
+
+enum TicketPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+
+  @@map("ticket_priority")
+}
+
+/// Ticket de soporte. `number` es el identificador VISIBLE (#1042), correlativo
+/// por organización (ADR-0017); el `id` UUID sigue siendo la clave primaria y lo
+/// que viaja por la API, para no exponer el volumen de tickets de un tenant.
+///
+/// `updated_at` NO usa `@updatedAt`: lo fija el dominio a partir del puerto
+/// `Clock`. Si lo gestionara Prisma, el timestamp de la entidad en memoria y el
+/// de la fila divergirían, y los tests dejarían de ser deterministas.
+model Ticket {
+  id          String         @id @default(uuid()) @db.Uuid
+  tenantId    String         @map("tenant_id") @db.Uuid
+  number      Int
+  subject     String
+  description String
+  status      TicketStatus   @default(OPEN)
+  priority    TicketPriority @default(NORMAL)
+  requesterId String         @map("requester_id") @db.Uuid
+  assigneeId  String?        @map("assignee_id") @db.Uuid
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @map("updated_at")
+  resolvedAt  DateTime?      @map("resolved_at")
+  closedAt    DateTime?      @map("closed_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  requester    User         @relation("TicketRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  assignee     User?        @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  comments     Comment[]
+
+  // El número es único DENTRO del tenant, nunca global.
+  @@unique([tenantId, number])
+  // Listado por defecto: filtrar por estado dentro del tenant, más reciente primero.
+  @@index([tenantId, status, createdAt])
+  // "Mis tickets": bandeja de un agente.
+  @@index([tenantId, assigneeId, status])
+  @@map("tickets")
+}
+
+/// Comentario en un ticket. Parte del agregado Ticket a efectos de negocio, pero
+/// tabla propia: una conversación crece sin límite y no tiene sentido cargarla
+/// entera cada vez que se toca el ticket.
+model Comment {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  ticketId  String   @map("ticket_id") @db.Uuid
+  authorId  String   @map("author_id") @db.Uuid
+  body      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ticket       Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author       User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, ticketId, createdAt])
+  @@map("comments")
+}
+
+/// Rastro de auditoría. Se escribe en la MISMA transacción que el cambio que
+/// registra (ADR-0016), así que no existe un estado en el que el cambio esté
+/// guardado y su auditoría no.
+///
+/// `entityId` es UUID pero SIN foreign key a propósito: la auditoría debe
+/// sobrevivir al borrado de lo que audita. Una FK con ON DELETE CASCADE borraría
+/// justo la evidencia de que algo se borró.
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  actorId    String   @map("actor_id") @db.Uuid
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id") @db.Uuid
+  metadata   Json?
+  occurredAt DateTime @map("occurred_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Historial de UNA entidad concreta ("¿qué le pasó a este ticket?").
+  @@index([tenantId, entityType, entityId, occurredAt])
+  // Actividad reciente del tenant.
+  @@index([tenantId, occurredAt])
+  @@map("audit_logs")
+}
+
+/// Contador de numeración visible, una fila por organización (ADR-0017).
+///
+/// Tabla propia y no una SEQUENCE de Postgres: una secuencia es global y no
+/// transaccional (un rollback deja hueco), y crear una por tenant significa DDL
+/// en tiempo de ejecución. Con una fila y `SELECT ... FOR UPDATE` dentro de la
+/// transacción del ticket, la numeración es correlativa y sin huecos.
+model TicketCounter {
+  tenantId   String @id @map("tenant_id") @db.Uuid
+  nextNumber Int    @default(1) @map("next_number")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("ticket_counters")
 }

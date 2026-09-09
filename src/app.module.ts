@@ -7,6 +7,7 @@ import { SystemModule } from './infrastructure/system/system.module';
 import { GLOBAL_THROTTLE } from './modules/iam/infrastructure/http/throttle.policy';
 import { HealthModule } from './modules/health/health.module';
 import { IamModule } from './modules/iam/iam.module';
+import { TicketingModule } from './modules/ticketing/ticketing.module';
 import { RolesGuard } from './modules/iam/infrastructure/auth/roles.guard';
 
 /**
@@ -35,6 +36,7 @@ import { RolesGuard } from './modules/iam/infrastructure/auth/roles.guard';
     }),
     HealthModule,
     IamModule,
+    TicketingModule,
   ],
   // Orden de ejecución = orden de registro. El rate limiting va primero: no
   // tiene sentido gastar una comprobación de rol en una petición que ya excedió
