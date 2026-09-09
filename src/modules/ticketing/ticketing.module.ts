@@ -8,6 +8,8 @@ import {
   OutboxWriter,
   PROCESSED_MESSAGES,
   ProcessedMessages,
+  REALTIME_PUBLISHER,
+  RealtimePublisher,
   TRANSACTION_MANAGER,
   TransactionManager,
 } from '../../shared-kernel';
@@ -18,6 +20,7 @@ import { AutoAssignTicket } from './application/auto-assign-ticket.use-case';
 import { AuditRecorder } from './application/audit-recorder';
 import { ChangeTicketStatus } from './application/change-ticket-status.use-case';
 import { EventRecorder } from './application/event-recorder';
+import { BroadcastTicketEvent } from './application/realtime/broadcast-ticket-event.use-case';
 import { GetSlaPolicy } from './application/sla/get-sla-policy.use-case';
 import { MarkSlaBreached } from './application/sla/mark-sla-breached.use-case';
 import { ResetSlaPolicy } from './application/sla/reset-sla-policy.use-case';
@@ -53,6 +56,7 @@ import {
 } from './domain/ports/ticket.repository';
 import { SlaPolicyController } from './infrastructure/http/sla-policy.controller';
 import { TicketController } from './infrastructure/http/ticket.controller';
+import { RealtimeProcessor } from './infrastructure/queue/realtime.processor';
 import { SlaProcessor } from './infrastructure/queue/sla.processor';
 import { TicketRoutingProcessor } from './infrastructure/queue/ticket-routing.processor';
 import { SlaSweeper } from './infrastructure/sla/sla-sweeper.service';
@@ -97,6 +101,7 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
     PrismaSlaTimerRepository,
     TicketRoutingProcessor,
     SlaProcessor,
+    RealtimeProcessor,
     SlaSweeper,
 
     // --- Puertos -> adapters ---
@@ -241,6 +246,12 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
         ids: IdGenerator,
       ): StartSlaTimers =>
         new StartSlaTimers(transactions, policies, timers, processed, ids),
+    },
+    {
+      provide: BroadcastTicketEvent,
+      inject: [REALTIME_PUBLISHER],
+      useFactory: (realtime: RealtimePublisher): BroadcastTicketEvent =>
+        new BroadcastTicketEvent(realtime),
     },
     {
       provide: GetSlaPolicy,

@@ -5,6 +5,7 @@ import { ConfigModule } from './infrastructure/config/config.module';
 import { OutboxModule } from './infrastructure/outbox/outbox.module';
 import { PrismaModule } from './infrastructure/prisma/prisma.module';
 import { QueueModule } from './infrastructure/queue/queue.module';
+import { RealtimeModule } from './infrastructure/realtime/realtime.module';
 import { SystemModule } from './infrastructure/system/system.module';
 import { GLOBAL_THROTTLE } from './modules/iam/infrastructure/http/throttle.policy';
 import { HealthModule } from './modules/health/health.module';
@@ -39,6 +40,8 @@ import { RolesGuard } from './modules/iam/infrastructure/auth/roles.guard';
     }),
     HealthModule,
     IamModule,
+    // Antes de TicketingModule: este publica por el puerto que aquel expone.
+    RealtimeModule,
     TicketingModule,
     // Después de TicketingModule: el publicador drena eventos que produce aquel.
     OutboxModule,

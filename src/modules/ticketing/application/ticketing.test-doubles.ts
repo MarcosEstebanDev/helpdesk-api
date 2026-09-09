@@ -4,6 +4,9 @@ import {
   OutboxRecord,
   OutboxWriter,
   ProcessedMessages,
+  RealtimeAudience,
+  RealtimeMessage,
+  RealtimePublisher,
   TransactionManager,
 } from '../../../shared-kernel';
 import { AuditLog } from '../domain/entities/audit-log.entity';
@@ -289,5 +292,29 @@ export const fakeSlaTimers = (): FakeSlaTimers => {
       ),
     findById: (tenantId, id) =>
       Promise.resolve(store.get(`${tenantId}:${id}`) ?? null),
+  };
+};
+
+/** Una emisión de tiempo real capturada por el doble. */
+export interface EmisionCapturada {
+  audience: RealtimeAudience;
+  message: RealtimeMessage;
+}
+
+export interface FakeRealtimePublisher extends RealtimePublisher {
+  readonly emisiones: EmisionCapturada[];
+  /** Las emisiones dirigidas a un alcance concreto. */
+  para(scope: RealtimeAudience['scope']): EmisionCapturada[];
+}
+
+export const fakeRealtimePublisher = (): FakeRealtimePublisher => {
+  const emisiones: EmisionCapturada[] = [];
+  return {
+    emisiones,
+    para: (scope) => emisiones.filter((e) => e.audience.scope === scope),
+    publish: (audience, message) => {
+      emisiones.push({ audience, message });
+      return Promise.resolve();
+    },
   };
 };

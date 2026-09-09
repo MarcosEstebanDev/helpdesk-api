@@ -85,6 +85,14 @@ uso dependen de la interfaz, nunca del adapter.
   del dominio, "respondido" = comentario de quien responde en nombre de la
   organización (de ahí `comment.added` v2 con `authorRole`), `due_at` inmutable y
   el calendario detrás de la interfaz `SlaCalendar` (hoy 24/7).
+- ADR-0022 **Transporte de tiempo real**: JWT en el handshake (`auth.token`, nunca
+  en la query string), cierre del socket al caducar el token, rooms decididas por el
+  SERVIDOR (`tenant:<id>` + `tenant:<id>:staff`) y adapter de Redis desde el primer
+  día. El filtrado por rol es una room, no un `if` al emitir.
+- ADR-0023 **Qué se emite y a quién**: lo emite un consumidor más del outbox (cola
+  `realtime`), por el cable va un DTO de vista y nunca el evento de integración
+  (`comment.added` sin cuerpo), la audiencia se decide en `application`, y sin tabla
+  de idempotencia porque un aviso duplicado solo hace refrescar de más.
 - ADR-0021 **Temporizadores durables + barrido**, no jobs retardados: `sla_timers`
   es la fuente de verdad, rol `helpdesk_sla_sweeper` + `sla_due_timers`
   (SECURITY DEFINER, devuelve solo `id` y `tenant_id`), idempotencia por condición
@@ -117,7 +125,7 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 4. ✅ Tickets + Comentarios + AuditLog (máquina de estados, numeración por tenant)
 5. ✅ Colas — 5a (outbox transaccional) y 5b (BullMQ, publicador, consumidor idempotente, DLQ)
 6. ✅ SLA engine (política por tenant, relojes durables, barrido de incumplimientos)
-7. 🔄 Realtime (WebSocket gateway + cliente Next)
+7. 🔄 Realtime — **backend cerrado** (gateway, rooms, adapter Redis); falta el cliente Next
 8. ⬜ Observabilidad (Pino + OTel + health checks reales)
 9. ⬜ Billing Stripe per-seat con webhooks idempotentes (opcional)
 10. ⬜ Docs finales (ARCHITECTURE.md con ADRs y diagrama, README)
@@ -126,6 +134,56 @@ Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
 ## Estado actual (2026-09-09)
+
+**Fase 7 (Realtime) — BACKEND CERRADO.** Primera fase que empuja datos hacia el
+cliente, y primera en la que el aislamiento por tenant se sostiene FUERA del ciclo
+request/response. Las 4 decisiones se tomaron con OK del usuario (todas las
+recomendadas). Falta el cliente en `helpdesk-web`.
+
+- **`RealtimeGateway`** (`src/infrastructure/realtime/`): handshake con JWT en
+  `auth.token` (mismo `AccessTokenVerifier` que HTTP), cierre programado al `exp`
+  del token con aviso `disconnected`, y join a `tenant:<id>` (+ `tenant:<id>:staff`
+  si el rol es AGENT o superior). `ticket:watch` / `ticket:unwatch` para el detalle.
+- **El filtrado por rol es una ROOM, no un `if` al emitir.** Se resuelve al entrar,
+  con el rol del token verificado: un socket que nunca entró en la sala del equipo
+  no puede recibir lo que se manda ahí por mucho que se falle al emitir.
+- **Puerto `RealtimePublisher`** en el shared-kernel: la audiencia se expresa en
+  términos de negocio (`tenant` / `staff` / `ticket`), y traducirla a nombres de
+  room es cosa del adapter.
+- **Emite un consumidor más del outbox** (cola `realtime`), no los casos de uso:
+  lo que llega a la pantalla es lo que quedó escrito en la transacción del cambio.
+  **Sin `processed_messages`**: un aviso duplicado solo hace refrescar de más.
+- **`BroadcastTicketEvent`** (application) decide quién ve qué. `comment.added`
+  viaja con el ID y SIN el cuerpo: el cliente lo recarga con sus permisos.
+  `sla.breached` y `ticket.assigned` van solo al equipo.
+- **Adapter de Redis** (`RedisIoAdapter`) desde el primer día: sin él, con dos
+  réplicas la mitad de los usuarios se pierde la mitad de los mensajes.
+- **Cierra el cabo suelto de la fase 6:** `sla.breached` ya tiene consumidor.
+- **ADRs nuevos: 0022** (transporte y autenticación) y **0023** (qué se emite y a
+  quién). Total 23.
+- **Verificado:** lint:ci limpio, `typecheck` limpio, **171/171 unit**,
+  **99/99 e2e** (6 nuevos de realtime con clientes Socket.io reales), build OK.
+  Sin migraciones: la fase no toca la base de datos.
+
+**Gotchas de la fase 7:**
+- **El adapter de Redis abre dos conexiones que NADIE cierra por ti.** Se crean
+  fuera del contenedor de Nest, así que hay que cerrarlas en `close()` del adapter.
+  Sin eso el proceso no termina: en los tests sale como "Jest did not exit", y en
+  un despliegue como un contenedor que ignora el SIGTERM hasta que lo matan. Era un
+  bug de producción que la suite e2e destapó por accidente.
+- **Nunca canalizar la salida de los e2e por `| tail`.** El buffer de la tubería
+  oculta todo hasta que el proceso muere, así que un proceso colgado DESPUÉS de
+  pasar los tests parece un proceso colgado DURANTE los tests. Se perdieron 10
+  minutos por esto.
+- El e2e de realtime necesita `app.listen(0)` de verdad (un cliente Socket.io abre
+  su propia conexión) y monta el MISMO adapter de Redis que producción.
+- Para afirmar que algo NO llegó, primero hay que esperar a que llegue al
+  destinatario legítimo: si no, se está midiendo una carrera, no una entrega.
+- `@nestjs/websockets` y `@nestjs/platform-socket.io` fijados a `^11` — la 12 es
+  solo ESM, igual que pasó con `@nestjs/jwt` y `@nestjs/bullmq`.
+- El tipo `App` de supertest no expone `address()`; hay que castear al servidor
+  HTTP de Node para sacar el puerto.
+
 
 **Cabos sueltos de la fase 6 — CERRADOS 2 de 3.** Se añadió la configuración por API
 de la política de SLA y la exposición de los relojes en la vista del ticket.
@@ -429,56 +487,45 @@ las policies usan `NULLIF(current_setting(...), '')` para colapsar "sin setear" 
 - **Remote en GitHub:** `origin` → https://github.com/MarcosEstebanDev/helpdesk-api (privado). `main` trackea `origin/main`.
 - **Verificado:** `pnpm lint:ci`, `pnpm build`, 7/7 unit, 1/1 e2e en verde.
 
-## PENDIENTE (retomar acá → Fase 7)
+## PENDIENTE (retomar acá → cliente de la fase 7, luego Fase 8)
 
 Fases 1, 2 (a/b/c), 3, 4, 5 (a/b) y 6 cerradas. El backend ya hace lo suyo solo:
 un ticket nuevo se auto-asigna, arranca sus relojes de SLA, y si nadie lo atiende
 el barrido registra el incumplimiento sin que nadie pregunte.
 
-**Cabos sueltos de la fase 6:** quedan 1 de 3.
+**Cabos sueltos de la fase 6:** los 3 cerrados.
 - ✅ Endpoint de configuración de `sla_policies` — hecho (Decisión 6 del ADR-0020).
 - ✅ La vista del ticket expone su SLA — hecho (`sla[]` en `GET /tickets/:id`).
-- ⬜ **Nadie consume `sla.breached` todavía**: el evento se publica y se queda ahí.
-  Su consumidor natural es la notificación/escalado, y encaja de lleno con la fase 7:
-  un incumplimiento es justo lo que hay que empujar a la pantalla sin que nadie
-  pregunte.
+- ✅ `sla.breached` ya tiene consumidor — lo empuja el gateway a la sala del equipo
+  (ADR-0023). Los tres cabos sueltos de la fase 6 están cerrados.
 
-**Fase 7 — Realtime.** WebSocket gateway (Socket.io) + cliente en `helpdesk-web`.
-Es la primera fase que empuja datos hacia el cliente en vez de responder a
-peticiones, y la primera en la que el aislamiento por tenant tiene que
-sostenerse FUERA del ciclo request/response.
+**Fase 7 — Realtime.** Las 5 decisiones se cerraron con OK del usuario (todas las
+recomendadas) y **el backend está hecho y verificado**: gateway con handshake JWT,
+rooms decididas por el servidor, consumidor del outbox en la cola `realtime`,
+adapter de Redis y ADR-0022/0023. Ver "Estado actual" para el detalle.
 
-Decisiones abiertas, **pendientes de OK del usuario**:
+Lo que queda de la fase, en `helpdesk-web`:
+- [ ] Cliente: el `ws-provider` placeholder de la fase 1 pasa a ser real. Conecta con
+      `auth: { token }`, escucha `disconnected` para distinguir "refresca y reconecta"
+      (`token_expired`) de "no tienes acceso" (`unauthorized`), y emite `ticket:watch`
+      al abrir un detalle / `ticket:unwatch` al cerrarlo.
+- [ ] Invalidación de TanStack Query con lo que llega: `ticket.created` y
+      `ticket.status_changed` invalidan la lista; `comment.added` invalida el detalle
+      de ESE ticket (por eso viaja el id y no el cuerpo).
+- [ ] Los mensajes son **at-least-once**: el cliente tiene que tolerar duplicados.
+- [ ] Tipar los mensajes del WebSocket a mano. NO salen del OpenAPI (ADR-0004 cubre
+      solo REST), así que el contrato de `BroadcastTicketEvent` y el del cliente se
+      mantienen sincronizados a ojo. Es deuda conocida.
 
-1. **Cómo se autentica el socket.** ¿Access token en el handshake (`auth.token`),
-   cookie, o un ticket de conexión de un solo uso emitido por HTTP? El JWT en el
-   handshake es lo directo; el problema conocido es qué pasa cuando expira con la
-   conexión abierta.
-2. **Quién emite.** ¿Un consumidor más del outbox (cola `realtime`, coherente con
-   todo lo hecho: lo que se emite es exactamente lo que ocurrió y se puede
-   reprocesar) o emitir desde los casos de uso (menos piezas, pero vuelve a meter
-   un efecto no transaccional dentro del caso de uso — justo lo que el ADR-0018
-   existe para evitar)?
-3. **Qué se manda por el cable.** ¿El evento de integración tal cual (gordo, y
-   puede llevar campos que ese usuario no debería ver) o un DTO de vista filtrado
-   por rol? Lo segundo obliga a decidir qué ve un VIEWER.
-4. **Granularidad de las rooms.** ¿Solo `tenant:<id>`, o también `ticket:<id>` y
-   `user:<id>` para avisar al asignado? Más rooms = menos ruido en el cliente,
-   más contabilidad en el servidor.
-5. **Escalado.** ¿Adapter de Redis para Socket.io desde ya (varias instancias
-   comparten las rooms) o un solo proceso y se documenta como deuda?
+Ideas para después, ninguna comprometida:
+- Nadie vigila los eventos que el consumidor de realtime ignora por no tener `case`
+  (devuelve `ignored` y queda solo en el registro del job).
+- `sla_timers` crece con cada ticket y sigue sin purgarse (viene de la fase 6).
+- La room `user:<id>` no existe: cuando haya notificaciones personales, ahí entra.
 
-Checklist tentativo:
-- [ ] Gateway con guard de handshake que reusa `JwtTokenService` y mete al socket
-      en la room de SU tenant (el `tenantId` sale del token, nunca del cliente).
-- [ ] Consumidor `realtime` que traduce eventos de integración a mensajes de vista.
-- [ ] e2e con cliente Socket.io real: dos tenants conectados, uno crea un ticket,
-      el otro NO lo recibe. El equivalente WebSocket de `rls-isolation`.
-- [ ] Cliente en `helpdesk-web`: el `ws-provider` placeholder de la fase 1 pasa a
-      ser real, con invalidación de las queries de TanStack Query.
-- [ ] ADR-0022 (transporte y autenticación) y ADR-0023 (qué se emite y a quién).
-
-Recordar: proponer estructura/decisiones y **esperar OK** antes de codear.
+**Siguiente fase: 8 — Observabilidad** (Pino con `tenantId`/`requestId`, OpenTelemetry,
+health checks reales). Recordar: proponer estructura/decisiones y **esperar OK** antes
+de codear.
 
 ## Al retomar (última sesión: 2026-09-09)
 
@@ -487,7 +534,7 @@ Recordar: proponer estructura/decisiones y **esperar OK** antes de codear.
 ```bash
 docker compose -f infra/docker-compose.yml up -d   # Postgres 17 + Redis 7
 pnpm prisma:deploy                                  # 6 migraciones
-pnpm test && pnpm test:e2e                          # 164 unit + 93 e2e en verde
+pnpm test && pnpm test:e2e                          # 171 unit + 99 e2e en verde
 pnpm typecheck                                      # specs y dobles incluidos
 ```
 

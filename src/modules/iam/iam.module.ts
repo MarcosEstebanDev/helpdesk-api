@@ -157,6 +157,12 @@ import { PrismaUserRepository } from './infrastructure/persistence/prisma-user.r
     },
   ],
   // Otros bounded contexts (tickets, fase 4) necesitan proteger sus rutas.
-  exports: [JwtAuthGuard, RolesGuard, TenantContextMiddleware],
+  exports: [
+    JwtAuthGuard,
+    RolesGuard,
+    TenantContextMiddleware,
+    // Lo usa el gateway de WebSocket para autenticar el handshake (ADR-0022).
+    AccessTokenVerifier,
+  ],
 })
 export class IamModule {}

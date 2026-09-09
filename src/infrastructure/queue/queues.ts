@@ -15,19 +15,27 @@ export const TICKET_ROUTING_QUEUE = 'ticket-routing';
 /** Motor de SLA (ADR-0021): arranca y para relojes según lo que pasa. */
 export const SLA_QUEUE = 'sla';
 
+/** Empuje a los clientes conectados por WebSocket (ADR-0023). */
+export const REALTIME_QUEUE = 'realtime';
+
 /** Cola de descarte: aquí acaban los jobs que agotaron sus reintentos. */
 export const DEAD_LETTER_QUEUE = 'dead-letter';
 
 export const QUEUE_NAMES = [
   TICKET_ROUTING_QUEUE,
   SLA_QUEUE,
+  REALTIME_QUEUE,
   DEAD_LETTER_QUEUE,
 ] as const;
 
 export const EVENT_ROUTING: Readonly<Record<string, readonly string[]>> = {
-  'ticket.created': [TICKET_ROUTING_QUEUE, SLA_QUEUE],
-  'comment.added': [SLA_QUEUE],
-  'ticket.status_changed': [SLA_QUEUE],
+  'ticket.created': [TICKET_ROUTING_QUEUE, SLA_QUEUE, REALTIME_QUEUE],
+  'comment.added': [SLA_QUEUE, REALTIME_QUEUE],
+  'ticket.status_changed': [SLA_QUEUE, REALTIME_QUEUE],
+  'ticket.assigned': [REALTIME_QUEUE],
+  'ticket.unassigned': [REALTIME_QUEUE],
+  // Cierra el cabo suelto de la fase 6: `sla.breached` ya tiene consumidor.
+  'sla.breached': [REALTIME_QUEUE],
 };
 
 export const queuesFor = (eventName: string): readonly string[] =>

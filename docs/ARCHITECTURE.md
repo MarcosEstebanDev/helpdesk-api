@@ -679,6 +679,125 @@ vencimiento del tipo "queda el 20%" (→ un segundo umbral en la misma tabla).
 
 ---
 
+## ADR-0022 — Transporte de tiempo real: handshake con JWT, rooms por tenant y adapter de Redis
+
+**Contexto.** La fase 7 empuja datos hacia el cliente. Es la primera vez que el
+aislamiento entre organizaciones tiene que sostenerse FUERA del ciclo request/response:
+no hay middleware de contexto corriendo por petición, ni RLS mirando cada consulta. Un
+socket abierto es una tubería que dura horas.
+
+**Decisión 1 — El token viaja en el handshake, en `auth.token`.** Se verifica con el
+mismo `AccessTokenVerifier` que usa HTTP, y el `tenantId` sale de ahí: NUNCA de lo que
+manda el cliente. No va en la query string a propósito — las URLs acaban en logs de
+proxies y en el historial del navegador, y un access token en un log es un access token
+filtrado.
+
+**Decisión 2 — Un token caducado cierra el socket.** Al conectar se programa el cierre
+para el `exp` del propio token, avisando antes con `disconnected` y un motivo. Sin esto
+la conexión sobrevive indefinidamente a su credencial: quien perdió el acceso esta
+mañana seguiría recibiendo los tickets de la tarde mientras no cerrara la pestaña. El
+motivo permite al cliente distinguir "refresca y vuelve" de "no tienes acceso".
+
+**Decisión 3 — Quien decide las rooms es el servidor, al conectar.** Todo socket entra
+en `tenant:<id>`, y si su rol es AGENT o superior también en `tenant:<id>:staff`. **El
+filtrado por rol se resuelve al ENTRAR, no en cada emisión**: un olvido al emitir
+filtraría datos, mientras que un socket que nunca entró en la sala del equipo no puede
+recibir lo que se manda ahí por mucho que se falle más adelante.
+
+El cliente sí puede pedir seguir un ticket (`ticket:watch`), pero el nombre de la room
+se construye con SU tenant: `tenant:<tenant>:ticket:<id>`. Pedir el ticket de otra
+organización mete al socket en una room vacía en vez de en la del vecino, así que no
+hace falta consultar la base de datos en cada suscripción para estar seguros.
+
+**Decisión 4 — Adapter de Redis desde el primer día.** Sin él, `server.to(room).emit()`
+solo alcanza a los sockets de ESE proceso. Con dos réplicas —el despliegue que el
+proyecto asume desde el ADR-0019, cuando separó workers de API— la mitad de los usuarios
+se perdería la mitad de los mensajes, de forma intermitente y sin un solo error en los
+logs. Redis ya está en el stack por BullMQ, así que el coste es una dependencia.
+
+**Alternativas descartadas.**
+- *Ticket de conexión de un solo uso emitido por HTTP.* Más seguro (el token no viaja en
+  el handshake), pero añade endpoint, almacenamiento y caducidad propia para resolver un
+  problema que `auth.token` ya evita al no ir en la URL.
+- *Cookie de sesión.* Ata el WebSocket al mismo origen y complica cualquier cliente que
+  no sea el navegador.
+- *Comprobar el rol en cada emisión.* Un `if` que se puede olvidar, en vez de una
+  propiedad del socket que no se puede saltar.
+- *Validar en `ticket:watch` que el ticket existe y es del tenant.* Una consulta por
+  suscripción a cambio de una garantía que el nombre de la room ya da.
+- *Un solo proceso, documentando el escalado como deuda.* Deja el sistema incorrecto en
+  cuanto se despliegue como se dijo que se iba a desplegar.
+
+**Consecuencias.** (+) El aislamiento no depende de acordarse de filtrar: depende de en
+qué room entró el socket, decidido por el servidor con un token verificado. (+) Escala
+horizontalmente sin cambiar código. (+) El cierre por caducidad da al cliente una señal
+clara para reconectar. (−) El adapter abre dos conexiones más a Redis por proceso, y
+**hay que cerrarlas explícitamente**: se crean fuera del contenedor de Nest, así que
+nadie más las conoce y olvidarlo deja el proceso sin terminar. (−) El rol queda
+congelado en el socket hasta que caduque el token, igual que pasa en HTTP.
+
+**Revisar si.** Hacen falta avisos dirigidos a UNA persona (→ room `user:<id>`), la
+reconexión masiva tras un despliegue resulta cara (→ backoff en el cliente), o aparece
+la necesidad de recuperar lo perdido mientras el socket estuvo caído (→ un cursor de
+eventos, no más rooms).
+
+---
+
+## ADR-0023 — Qué se emite y a quién: un DTO de vista, no el evento de integración
+
+**Contexto.** Ya hay un flujo confiable de eventos (outbox, ADR-0018/0019) y un
+transporte (ADR-0022). Falta decidir qué se manda por el cable y quién lo recibe.
+
+**Decisión 1 — Emite un consumidor más del outbox, no los casos de uso.** La cola
+`realtime` se suma a `ticket-routing` y `sla`. Lo que llega a la pantalla es exactamente
+lo que quedó escrito en la misma transacción que el cambio: no se puede anunciar algo
+que después se revirtió, ni perder un aviso porque el WebSocket estaba caído en ese
+instante — el mensaje sigue en el outbox hasta que se publica. Emitir desde el caso de
+uso volvería a meter un efecto externo no transaccional justo donde el ADR-0018 lo sacó.
+
+**Decisión 2 — Por el cable va un DTO de vista, nunca el evento tal cual.** El evento de
+integración es "gordo" a propósito y lleva campos internos; además, los dos contratos se
+versionan por motivos distintos, y reenviarlo ataría el contrato público del WebSocket a
+cada cambio del interno. Concretamente: `comment.added` viaja con el ID del comentario y
+**sin su cuerpo**, para que el cliente lo recargue con SUS permisos — así este camino no
+puede convertirse nunca en una fuga de contenido.
+
+**Decisión 3 — La audiencia es una decisión de negocio y vive en `application`.**
+`BroadcastTicketEvent` traduce cada evento a "quién lo ve y con qué", y se prueba sin
+levantar un socket. El reparto actual: un ticket nuevo y los cambios de estado van a
+toda la organización; a quién le toca cada ticket (`ticket.assigned`) y **los
+incumplimientos de SLA van solo al equipo**. Avisar al solicitante de que se ha
+incumplido el compromiso con él es una decisión de producto —y probablemente un email—,
+no algo que deba pasar por omisión.
+
+**Decisión 4 — Sin tabla de idempotencia.** Los demás consumidores usan
+`processed_messages` porque sus efectos no son repetibles (asignar dos veces, arrancar
+dos relojes). Aquí el peor caso de un reproceso es que un cliente reciba dos veces el
+mismo aviso y refresque de más. Pagar una escritura en base de datos por cada mensaje
+emitido, en el camino con más volumen del sistema, sería caro a cambio de nada.
+
+**Alternativas descartadas.**
+- *Reenviar el evento de integración.* Cero traducción, pero publica el contrato interno
+  y expone cualquier campo nuevo sin querer.
+- *Mandar solo "el ticket X cambió" y que el cliente recargue.* Imposible filtrar de
+  más, pero pierde el tiempo real de verdad y añade una petición por evento. Se usa esa
+  forma SOLO donde el contenido es sensible (comentarios).
+- *Emitir todo a la sala del tenant y filtrar en el cliente.* El navegador recibiría
+  datos que no debe ver; filtrar en el cliente es cosmética, no seguridad.
+
+**Consecuencias.** (+) Cierra el cabo suelto de la fase 6: `sla.breached` ya tiene
+consumidor. (+) El contrato del WebSocket puede evolucionar sin tocar el del outbox. (+)
+Añadir un evento nuevo es una entrada más en `EVENT_ROUTING` y un `case` en el caso de
+uso. (−) Cada evento se traduce a mano: uno nuevo sin `case` se ignora en silencio
+(devuelve `ignored`, que queda en el registro del job, pero nadie lo vigila). (−) Los
+mensajes son at-least-once: el cliente debe tolerar duplicados.
+
+**Revisar si.** El volumen hace que traducir uno a uno se quede corto (→ generar el DTO
+desde el esquema del evento), o aparece un consumidor que sí necesita exactly-once (→
+`processed_messages`, como los demás).
+
+---
+
 ## Seguridad (resumen)
 
 Defensa en profundidad: ver ADR-0003 (RLS) y los puntos en `CLAUDE.md`. Items clave:

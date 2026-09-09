@@ -1,7 +1,7 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable } from '@nestjs/common';
 import { Queue } from 'bullmq';
-import { SLA_QUEUE, TICKET_ROUTING_QUEUE } from './queues';
+import { REALTIME_QUEUE, SLA_QUEUE, TICKET_ROUTING_QUEUE } from './queues';
 
 /**
  * Resuelve una cola por su nombre.
@@ -21,10 +21,12 @@ export class QueueRegistry {
   constructor(
     @InjectQueue(TICKET_ROUTING_QUEUE) routing: Queue,
     @InjectQueue(SLA_QUEUE) sla: Queue,
+    @InjectQueue(REALTIME_QUEUE) realtime: Queue,
   ) {
     this.byName = new Map([
       [TICKET_ROUTING_QUEUE, routing],
       [SLA_QUEUE, sla],
+      [REALTIME_QUEUE, realtime],
     ]);
   }
 
