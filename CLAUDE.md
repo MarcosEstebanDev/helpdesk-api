@@ -193,15 +193,50 @@ las policies usan `NULLIF(current_setting(...), '')` para colapsar "sin setear" 
 
 Fases 1, 2 (a/b/c) y 3 cerradas. Autenticación y autorización funcionan end-to-end.
 
-**Fase 4 — Tickets + AuditLog** (acá empieza el producto):
+**Fase 4 — Tickets + AuditLog** (acá empieza el producto).
+
+Propuesta planteada el 2026-09-08, **pendiente de OK del usuario**. Las cinco
+decisiones abiertas:
+
+1. **Máquina de estados.** ¿`OPEN → IN_PROGRESS → RESOLVED → CLOSED` con transiciones
+   validadas en el dominio, o un campo `status` editable sin reglas? La primera es
+   coherente con el resto del proyecto (invariantes en la entidad) y da material para
+   el ADR-0015; la segunda es más rápida y más pobre.
+2. **Dónde vive la validación.** Propuesta: métodos en la entidad `Ticket`
+   (`assignTo()`, `resolve()`, `close()`) que devuelven `Result`, coherente con
+   ADR-0005. El caso de uso orquesta; la entidad decide si la transición es legal.
+3. **AuditLog en la MISMA transacción** que el cambio que registra. Es el ensayo del
+   transactional outbox (ADR-0007) que llega en la fase 5: si el ticket se guarda,
+   su registro de auditoría existe; no hay estado intermedio.
+4. **Numeración visible.** Un usuario de helpdesk espera `#1042`, no un UUID. Eso
+   necesita un contador POR TENANT (secuencia por organización o `max+1` dentro de la
+   transacción). Decidir si entra ahora o se pospone.
+5. **Índices.** `(tenant_id, status, created_at)` para el listado por defecto, con
+   prefijo `tenant_id` como en `refresh_tokens`. Revisar con `EXPLAIN ANALYZE` sobre
+   datos sembrados, no por intuición.
+
+Checklist de implementación una vez decidido:
 - [ ] Dominio: `Ticket` (estado, prioridad, asignado), `Comment`, `AuditLog`.
 - [ ] Migración con RLS igual que el resto e índices con prefijo `tenant_id`.
 - [ ] Casos de uso: crear, listar, asignar, comentar, cambiar estado.
-- [ ] Rutas protegidas con `@MinRole`: VIEWER lee, AGENT opera, ADMIN configura.
-- [ ] AuditLog escrito en la MISMA transacción que el cambio que registra.
-- [ ] ADR-0015: modelo de estados del ticket y qué transiciones son válidas.
+- [ ] Rutas con `@MinRole`: VIEWER lee, AGENT opera, ADMIN configura.
+- [ ] e2e: aislamiento entre tenants sobre tickets + transiciones inválidas rechazadas.
+- [ ] ADR-0015 con el modelo de estados y las transiciones válidas.
 
 Recordar: proponer estructura/decisiones y **esperar OK** antes de codear.
+
+## Al retomar (última sesión: 2026-09-08)
+
+Todo commiteado y **pusheado** a `origin/main` (`9f90060`). Árbol limpio, base de
+datos de desarrollo vacía (se limpiaron los datos de demo).
+
+```bash
+docker compose -f infra/docker-compose.yml up -d   # Postgres 17 + Redis 7
+pnpm prisma:deploy                                  # solo si la BD es nueva
+pnpm test && pnpm test:e2e                          # 43 unit + 29 e2e en verde
+```
+
+Siguiente paso: decidir las 5 preguntas de la Fase 4 (arriba) y arrancar.
 
 ## Comandos
 
