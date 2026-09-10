@@ -1,0 +1,163 @@
+# Demo completa: base de datos, cache, migraciones, datos de ejemplo, API y web.
+#
+#     docker compose -f infra/docker-compose.demo.yml up --build
+#
+#     web   http://localhost:3001   (entrar con acme-support / admin@acme.test)
+#     api   http://localhost:3000   (OpenAPI en /docs)
+#
+# NO es una configuración de producción: los secretos están escritos aquí y la
+# base de datos usa contraseñas triviales. Es un banco de pruebas para ver el
+# sistema entero funcionando en un solo comando.
+#
+# El servicio `web` construye desde el repo VECINO `helpdesk-web`, que hay que
+# clonar al lado de este. Es el precio de tener repos separados (ADR-0001): la
+# decisión compra despliegues y ciclos de vida independientes, y se paga justo
+# aquí, en el único sitio donde los dos tienen que levantarse juntos.
+name: helpdesk-demo
+
+x-database-url: &database-url postgresql://helpdesk_app:helpdesk_app@postgres:5432/helpdesk?schema=public
+x-migration-database-url: &migration-database-url postgresql://helpdesk:helpdesk@postgres:5432/helpdesk?schema=public
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: helpdesk
+      POSTGRES_PASSWORD: helpdesk
+      POSTGRES_DB: helpdesk
+    # Sin `ports`: nada fuera de este compose necesita la base de datos, y
+    # publicarla chocaría con infra/docker-compose.yml si el stack de desarrollo
+    # ya está levantado. Para inspeccionarla: `docker compose ... exec postgres psql`.
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # `-h 127.0.0.1` es obligatorio: sin él pg_isready comprueba el SOCKET
+      # UNIX, y el entrypoint de Postgres levanta un servidor temporal sobre ese
+      # socket para correr initdb antes de escuchar en TCP. El healthcheck daría
+      # "healthy" mientras el puerto todavía no acepta conexiones, y las
+      # migraciones fallarían con P1001 contra una base que se declaró lista.
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U helpdesk -d helpdesk']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Migraciones. Construye la etapa `build` del Dockerfile y no la final: es la
+  # única que tiene el CLI de Prisma, que es dependencia de desarrollo. Así la
+  # imagen que se despliega no carga con herramientas que solo se usan aquí.
+  #
+  # Corre con el rol OWNER (`helpdesk`), el único que puede hacer DDL. La API
+  # nunca ve esa conexión: usa el rol restringido, sin BYPASSRLS (ADR-0010).
+  migrate:
+    build:
+      context: ..
+      target: build
+    command: ['pnpm', 'prisma', 'migrate', 'deploy']
+    environment:
+      DATABASE_URL: *database-url
+      MIGRATION_DATABASE_URL: *migration-database-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  # Datos de ejemplo. Ver `src/seed.ts`: entra por los casos de uso reales, así
+  # que los tickets nacen con su numeración, su auditoría y sus eventos.
+  #
+  # `WORKER_ENABLED=0`: el seed no debe drenar el outbox. Los eventos que escribe
+  # los procesa la API, que es donde se ve el efecto (auto-asignación y relojes
+  # de SLA apareciendo solos unos segundos después de arrancar).
+  seed:
+    build:
+      context: ..
+      target: build
+    command: ['node', 'dist/seed.js']
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: *database-url
+      MIGRATION_DATABASE_URL: *migration-database-url
+      REDIS_URL: redis://redis:6379
+      WORKER_ENABLED: '0'
+      JWT_ACCESS_SECRET: demo-access-secret-no-usar-fuera-de-esta-demo
+      JWT_REFRESH_SECRET: demo-refresh-secret-no-usar-fuera-de-esta-demo
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: 'no'
+
+  api:
+    build:
+      context: ..
+      target: runner
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      DATABASE_URL: *database-url
+      REDIS_URL: redis://redis:6379
+      # Con los workers dentro del proceso de la API: es lo que hace visible el
+      # comportamiento asíncrono en la demo. En producción se despliegan aparte
+      # poniendo esto a 0 aquí y a 1 en el proceso de workers (ADR-0019).
+      WORKER_ENABLED: '1'
+      # El navegador exige el origen EXACTO cuando la petición lleva
+      # credenciales; con `*` descarta la respuesta entera y el front no puede
+      # ni renovar sesión.
+      CORS_ORIGINS: http://localhost:3001
+      JWT_ACCESS_SECRET: demo-access-secret-no-usar-fuera-de-esta-demo
+      JWT_REFRESH_SECRET: demo-refresh-secret-no-usar-fuera-de-esta-demo
+      LOG_LEVEL: info
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Readiness, no liveness: aquí sí interesa que Postgres y Redis respondan
+      # antes de dar el servicio por bueno. `fetch` global de Node 24, para no
+      # meter curl en una imagen que no lo necesita.
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/health/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  web:
+    build:
+      context: ../../helpdesk-web
+      args:
+        # Es la URL que usa el NAVEGADOR, no el contenedor: por eso `localhost`
+        # y no `api`. El front de Next corre en el cliente contra la API
+        # publicada en el host.
+        NEXT_PUBLIC_API_URL: http://localhost:3000
+    restart: unless-stopped
+    ports:
+      - '3001:3000'
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  redis-data:

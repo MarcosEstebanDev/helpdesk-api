@@ -130,13 +130,72 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 4. ✅ Tickets + Comentarios + AuditLog (máquina de estados, numeración por tenant)
 5. ✅ Colas — 5a (outbox transaccional) y 5b (BullMQ, publicador, consumidor idempotente, DLQ)
 6. ✅ SLA engine (política por tenant, relojes durables, barrido de incumplimientos)
-7. 🔄 Realtime — **backend cerrado** (gateway, rooms, adapter Redis); falta el cliente Next
+7. ✅ Realtime (gateway, rooms, adapter Redis) — **backend y cliente Next cerrados**
 8. ✅ Observabilidad (Pino estructurado, correlación hasta el worker, liveness/readiness)
 9. ⬜ Billing Stripe per-seat con webhooks idempotentes (opcional)
-10. ⬜ Docs finales (ARCHITECTURE.md con ADRs y diagrama, README)
+10. ✅ Docs finales (README con diagramas, índice de ADRs, demo en un comando, LICENSE)
 
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
+
+## Estado actual (2026-09-10)
+
+**Fase 10 (Docs finales) — CERRADA.** Decisiones tomadas con OK del usuario:
+README en INGLÉS con los ADRs en español, y quickstart con docker-compose
+completo + seed.
+
+- **`README.md` reescrito de cero.** Era el boilerplate de `nest new` —logo de
+  Nest, links a Discord, "Author: Kamil Myśliwiec"— desde el 17 de junio. Ahora:
+  diagrama de sistema y diagrama de secuencia del camino asíncrono (**Mermaid**,
+  que GitHub renderiza nativo y entra en el diff), 8 decisiones explicadas con
+  enlace a su ADR, mapa del código, tabla de endpoints con rol mínimo, sección
+  de tests, y una sección explícita de **lo que el proyecto NO tiene y por qué**.
+  Es AUTOSUFICIENTE: un lector en inglés no necesita abrir los ADRs.
+- **Índice de ADRs** al principio de `docs/ARCHITECTURE.md`, agrupado en 6 temas
+  (fundaciones, multi-tenancy, ticketing, asíncrono, tiempo real, contrato y
+  operación). Las anclas se calcularon con las reglas de GitHub, no a ojo.
+- **`infra/docker-compose.demo.yml`**: postgres + redis + migrate + seed + api +
+  web en un comando. Los servicios `migrate` y `seed` construyen la etapa
+  `build` del Dockerfile (la única con el CLI de Prisma), así la imagen que se
+  despliega no carga con herramientas de desarrollo. El servicio `web` construye
+  desde `../../helpdesk-web`: es el único punto donde se paga el ADR-0001.
+- **`src/seed.ts`**: siembra POR LOS CASOS DE USO reales, no con `INSERT`s, así
+  que hereda numeración, auditoría, eventos y transiciones legales. Idempotente.
+  Los usuarios AGENT/VIEWER sí van a mano porque no existe caso de uso para
+  incorporar miembros (la carencia conocida). Script `pnpm seed`.
+- **`LICENSE` (MIT)** en ambos repos; no había en ninguno.
+- **README del web reescrito en inglés**, con sus propias decisiones (token en
+  memoria, por qué la guarda es de cliente, invalidar en vez de pintar, socket
+  atado al token) y su deuda conocida.
+- **Verificado de verdad**: la demo se levantó desde cero y se comprobó contra
+  ella que el worker auto-asigna, que los relojes de SLA se calculan y que el de
+  respuesta lo para el comentario del AGENT y no el del VIEWER. lint:ci,
+  typecheck, **184/184 unit**, **109/109 e2e**, build, y 36/36 en el web.
+
+**Hallazgo caro de la fase 10 (el más valioso):**
+- **El `Dockerfile` estaba ROTO desde la fase 2a y el CI nunca lo vio.** Se
+  escribió en la fase 1 y no se revisó cuando entró Prisma: la etapa `deps` solo
+  copiaba `package.json` y el lockfile, así que el postinstall de
+  `@prisma/client` no encontraba el schema y el cliente no se generaba →
+  `pnpm build` fallaba con 14 errores TS2305. 15 commits con la imagen inservible.
+  **Mismo hueco que el typecheck de la fase 6: un comando que nadie ejecuta no
+  protege nada.** Arreglado (se copia `prisma/` antes de instalar + `prisma
+  generate` explícito) y **añadido un paso `docker build` al workflow de CI**.
+- El cliente generado vive en `node_modules/.pnpm/@prisma+client@<hash>/`, una
+  ruta con hash: copiarla entre etapas es frágil. La etapa `prod-deps` parte de
+  `deps` y hace `pnpm prune --prod`, que respeta `@prisma/client` por ser
+  dependencia de producción, así que el cliente sobrevive a la poda. El runner
+  lleva un `node -e` que falla el BUILD si el cliente no quedó generado.
+- **`pg_isready` sin `-h` comprueba el SOCKET UNIX.** El entrypoint de Postgres
+  levanta un servidor temporal sobre ese socket para correr `initdb` antes de
+  escuchar en TCP, así que el healthcheck daba "healthy" con el puerto aún
+  cerrado, `depends_on: service_healthy` dejaba pasar a `migrate` y este moría
+  con `P1001`. Hay que usar `pg_isready -h 127.0.0.1 ...`.
+- **`NEXT_PUBLIC_*` se inlinea en BUILD**, no en runtime. El README del web decía
+  `docker run -e NEXT_PUBLIC_API_URL=...`, que no tiene ningún efecto sobre el
+  bundle. Ahora es un `ARG` del Dockerfile (verificado grepeando el chunk).
+- El compose de demo NO publica 5432 ni 6379: nadie de fuera los necesita y
+  chocarían con `infra/docker-compose.yml` si el stack de desarrollo está arriba.
 
 ## Estado actual (2026-09-09)
 
@@ -559,7 +618,7 @@ las policies usan `NULLIF(current_setting(...), '')` para colapsar "sin setear" 
 - **Remote en GitHub:** `origin` → https://github.com/MarcosEstebanDev/helpdesk-api (privado). `main` trackea `origin/main`.
 - **Verificado:** `pnpm lint:ci`, `pnpm build`, 7/7 unit, 1/1 e2e en verde.
 
-## PENDIENTE (retomar acá → cliente de la fase 7, luego Fase 8)
+## PENDIENTE (retomar acá → fase 9 opcional, o cerrar carencias)
 
 Fases 1, 2 (a/b/c), 3, 4, 5 (a/b) y 6 cerradas. El backend ya hace lo suyo solo:
 un ticket nuevo se auto-asigna, arranca sus relojes de SLA, y si nadie lo atiende
@@ -633,9 +692,18 @@ datos desechable, hacer `migrate deploy` contra ella y borrarla.
 ```bash
 pnpm install        # respeta allowBuilds de pnpm-workspace.yaml
 pnpm start:dev      # arranca en watch (http://localhost:3000, docs en /docs)
+pnpm seed           # datos de demo por los casos de uso reales (idempotente)
 pnpm build
 pnpm test           # unit
 pnpm test:e2e       # e2e
 pnpm lint
 pnpm typecheck      # tsc --noEmit sobre TODO (specs y dobles incluidos)
+
+# Dos composes distintos, a proposito:
+docker compose -f infra/docker-compose.yml up -d        # solo Postgres + Redis
+docker compose -f infra/docker-compose.demo.yml up --build   # el sistema entero
 ```
+
+El de demo levanta migraciones, seed, api y web (este ultimo desde
+`../../helpdesk-web`, que hay que tener clonado al lado). Web en :3001, api en
+:3000. No publica 5432 ni 6379, asi que puede convivir con el de desarrollo.

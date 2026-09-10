@@ -95,3 +95,13 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      # La IMAGEN se construye aparte porque `pnpm build` no la cubre: compila
+      # con el node_modules del runner, donde el cliente de Prisma ya esta
+      # generado, mientras que la imagen parte de una instalacion limpia. Por esa
+      # diferencia el Dockerfile estuvo roto desde que Prisma entro al proyecto
+      # (fase 2a) hasta la fase 10, con el CI en verde todo el tiempo. Es el
+      # mismo hueco que cubrio el paso de typecheck: un comando que nadie ejecuta
+      # no protege nada.
+      - name: Build Docker image
+        run: docker build -t helpdesk-api:ci .

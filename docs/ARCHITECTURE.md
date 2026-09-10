@@ -9,6 +9,55 @@ ADR explica el contexto, la decisión y las consecuencias.
 
 ---
 
+## Índice de ADRs
+
+24 decisiones. Cada una registra el contexto, la alternativa descartada y
+lo que costaría revertirla.
+
+**Fundaciones** — Cómo está partido el código y qué reglas obedece.
+
+- [ADR-0001](#adr-0001--repos-separados-no-monorepo) — Repos separados (no monorepo)
+- [ADR-0002](#adr-0002--arquitectura-hexagonal-ports--adapters-con-regla-de-dependencias-de-clean) — Arquitectura hexagonal (ports & adapters) con regla de dependencias de Clean
+- [ADR-0005](#adr-0005--errores-como-valores-result-en-domainapplication) — Errores como valores (`Result`) en domain/application
+- [ADR-0006](#adr-0006--branded-types-para-ids) — Branded types para IDs
+- [ADR-0008](#adr-0008--cqrs-lite) — CQRS-lite
+
+**Multi-tenancy y seguridad** — El aislamiento entre organizaciones y quién puede hacer qué.
+
+- [ADR-0003](#adr-0003--multi-tenancy-con-postgresql-row-level-security-row-level) — Multi-tenancy con PostgreSQL Row-Level Security (row-level)
+- [ADR-0009](#adr-0009--tenant-context-vía-transacción--set_config) — Tenant context vía transacción + `set_config`
+- [ADR-0010](#adr-0010--rls-multicapa-rol-de-app-restringido--force-rls) — RLS multicapa: rol de app restringido + FORCE RLS
+- [ADR-0011](#adr-0011--flujo-de-autenticación-módulo-iam) — Flujo de autenticación (módulo `iam`)
+- [ADR-0012](#adr-0012--resolución-slug---tenant-sin-abrir-rls-rol-dedicado--security-definer) — Resolución `slug -> tenant` sin abrir RLS (rol dedicado + `SECURITY DEFINER`)
+- [ADR-0013](#adr-0013--rate-limiting-en-autenticación) — Rate limiting en autenticación
+- [ADR-0014](#adr-0014--autorización-por-jerarquía-de-roles-no-permisos-granulares) — Autorización por jerarquía de roles (no permisos granulares)
+
+**Ticketing** — El dominio: ciclo de vida, atomicidad y numeración.
+
+- [ADR-0015](#adr-0015--ciclo-de-vida-del-ticket-como-máquina-de-estados-en-el-dominio) — Ciclo de vida del ticket como máquina de estados en el dominio
+- [ADR-0016](#adr-0016--unidad-de-trabajo-explícita-el-auditlog-en-la-misma-transacción) — Unidad de trabajo explícita: el AuditLog en la misma transacción
+- [ADR-0017](#adr-0017--numeración-visible-correlativa-por-tenant) — Numeración visible correlativa por tenant
+
+**Trabajo asíncrono** — Cómo un cambio se convierte en efectos, sin perder eventos.
+
+- [ADR-0007](#adr-0007--transactional-outbox-para-publicar-eventos) — Transactional outbox para publicar eventos
+- [ADR-0018](#adr-0018--eventos-de-integración-gordos-en-un-outbox-transaccional) — Eventos de integración "gordos" en un outbox transaccional
+- [ADR-0019](#adr-0019--publicador-por-polling-idempotencia-en-base-de-datos-y-dlq) — Publicador por polling, idempotencia en base de datos y DLQ
+- [ADR-0020](#adr-0020--modelo-de-sla-dos-relojes-política-por-tenant-y-calendario-enchufable) — Modelo de SLA: dos relojes, política por tenant y calendario enchufable
+- [ADR-0021](#adr-0021--temporizadores-durables-en-base-de-datos-y-barrido-no-jobs-retardados) — Temporizadores durables en base de datos y barrido, no jobs retardados
+
+**Tiempo real** — Cómo llega un cambio a una pantalla abierta.
+
+- [ADR-0022](#adr-0022--transporte-de-tiempo-real-handshake-con-jwt-rooms-por-tenant-y-adapter-de-redis) — Transporte de tiempo real: handshake con JWT, rooms por tenant y adapter de Redis
+- [ADR-0023](#adr-0023--qué-se-emite-y-a-quién-un-dto-de-vista-no-el-evento-de-integración) — Qué se emite y a quién: un DTO de vista, no el evento de integración
+
+**Contrato y operación** — La frontera con el frontend y cómo se mira el sistema por dentro.
+
+- [ADR-0004](#adr-0004--contratos-vía-openapi) — Contratos vía OpenAPI
+- [ADR-0024](#adr-0024--observabilidad-logs-estructurados-correlación-hasta-el-worker-y-sondas-separadas) — Observabilidad: logs estructurados, correlación hasta el worker y sondas separadas
+
+---
+
 ## ADR-0001 — Repos separados (no monorepo)
 
 **Contexto.** Backend (NestJS) y frontend (Next.js) podrían vivir en un monorepo.
