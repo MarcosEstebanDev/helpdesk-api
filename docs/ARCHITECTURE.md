@@ -50,6 +50,7 @@ lo que costaría revertirla.
 
 - [ADR-0022](#adr-0022--transporte-de-tiempo-real-handshake-con-jwt-rooms-por-tenant-y-adapter-de-redis) — Transporte de tiempo real: handshake con JWT, rooms por tenant y adapter de Redis
 - [ADR-0023](#adr-0023--qué-se-emite-y-a-quién-un-dto-de-vista-no-el-evento-de-integración) — Qué se emite y a quién: un DTO de vista, no el evento de integración
+- [ADR-0025](#adr-0025--directorio-de-miembros-y-composición-del-principal) — Directorio de miembros y composición del principal
 
 **Contrato y operación** — La frontera con el frontend y cómo se mira el sistema por dentro.
 
@@ -952,3 +953,149 @@ parametrizado dentro de transacción, jobs/WS re-establecen tenant context, refr
 rotation con reuse detection, argon2id, RBAC por membership, sanitización de email
 entrante, verificación de firmas de webhooks, rate limiting en auth, logs sin secretos.
 Alcance "portfolio-pragmático": lo crítico implementado, el resto documentado como future work.
+
+---
+
+## ADR-0025 — Directorio de miembros y composición del principal
+
+**Estado:** aceptado · **Fecha:** 2026-09-10
+
+### Contexto
+
+No existía forma de saber quién trabaja en una organización. El frontend no
+podía ofrecer un selector de personas para asignar un ticket —`POST
+/tickets/:id/assign` pide un UUID que nadie sabe de dónde sacar— y lo resolvía
+con un botón "Asignármelo" que cubre al agente pero no al administrador que
+reparte trabajo.
+
+Por el mismo hueco, `GET /auth/me` devolvía el principal sin email. Como el
+access token vive solo en memoria, al recargar la página el cliente canjea el
+refresh, llama a `/auth/me` y se queda sin email hasta el siguiente login.
+
+Las dos cosas son la misma pregunta: **qué identidad se expone por HTTP y a
+quién.** Por eso van en un solo ADR.
+
+### Decisión 1 — El directorio vive en `iam` y se llama `GET /members`
+
+`User` y `Membership` son agregados de `iam` (ADR-0011). `ticketing` ya lee
+`memberships`, pero detrás del puerto `MemberDirectory` y para una regla suya
+("¿este usuario es asignable?"); ese acoplamiento está confinado a un adapter a
+propósito, y publicar desde ahí una API de identidad lo convertiría en un
+contrato público.
+
+No es `/users` porque lo que se lista son **memberships**: un usuario sin
+membership no es miembro de nada, y el `role` no existiría en la respuesta. No
+es `/organization/members` porque no hay otra organización direccionable — el
+tenant sale del JWT, igual que en `/tickets` y `/sla-policy`.
+
+Se descartó un módulo `directory` propio: sería un bounded context sin
+invariantes y con una sola query. Un contexto se justifica por reglas propias,
+no por una ruta.
+
+### Decisión 2 — El rango mínimo es AGENT, no VIEWER
+
+Un `VIEWER` es el cliente final: alguien que abrió un ticket. El listado
+completo de empleados en sus manos es (a) una lista de correos cosechable para
+phishing dirigido, entregada por un endpoint autenticado y por tanto invisible a
+cualquier defensa anti-scraping; (b) una radiografía de la plantilla y de su
+estructura que ningún cliente necesita; y (c) irreversible, porque lo que se
+publica en un contrato de API se queda.
+
+`AGENT` es exactamente el rango que ya puede asignar tickets, así que la
+audiencia del endpoint coincide con su propósito sin sobrar nadie. `ADMIN` sería
+demasiado estricto: repartir trabajo es la tarea diaria de un agente, el mismo
+razonamiento que puso `PATCH /tickets/:id/status` en AGENT.
+
+Es la simétrica de la Decisión 6 del ADR-0020, que dejó la lectura de la
+política de SLA en ADMIN aunque leer tickets sea de VIEWER: **el rango se decide
+por qué información se revela, no por si el verbo es de lectura.**
+
+**Corolario, y hueco reconocido:** los nombres que un cliente necesita ver en la
+conversación de SU ticket no salen de aquí. Saldrán de enriquecer
+`GET /tickets/:id` con los participantes de ese ticket —gente con la que el
+solicitante ya está hablando— y no de aflojar este endpoint. Sigue pendiente.
+
+### Decisión 3 — Sin paginación y sin filtros
+
+`GET /tickets` pagina por cursor porque los tickets crecen sin techo con el
+tiempo; los miembros crecen con la plantilla y están acotados por los asientos
+que se facturan. Además el consumidor real —un selector de personas— necesita la
+lista entera para poder buscar dentro sin ir y volver al servidor en cada tecla.
+
+La respuesta va envuelta en `{ items }` y no como array pelado: añadir
+`nextCursor` mañana es un cambio **aditivo** del OpenAPI (ADR-0004), convertir un
+array en objeto rompería a todos los clientes. Cuesta cero hoy.
+
+Un `?role=` se descarta además por engañoso: `role=AGENT` **no** devolvería a los
+ADMIN, así que un cliente que filtrara así perdería justo a la gente con más
+autoridad — la jerarquía del ADR-0014 no se expresa con igualdad.
+
+**Revisar si** una organización supera unos cientos de miembros: ahí entran
+`limit`/`cursor` con el patrón de `TicketReadModel` y, con ellos, la búsqueda por
+email. Entran juntos o no entra ninguno: si el conjunto es lo bastante chico para
+no paginarlo, también lo es para filtrarlo en el cliente.
+
+### Decisión 4 — Cuatro campos, elegidos uno a uno
+
+`userId`, `email`, `role`, `joinedAt`. El `select` es explícito y el mapeo se
+escribe campo a campo, **nunca con un spread de la fila**: `users` guarda
+`password_hash` en la misma tabla.
+
+Se llama `userId` y no `id` porque es el valor que referencian `assigneeId`,
+`requesterId` y `authorId`; llamarlo `id` invitaría a confundirlo con el id del
+membership. Fuera quedan ese id de membership (surrogate interno) y el
+`tenantId`, que es el del propio llamante: devolverlo sugeriría que es un
+parámetro, y en este sistema el tenant nunca lo es.
+
+### Decisión 5 — El principal se compone del token MÁS una lectura
+
+`GET /auth/me` devuelve el `email` leído de la base de datos y el `role` **del
+token**.
+
+Leer el rol fresco haría que `/auth/me` contradijera a los guards, que comparan
+contra el rol del token (ADR-0014): la interfaz habilitaría acciones que cada
+petición rechazaría con 403 hasta que el token caducase. Un desfase conocido y
+coherente es mejor que dos verdades simultáneas.
+
+El email no se mete como claim del JWT: sería PII en una credencial que viaja en
+cada cabecera —redactada en *nuestros* logs, no en los de un proxy ajeno—, se
+quedaría vieja igual que el rol, y tocaría `AccessTokenClaims`, `SessionIssuer`,
+`JwtTokenService`, `TenantContext`, el middleware, el handshake del WebSocket y
+todos los e2e que decodifican claims. Mucho blast radius para ahorrar una
+consulta por recarga de página.
+
+Un token válido de un usuario que ya no es miembro responde **401**: la sesión no
+corresponde a nadie. Un 200 con el email vacío obligaría al cliente a manejar un
+estado imposible.
+
+### Decisión 6 — `GET /tickets` acepta `requesterId`
+
+Simétrico a `assigneeId`, y no redundante con él: un VIEWER nunca tiene tickets
+asignados, así que "mis tickets" solo significa algo para él si se puede filtrar
+por quién los abrió. Sin este filtro, la función existe para unos roles y no para
+otros, que es peor que no tenerla.
+
+### Consecuencias
+
+- (+) El frontend puede ofrecer un selector real y, más adelante, gestión de
+  roles; la sesión sobrevive a una recarga con el email puesto; y "mis tickets"
+  significa algo para los tres roles.
+- (+) La superficie expuesta son cuatro campos elegidos uno a uno, y no hace
+  falta migración ni índice nuevo: `memberships` ya tiene
+  `@@unique([tenantId, userId])`.
+- (−) `/auth/me` deja de ser una función pura del token: hace una consulta por
+  PK en el camino crítico de carga de la página y puede responder 401.
+- (−) El listado etiqueta a las personas por su **email**, porque no hay columna
+  `name`. Hasta que la haya, el selector muestra correos.
+- (−) Sigue sin existir flujo de invitación: el directorio se puede *leer*, no
+  *cambiar*. El seed y los tests insertan sus miembros a mano.
+
+### Deuda que este endpoint destapa
+
+`AutoAssignTicket` reparte solo entre AGENT y ADMIN (`MemberDirectory.agentsOf`),
+pero `AssignTicket` manual acepta a **cualquier miembro**: solo comprueba
+`isMember`, no el rol. Hoy no se nota porque el frontend solo ofrece
+"Asignármelo"; con un selector de personas en pantalla, un administrador puede
+asignarle un ticket al cliente que lo abrió. Se decidió **no** endurecer la regla
+en esta ronda —es un cambio de negocio con su propio diseño— y mitigarlo
+mostrando el rol de cada persona en el selector.

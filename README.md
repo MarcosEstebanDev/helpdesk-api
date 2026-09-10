@@ -352,9 +352,10 @@ The full contract, with schemas, is at `/docs`.
 | `POST` | `/auth/login` | — | Needs `organizationSlug` |
 | `POST` | `/auth/refresh` | — | Rotates; reuse revokes the family |
 | `POST` | `/auth/logout` | — | Idempotent |
-| `GET` | `/auth/me` | any | Current session |
+| `GET` | `/auth/me` | any | Current session; `email` is read from the database, `role` comes from the token |
+| `GET` | `/members` | AGENT | Directory of the caller's organization. Not VIEWER, on purpose |
 | `POST` | `/tickets` | VIEWER | |
-| `GET` | `/tickets` | VIEWER | Cursor-paginated |
+| `GET` | `/tickets` | VIEWER | Cursor-paginated; filters by `status`, `assigneeId`, `requesterId` |
 | `GET` | `/tickets/:id` | VIEWER | Includes live SLA clocks |
 | `GET` | `/tickets/:id/history` | VIEWER | Audit trail |
 | `POST` | `/tickets/:id/comments` | VIEWER | |
@@ -424,10 +425,19 @@ Being explicit about the edges is part of the point.
 - **No billing.** Stripe per-seat with idempotent webhooks was planned and cut —
   it would have repeated patterns already demonstrated (idempotency, outbox)
   rather than adding a new one.
-- **No member management.** There is no `GET /members` and no invite flow, so the
-  frontend cannot offer a person-picker when assigning; it offers "assign to me"
-  instead. It is also why the seed writes its AGENT and VIEWER users directly
-  instead of going through a use case.
+- **No member management, only a member directory.** `GET /members` lists who is
+  in the organization, but there is no invite flow and no way to change someone's
+  role through the API: the directory can be read, not written. It is why the seed
+  still writes its AGENT and VIEWER users directly instead of going through a use
+  case. The directory requires AGENT
+  ([ADR-0025](docs/ARCHITECTURE.md#adr-0025--directorio-de-miembros-y-composición-del-principal)):
+  handing the full staff list to a VIEWER — an end customer who filed a ticket —
+  would be a harvestable phishing target served by an authenticated endpoint.
+- **No participant names inside a ticket.** A comment carries an `authorId` and
+  nothing else, and the directory is not open to VIEWERs, so the frontend labels
+  people by their role in that ticket ("you", "requester", "assigned agent"). The
+  planned fix is to enrich `GET /tickets/:id` with the participants of that
+  ticket, not to loosen the directory.
 - **No generated OpenAPI client.** [ADR-0004](docs/ARCHITECTURE.md#adr-0004--contratos-vía-openapi)
   says the frontend should generate a typed client from the spec. It does not
   yet; the client interface is maintained by hand. WebSocket messages are not in

@@ -138,6 +138,41 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
+## Estado actual (2026-09-10) — Directorio de miembros (ADR-0025)
+
+Rama `feat/members-endpoint`. Cierra la carencia que bloqueaba tres pantallas del
+frontend a la vez.
+
+- **`GET /members`** (`iam`, `@MinRole('AGENT')`) — `{ items: [{ userId, email,
+  role, joinedAt }] }`. Sin paginación ni filtros a propósito; el envoltorio
+  `{ items }` deja que añadir `nextCursor` mañana sea aditivo. `MemberReadModel`
+  con `select` explícito: `users` guarda `password_hash` en la misma tabla, así
+  que la proyección se escribe campo a campo y **nunca** con un spread.
+- **El rango es AGENT y no VIEWER**, y es la decisión de fondo del ADR: un VIEWER
+  es el cliente final, y el listado de empleados en sus manos es una lista de
+  correos cosechable servida por un endpoint autenticado. La regla que sale de
+  ahí: **el rango se decide por qué se revela, no por si el verbo es de lectura.**
+- **`GET /auth/me` devuelve `email`**, leído de la base; el `role` sigue saliendo
+  del TOKEN, porque los guards autorizan con el del token y devolver uno fresco
+  haría que la UI habilitara acciones que cada petición rechaza con 403. Un token
+  válido de alguien que ya no es miembro responde 401.
+- **`GET /tickets` acepta `requesterId`**, simétrico a `assigneeId`: un VIEWER
+  nunca tiene tickets asignados, así que sin esto "mis tickets" solo significaba
+  algo para un agente.
+- **Sin migración ni índice nuevo**: `memberships` ya tiene `@@unique([tenantId,
+  userId])`, cuyo btree cubre el `where tenant_id`.
+
+**Deuda que este endpoint DESTAPA (anotada, no resuelta):** `AutoAssignTicket`
+reparte solo entre AGENT y ADMIN, pero `AssignTicket` manual acepta a cualquier
+miembro — solo mira `isMember`, no el rol. Hoy no se nota porque el frontend solo
+ofrece "Asignármelo"; con un selector de personas, un admin puede asignarle un
+ticket al cliente que lo abrió. Se decidió mitigarlo mostrando el rol en el
+selector y NO cambiar la regla de negocio en esta ronda.
+
+**Sigue pendiente:** los nombres en la conversación de un ticket los necesita un
+VIEWER, y con `/members` en AGENT no los tiene. La salida acordada es enriquecer
+`GET /tickets/:id` con los participantes de ESE ticket, no aflojar el directorio.
+
 ## Estado actual (2026-09-10)
 
 **Fase 10 (Docs finales) — CERRADA.** Decisiones tomadas con OK del usuario:
