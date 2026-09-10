@@ -339,6 +339,47 @@ describe('Tickets (e2e)', () => {
 
       expect(items.some((t) => t.id === ticketId)).toBe(true);
     });
+
+    /**
+     * `requesterId` no es redundante con `assigneeId` (ADR-0025, decisión 6):
+     * un VIEWER nunca tiene tickets asignados, así que sin este filtro "mis
+     * tickets" solo significaría algo para un agente.
+     */
+    it('permite filtrar el listado por quien abrió el ticket', async () => {
+      const propio = await crearTicket(acme.token, {
+        subject: 'Lo abrí yo',
+      }).expect(201);
+      const propioId = (propio.body as { id: string }).id;
+
+      const res = await conAuth(
+        'get',
+        `/tickets?requesterId=${acme.userId}&limit=100`,
+        acme.token,
+      ).expect(200);
+      const items = (
+        res.body as { items: { id: string; requesterId: string }[] }
+      ).items;
+
+      expect(items.some((t) => t.id === propioId)).toBe(true);
+      expect(items.every((t) => t.requesterId === acme.userId)).toBe(true);
+    });
+
+    it('el filtro por solicitante se combina con el de estado', async () => {
+      const res = await conAuth(
+        'get',
+        `/tickets?requesterId=${acme.userId}&status=OPEN&limit=100`,
+        acme.token,
+      ).expect(200);
+      const items = (
+        res.body as { items: { requesterId: string; status: string }[] }
+      ).items;
+
+      expect(
+        items.every(
+          (t) => t.requesterId === acme.userId && t.status === 'OPEN',
+        ),
+      ).toBe(true);
+    });
   });
 
   // ------------------------------------------------------------- auditoría

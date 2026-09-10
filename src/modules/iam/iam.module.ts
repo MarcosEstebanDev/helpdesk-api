@@ -34,6 +34,8 @@ import { TenantContextMiddleware } from './infrastructure/auth/tenant-context.mi
 import { Argon2PasswordHasher } from './infrastructure/crypto/argon2-password-hasher';
 import { JwtTokenService } from './infrastructure/crypto/jwt-token.service';
 import { AuthController } from './infrastructure/http/auth.controller';
+import { MemberController } from './infrastructure/http/member.controller';
+import { MemberReadModel } from './infrastructure/persistence/member.read-model';
 import { PrismaMembershipRepository } from './infrastructure/persistence/prisma-membership.repository';
 import { PrismaOrganizationRepository } from './infrastructure/persistence/prisma-organization.repository';
 import { PrismaRefreshTokenRepository } from './infrastructure/persistence/prisma-refresh-token.repository';
@@ -53,9 +55,12 @@ import { PrismaUserRepository } from './infrastructure/persistence/prisma-user.r
  */
 @Module({
   imports: [JwtModule.register({})], // los secretos se pasan por llamada
-  controllers: [AuthController],
+  controllers: [AuthController, MemberController],
   providers: [
     // --- Adapters (implementaciones concretas) ---
+    // Lado de lectura del directorio: sin puerto que cablear, porque no hay
+    // ningún caso de uso que dependa de él (CQRS-lite, ADR-0008).
+    MemberReadModel,
     Argon2PasswordHasher,
     JwtTokenService,
     PrismaOrganizationRepository,
