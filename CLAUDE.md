@@ -12,7 +12,13 @@ no cantidad de features.
 Dos repos separados (NO monorepo — decisión deliberada, ver ADR-0001):
 - `helpdesk-api` (este) — NestJS, arquitectura hexagonal.
 - `helpdesk-web` — Next.js App Router. **Ya scaffoldeado** (Fase 1 cerrada): repo PÚBLICO
-  https://github.com/MarcosEstebanDev/helpdesk-web (ojo: el web es público, este api es privado).
+  https://github.com/MarcosEstebanDev/helpdesk-web
+- **Los DOS repos son PÚBLICOS** (verificado en GitHub el 2026-09-10; este archivo
+  decía que el api era privado y estaba desactualizado). Cuidado con lo que se
+  commitea: los secretos entran SOLO por variables de entorno validadas con Zod
+  (`env.schema.ts`), y `.env` nunca estuvo versionado. Lo que sí hay escrito en el
+  repo son valores de CI, demo y tests, y cada uno lo dice en su propio valor
+  (`ci-...-no-usar-en-produccion`, `demo-...-no-usar-fuera-de-esta-demo`).
 
 ## Stack y tooling
 
@@ -114,6 +120,14 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 - RBAC: el rol es **por membership** (por tenant), no global.
 - Sanitizar HTML del email entrante (anti stored-XSS). Verificar firmas de webhooks.
 - Rate limiting en auth (ADR-0013): guard global + `@Throttle` estricto en login/registro/refresh.
+
+## Ramas (desde 2026-09-10)
+
+- **`main` = producción.** No se le mergea nada sin los e2e en verde.
+- **`dev` = integración.** Es donde entra el trabajo terminado que todavía no se
+  verificó de punta a punta. Los merges van con `--no-ff` para que el historial
+  muestre dónde entró cada tanda.
+- Las ramas de feature salen de `dev` y vuelven a `dev`.
 
 ## Metodología de trabajo (IMPORTANTE)
 
@@ -650,7 +664,7 @@ las policies usan `NULLIF(current_setting(...), '')` para colapsar "sin setear" 
 - `Dockerfile` multi-stage (pnpm via corepack, runner no-root) + `.dockerignore`.
 - CI GitHub Actions (`.github/workflows/ci.yml`): install → `lint:ci` → test → test:e2e → build. (`lint:ci` = eslint sin `--fix`, `--max-warnings 0`).
 - `.gitignore` + `.gitattributes` (normaliza EOL a LF) + **git init + commit inicial** (`24d8cb3`, rama `main`, 36 archivos).
-- **Remote en GitHub:** `origin` → https://github.com/MarcosEstebanDev/helpdesk-api (privado). `main` trackea `origin/main`.
+- **Remote en GitHub:** `origin` → https://github.com/MarcosEstebanDev/helpdesk-api (PÚBLICO). `main` trackea `origin/main`.
 - **Verificado:** `pnpm lint:ci`, `pnpm build`, 7/7 unit, 1/1 e2e en verde.
 
 ## PENDIENTE (retomar acá → fase 9 opcional, o cerrar carencias)
