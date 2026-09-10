@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { Job, Queue } from 'bullmq';
 import type { Env } from '../../../../infrastructure/config/env.schema';
 import type { EventJobData } from '../../../../infrastructure/outbox/outbox-publisher.service';
+import { runWithJobContext } from '../../../../infrastructure/observability/job-context';
 import {
   DEAD_LETTER_QUEUE,
   REALTIME_QUEUE,
@@ -56,21 +57,41 @@ export class RealtimeProcessor
     void this.worker.run();
   }
 
-  async process(job: Job<EventJobData>): Promise<BroadcastOutcome> {
-    const { data } = job;
+  /**
+   * Todo el trabajo del job corre dentro de la correlación del evento (ADR-0024):
+   * sus logs cuelgan de la misma historia que la petición que lo originó.
+   */
+  process(job: Job<EventJobData>): Promise<BroadcastOutcome> {
+    return runWithJobContext(
+      job.data.requestId,
+      job.data.tenantId,
+      async () => {
+        const { data } = job;
 
-    if (data.aggregateType !== 'ticket') {
-      return this.discard(job, `agregado no manejado: ${data.aggregateType}`);
-    }
+        if (data.aggregateType !== 'ticket') {
+          return this.discard(
+            job,
+            `agregado no manejado: ${data.aggregateType}`,
+          );
+        }
 
-    return this.broadcast.execute({
-      eventName: data.eventName,
-      version: data.version,
-      tenantId: data.tenantId,
-      ticketId: data.aggregateId,
-      occurredAt: new Date(data.occurredAt),
-      payload: data.payload,
-    });
+        const inicio = Date.now();
+        const resultado = await this.broadcast.execute({
+          eventName: data.eventName,
+          version: data.version,
+          tenantId: data.tenantId,
+          ticketId: data.aggregateId,
+          occurredAt: new Date(data.occurredAt),
+          payload: data.payload,
+        });
+
+        // Lleva el `requestId` heredado del evento (ADR-0024).
+        this.logger.log(
+          `${data.eventName} → ${resultado.action} (${Date.now() - inicio}ms)`,
+        );
+        return resultado;
+      },
+    );
   }
 
   // --------------------------------------------------------------------- DLQ

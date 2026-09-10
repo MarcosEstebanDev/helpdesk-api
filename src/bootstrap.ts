@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import cookieParser from 'cookie-parser';
 import type { NextFunction, Request, Response } from 'express';
 import type { Env } from './infrastructure/config/env.schema';
+import { requestIdMiddleware } from './infrastructure/observability/request-id.middleware';
 import { TenantContextMiddleware } from './modules/iam/infrastructure/auth/tenant-context.middleware';
 
 /**
@@ -13,6 +14,10 @@ import { TenantContextMiddleware } from './modules/iam/infrastructure/auth/tenan
  * no es el que se despliega — el fallo más caro y silencioso de una suite e2e.
  */
 export function configureApp(app: INestApplication): void {
+  // Correlación PRIMERO: todo lo que ocurra después —validación, auth, la
+  // petición entera— tiene que poder decir a qué request pertenece.
+  app.use(requestIdMiddleware);
+
   // Rechaza campos desconocidos en el borde: defensa ante mass assignment.
   app.useGlobalPipes(
     new ValidationPipe({

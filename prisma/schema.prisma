@@ -257,6 +257,10 @@ model OutboxMessage {
   publishedAt   DateTime? @map("published_at")
   attempts      Int       @default(0)
   lastError     String?   @map("last_error")
+  /// Correlación con la petición HTTP que originó el evento (ADR-0024). Nullable:
+  /// lo escrito antes de esa fase, y lo que nace fuera de una request (el barrido
+  /// de SLA), no lo tiene.
+  requestId     String?   @map("request_id")
 
   organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 

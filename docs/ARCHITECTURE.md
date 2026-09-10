@@ -798,6 +798,103 @@ desde el esquema del evento), o aparece un consumidor que sí necesita exactly-o
 
 ---
 
+## ADR-0024 — Observabilidad: logs estructurados, correlación hasta el worker y sondas separadas
+
+**Contexto.** El sistema ya hace cosas por su cuenta: un ticket entra por HTTP, un
+worker lo auto-asigna, otro le arranca los relojes de SLA, un tercero avisa por
+WebSocket, y un barrido puede marcar un incumplimiento media hora después. Cuando algo
+va mal, la pregunta no es "¿qué respondió el endpoint?" sino "¿qué pasó a raíz de esto?"
+— y esa cadena atraviesa procesos y minutos.
+
+**Decisión 1 — Pino SUSTITUYE al logger de Nest, no convive con él.** Con
+`bufferLogs` + `app.useLogger`, los mensajes de arranque, los de los workers y los de
+las excepciones salen en el mismo formato que los de las peticiones. Dos loggers en
+paralelo dejarían la mitad de lo que pasa en producción fuera de cualquier consulta, y
+sería justo la mitad que se mira cuando una instancia no levanta.
+
+**Decisión 2 — El `requestId` viaja con el evento hasta el worker.** Es el corazón de
+la fase. `outbox_messages` gana una columna `request_id`; el adapter la rellena leyendo
+el `AsyncLocalStorage` de la petición, el publicador la mete en el job, y cada
+consumidor abre su trabajo con `runWithJobContext`, que la restaura. Buscar un
+identificador en los logs devuelve la petición **y** todo lo asíncrono que provocó.
+
+Va en una COLUMNA y no dentro de `payload`: el payload es el contrato de negocio del
+evento (ADR-0018) y meterle metadatos de infraestructura lo ensuciaría para todos los
+consumidores. Es nullable porque lo que nace fuera de una petición —el barrido de SLA—
+no tiene ninguna a la que apuntar; en ese caso el worker genera una correlación nueva,
+para que al menos su propio trabajo se pueda seguir.
+
+**Decisión 3 — La correlación se inyecta con `mixin`, no con `customProps`.**
+`customProps` solo alcanza a la línea de acceso que emite `pino-http`; `mixin` se
+ejecuta en cada log de la instancia. La diferencia no es cosmética: la línea de acceso
+ya se sabe de qué petición es — lo que no se sabe es de cuál viene un job procesado
+medio segundo después, y eso solo aparece si la correlación llega a TODOS los logs.
+
+**Decisión 4 — El contexto de correlación es un `AsyncLocalStorage` APARTE del de
+tenant.** El de tenant significa "hay un usuario autenticado de esta organización" y de
+él dependen los guards de autorización; el `requestId` tiene que existir también en un
+login fallido y en un 404, que son precisamente las trazas que se van a buscar. Para
+poder filtrar por organización igualmente, el contexto de correlación lleva su propio
+`tenantId` opcional, que rellenan los workers a partir del evento.
+
+**Decisión 5 — El `x-request-id` entrante se respeta, pero se sanea.** Se respeta para
+no romper la cadena cuando la petición viene de otro servicio. Se sanea porque el valor
+lo elige el cliente y acaba en cada línea de log: se recorta a 128 caracteres —si no,
+una cabecera de un megabyte infla el volumen de logs a voluntad— y se rechaza lo que
+no sea `[\w.:-]+`, porque un salto de línea permite inyectar entradas falsas en un log
+de texto plano. **Se vuelve a validar al restaurarlo en el worker**, y no solo al
+entrar: para entonces ese valor lleva horas guardado en la base de datos.
+
+**Decisión 6 — Liveness y readiness son rutas distintas.** `/health/live` no toca
+ninguna dependencia; `/health/ready` comprueba Postgres y Redis. Si liveness mirara la
+base de datos, una caída de Postgres haría que el orquestador reiniciara la aplicación
+en bucle: reiniciar no arregla una base de datos caída y encima tira las conexiones que
+quedaban. Fallar en readiness, en cambio, es lo correcto — que el balanceador deje de
+mandar tráfico a una instancia que no puede servirlo. `/health` se mantiene como alias
+de liveness porque hay contenedores apuntando a él desde la fase 1.
+
+Los dos indicadores usan **la conexión que usa la aplicación**, no una propia: el rol
+de base de datos es restringido (ADR-0010) y el pool de Redis es el de BullMQ.
+Comprobar con un cliente aparte diría que todo va bien mientras la aplicación sigue sin
+poder trabajar.
+
+**Decisión 7 — Ni cuerpos de petición ni credenciales en los logs.** `Authorization`,
+`Cookie`, `set-cookie` y los campos de contraseña se redactan antes de escribir. El
+cuerpo no se registra en absoluto: en este producto lleva descripciones y comentarios
+de tickets, que son datos del cliente. Los logs se copian a sitios con muchos menos
+controles que la base de datos, así que lo que no está en ellos no se puede filtrar.
+
+**Alternativas descartadas.**
+- *OpenTelemetry con trazas distribuidas desde ya.* Es el siguiente paso natural, pero
+  exige un collector para aportar algo y aquí todo corre en un proceso. La correlación
+  por `requestId` da el 80% del valor —seguir una operación de punta a punta— sin
+  infraestructura nueva. Queda como trabajo futuro, y el `request_id` del outbox es la
+  costura por la que entrará un `traceparent`.
+- *Meter el `requestId` en el payload del evento.* Sin migración, pero contamina el
+  contrato de negocio que leen todos los consumidores.
+- *Un solo `/health` que lo compruebe todo.* Es lo que había, y convierte cualquier
+  caída de dependencia en un bucle de reinicios.
+- *Registrar el cuerpo de las peticiones "solo en desarrollo".* Un flag mal puesto un
+  día es una fuga de datos de clientes; no registrarlo nunca no tiene ese modo de
+  fallo.
+
+**Consecuencias.** (+) Una sola búsqueda por `requestId` reconstruye lo que pasó,
+incluidos los efectos asíncronos y los de segunda ola (un evento que produce el propio
+worker hereda la correlación). (+) Los workers dicen qué hicieron y cuánto tardaron:
+antes solo hablaban al fallar. (+) Las sondas distinguen "está vivo" de "puede
+trabajar". (−) Una columna más en el outbox, y **cada columna nueva de esa tabla hay
+que concedérsela explícitamente al rol del publicador**, que tiene grants por columna
+(ver gotcha). (−) Un log por job procesado: con volumen alto habrá que bajarlo a
+`debug`. (−) La correlación depende de que cada consumidor nuevo abra su trabajo con
+`runWithJobContext`; no hay nada que lo obligue.
+
+**Revisar si.** Aparece un segundo servicio (→ propagar `traceparent` de W3C en vez de
+un id propio, reutilizando la columna), el volumen de logs se dispara (→ muestreo, o
+bajar el log por job), o hace falta saber dónde se va el tiempo dentro de una operación
+(→ OpenTelemetry de verdad, con spans).
+
+---
+
 ## Seguridad (resumen)
 
 Defensa en profundidad: ver ADR-0003 (RLS) y los puntos en `CLAUDE.md`. Items clave:

@@ -297,6 +297,9 @@ describe('Colas y outbox (e2e)', () => {
         version: 99,
         payload: { number: 1 },
         occurredAt: new Date().toISOString(),
+        // Este job se construye a mano, sin pasar por el outbox: no hay
+        // petición de la que heredar correlación.
+        requestId: null,
       };
       const envenenado = await routing.add('ticket.created', data, {
         jobId: eventId,
@@ -329,6 +332,9 @@ describe('Colas y outbox (e2e)', () => {
         version: 1,
         payload: {},
         occurredAt: new Date().toISOString(),
+        // Este job se construye a mano, sin pasar por el outbox: no hay
+        // petición de la que heredar correlación.
+        requestId: null,
       };
       const job = await routing.add('comment.added', data, { jobId: eventId });
       jobsCreados.push({ queue: routing, id: eventId });

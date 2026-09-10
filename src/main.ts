@@ -1,13 +1,22 @@
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { configureApp } from './bootstrap';
 import { attachRealtimeAdapter } from './infrastructure/realtime/redis-io.adapter';
 import type { Env } from './infrastructure/config/env.schema';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  // `bufferLogs`: retiene los mensajes de arranque hasta que el logger real
+  // esté disponible. Sin esto, todo lo que ocurre antes de `useLogger` sale con
+  // el logger por defecto de Nest — justo los mensajes que más se miran cuando
+  // una instancia no levanta.
+  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+
+  // Pino SUSTITUYE al logger de Nest, no convive con él: si no, la mitad de lo
+  // que pasa en producción quedaría fuera de las consultas por no ser JSON.
+  app.useLogger(app.get(Logger));
 
   configureApp(app);
 

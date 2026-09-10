@@ -55,6 +55,11 @@ export const envSchema = z.object({
   // TTLs en formato de `ms` (ej. '15m', '30d') — los consume @nestjs/jwt.
   JWT_ACCESS_TTL: z.string().min(1).default('15m'),
   JWT_REFRESH_TTL: z.string().min(1).default('30d'),
+  // Nivel de log (ADR-0024). En producción `info`: `debug` en un sistema con
+  // colas escupe una línea por job y ahoga lo que importa.
+  LOG_LEVEL: z
+    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
+    .default('info'),
   // Orígenes del navegador autorizados, separados por coma.
   //
   // El frontend manda `credentials: 'include'` para que viaje la cookie httpOnly

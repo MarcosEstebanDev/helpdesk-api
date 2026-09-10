@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { Job, Queue } from 'bullmq';
 import type { Env } from '../../../../infrastructure/config/env.schema';
 import type { EventJobData } from '../../../../infrastructure/outbox/outbox-publisher.service';
+import { runWithJobContext } from '../../../../infrastructure/observability/job-context';
 import {
   DEAD_LETTER_QUEUE,
   TICKET_ROUTING_QUEUE,
@@ -54,43 +55,61 @@ export class TicketRoutingProcessor
     void this.worker.run();
   }
 
-  async process(job: Job<EventJobData>): Promise<AutoAssignOutcome> {
-    const data = job.data;
+  /**
+   * Todo el trabajo del job corre dentro de la correlación del evento (ADR-0024):
+   * sus logs cuelgan de la misma historia que la petición que lo originó.
+   */
+  process(job: Job<EventJobData>): Promise<AutoAssignOutcome> {
+    return runWithJobContext(
+      job.data.requestId,
+      job.data.tenantId,
+      async () => {
+        const data = job.data;
 
-    if (data.eventName !== 'ticket.created') {
-      // La cola solo debería traer este evento; si llega otro, el mapa de
-      // enrutado y este consumidor se han desincronizado.
-      return this.discard(job, `evento no manejado: ${data.eventName}`);
-    }
+        if (data.eventName !== 'ticket.created') {
+          // La cola solo debería traer este evento; si llega otro, el mapa de
+          // enrutado y este consumidor se han desincronizado.
+          return this.discard(job, `evento no manejado: ${data.eventName}`);
+        }
 
-    if (data.version !== SUPPORTED_VERSION) {
-      // Reintentar no arregla un formato que no entendemos: es un fallo
-      // PERMANENTE, así que va directo al descarte en vez de gastar 5 intentos.
-      return this.discard(job, `versión no soportada: ${data.version}`);
-    }
+        if (data.version !== SUPPORTED_VERSION) {
+          // Reintentar no arregla un formato que no entendemos: es un fallo
+          // PERMANENTE, así que va directo al descarte en vez de gastar 5 intentos.
+          return this.discard(job, `versión no soportada: ${data.version}`);
+        }
 
-    const numero = data.payload.number;
-    if (typeof numero !== 'number') {
-      return this.discard(job, 'el payload no trae `number`');
-    }
+        const numero = data.payload.number;
+        if (typeof numero !== 'number') {
+          return this.discard(job, 'el payload no trae `number`');
+        }
 
-    const result = await this.autoAssign.execute({
-      eventId: data.eventId,
-      tenantId: TenantId(data.tenantId),
-      ticketId: TicketId(data.aggregateId),
-      ticketNumber: numero,
-    });
+        const inicio = Date.now();
+        const result = await this.autoAssign.execute({
+          eventId: data.eventId,
+          tenantId: TenantId(data.tenantId),
+          ticketId: TicketId(data.aggregateId),
+          ticketNumber: numero,
+        });
 
-    if (result.isErr()) {
-      // Error de dominio inesperado: se LANZA para que BullMQ aplique su
-      // política de reintentos. Las situaciones definitivas (ticket borrado, sin
-      // agentes...) no llegan aquí: el caso de uso las devuelve como `skipped`.
-      throw new Error(
-        `Auto-asignación fallida (${result.error.code}): ${result.error.message}`,
-      );
-    }
+        if (result.isErr()) {
+          // Error de dominio inesperado: se LANZA para que BullMQ aplique su
+          // política de reintentos. Las situaciones definitivas (ticket borrado,
+          // sin agentes...) no llegan aquí: el caso de uso las devuelve `skipped`.
+          throw new Error(
+            `Auto-asignación fallida (${result.error.code}): ${result.error.message}`,
+          );
+        }
 
-    return result.value;
+        // Un worker que solo habla cuando falla es un worker que no se puede
+        // observar: no hay forma de saber si está trabajando, ni cuánto tarda, ni
+        // qué decidió. La línea lleva el `requestId` heredado del evento, así que
+        // aparece junto a la petición HTTP que lo originó (ADR-0024).
+        this.logger.log(
+          `${data.eventName} → ${result.value.status} (${Date.now() - inicio}ms)`,
+        );
+        return result.value;
+      },
+    );
   }
 
   /**

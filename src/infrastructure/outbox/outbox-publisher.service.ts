@@ -23,6 +23,11 @@ export interface EventJobData {
   version: number;
   payload: Record<string, unknown>;
   occurredAt: string;
+  /**
+   * Correlación con la petición que originó el evento (ADR-0024). Viaja hasta el
+   * worker para que sus logs cuelguen de la misma historia que los del HTTP.
+   */
+  requestId: string | null;
 }
 
 /**
@@ -125,6 +130,7 @@ export class OutboxPublisher
       version: message.version,
       payload: message.payload,
       occurredAt: message.occurredAt.toISOString(),
+      requestId: message.requestId,
     };
 
     for (const nombre of colas) {

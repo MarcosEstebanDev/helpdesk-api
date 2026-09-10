@@ -11,6 +11,8 @@ export interface ClaimedMessage {
   version: number;
   payload: Record<string, unknown>;
   occurredAt: Date;
+  /** Petición HTTP que originó el evento (ADR-0024); `null` si nació sin una. */
+  requestId: string | null;
 }
 
 /** Forma cruda que devuelve la función SQL (snake_case, `version` como bigint). */
@@ -23,6 +25,7 @@ interface ClaimedRow {
   version: number;
   payload: Record<string, unknown>;
   occurred_at: Date;
+  request_id: string | null;
 }
 
 /**
@@ -72,6 +75,7 @@ export class OutboxReader {
         version: Number(row.version),
         payload: row.payload,
         occurredAt: row.occurred_at,
+        requestId: row.request_id,
       }));
 
       const marker: OutboxMarker = {

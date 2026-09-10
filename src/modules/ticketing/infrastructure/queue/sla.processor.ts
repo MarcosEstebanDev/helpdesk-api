@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { Job, Queue } from 'bullmq';
 import type { Env } from '../../../../infrastructure/config/env.schema';
 import type { EventJobData } from '../../../../infrastructure/outbox/outbox-publisher.service';
+import { runWithJobContext } from '../../../../infrastructure/observability/job-context';
 import {
   DEAD_LETTER_QUEUE,
   SLA_QUEUE,
@@ -50,11 +51,37 @@ export class SlaProcessor extends WorkerHost implements OnApplicationBootstrap {
     void this.worker.run();
   }
 
-  async process(job: Job<EventJobData>): Promise<SlaJobOutcome> {
-    const data = job.data;
-    const occurredAt = new Date(data.occurredAt);
+  /**
+   * Todo el trabajo del job corre dentro de la correlación del evento (ADR-0024):
+   * sus logs cuelgan de la misma historia que la petición que lo originó.
+   */
+  process(job: Job<EventJobData>): Promise<SlaJobOutcome> {
+    return runWithJobContext(
+      job.data.requestId,
+      job.data.tenantId,
+      async () => {
+        const data = job.data;
+        const occurredAt = new Date(data.occurredAt);
+        const inicio = Date.now();
 
-    switch (data.eventName) {
+        const resultado = await this.despachar(job, data.eventName, occurredAt);
+
+        // Con el `requestId` heredado del evento, esta línea sale junto a la
+        // petición HTTP que la provocó (ADR-0024).
+        this.logger.log(
+          `${data.eventName} → ${resultado.action} (${Date.now() - inicio}ms)`,
+        );
+        return resultado;
+      },
+    );
+  }
+
+  private despachar(
+    job: Job<EventJobData>,
+    eventName: string,
+    occurredAt: Date,
+  ): Promise<SlaJobOutcome> {
+    switch (eventName) {
       case 'ticket.created':
         return this.onTicketCreated(job, occurredAt);
       case 'comment.added':
@@ -62,7 +89,7 @@ export class SlaProcessor extends WorkerHost implements OnApplicationBootstrap {
       case 'ticket.status_changed':
         return this.onStatusChanged(job, occurredAt);
       default:
-        return this.discard(job, `evento no manejado: ${data.eventName}`);
+        return this.discard(job, `evento no manejado: ${eventName}`);
     }
   }
 

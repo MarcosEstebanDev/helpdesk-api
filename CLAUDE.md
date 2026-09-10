@@ -89,6 +89,11 @@ uso dependen de la interfaz, nunca del adapter.
   en la query string), cierre del socket al caducar el token, rooms decididas por el
   SERVIDOR (`tenant:<id>` + `tenant:<id>:staff`) y adapter de Redis desde el primer
   día. El filtrado por rol es una room, no un `if` al emitir.
+- ADR-0024 **Observabilidad**: Pino sustituye al logger de Nest; el `requestId`
+  viaja en `outbox_messages.request_id` hasta el worker y sus eventos derivados lo
+  heredan; la correlación se inyecta con `mixin` (no `customProps`); contexto
+  propio separado del de tenant; `x-request-id` entrante saneado; liveness y
+  readiness en rutas distintas; secretos y cuerpos fuera de los logs.
 - ADR-0023 **Qué se emite y a quién**: lo emite un consumidor más del outbox (cola
   `realtime`), por el cable va un DTO de vista y nunca el evento de integración
   (`comment.added` sin cuerpo), la audiencia se decide en `application`, y sin tabla
@@ -126,7 +131,7 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 5. ✅ Colas — 5a (outbox transaccional) y 5b (BullMQ, publicador, consumidor idempotente, DLQ)
 6. ✅ SLA engine (política por tenant, relojes durables, barrido de incumplimientos)
 7. 🔄 Realtime — **backend cerrado** (gateway, rooms, adapter Redis); falta el cliente Next
-8. ⬜ Observabilidad (Pino + OTel + health checks reales)
+8. ✅ Observabilidad (Pino estructurado, correlación hasta el worker, liveness/readiness)
 9. ⬜ Billing Stripe per-seat con webhooks idempotentes (opcional)
 10. ⬜ Docs finales (ARCHITECTURE.md con ADRs y diagrama, README)
 
@@ -134,6 +139,62 @@ Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
 ## Estado actual (2026-09-09)
+
+**Fase 8 (Observabilidad) — CERRADA.** El sistema ya se puede mirar por dentro:
+una sola búsqueda por `requestId` reconstruye una operación entera, efectos
+asíncronos incluidos.
+
+- **Pino SUSTITUYE al logger de Nest** (`bufferLogs` + `app.useLogger`): arranque,
+  workers y excepciones salen en el mismo formato que las peticiones. Con dos
+  loggers, la mitad de lo que pasa en producción quedaría fuera de las consultas.
+- **`requestId` propagado hasta el worker.** `outbox_messages.request_id` lo
+  guarda (columna, no dentro de `payload`: el payload es contrato de negocio), el
+  publicador lo mete en el job y cada consumidor abre su trabajo con
+  `runWithJobContext`. **Los eventos de segunda ola lo heredan**: el
+  `ticket.assigned` que emite el worker de auto-asignación sale con la traza de
+  la petición HTTP original.
+- **La correlación se inyecta con `mixin`, NO con `customProps`.** `customProps`
+  solo alcanza a la línea de acceso de `pino-http`; `mixin` va en cada log. Es la
+  diferencia entre tener correlación y no tenerla donde hace falta.
+- **`AsyncLocalStorage` propio**, separado del de tenant: el de tenant significa
+  "hay un usuario autenticado" y de él dependen los guards; el `requestId` tiene
+  que existir también en un 401 o un 404. Lleva su propio `tenantId` opcional
+  para que los logs del worker se puedan filtrar por organización.
+- **`x-request-id` entrante respetado pero SANEADO**: 128 caracteres máximo y
+  solo `[\w.:-]`. Se vuelve a validar al restaurarlo en el worker, no solo al
+  entrar — para entonces ese valor lleva horas en la base de datos.
+- **Liveness y readiness separados.** `/health/live` no toca dependencias (si
+  mirara Postgres, una caída provocaría un bucle de reinicios que no arregla
+  nada); `/health/ready` comprueba Postgres y Redis **con las conexiones que usa
+  la aplicación**, no con clientes propios. `/health` sigue como alias.
+- **Secretos fuera de los logs**: `authorization`, `cookie`, `set-cookie` y
+  campos de password redactados; el cuerpo de las peticiones NO se registra (aquí
+  lleva descripciones y comentarios de tickets).
+- **Los workers dicen qué hicieron y cuánto tardaron.** Antes solo hablaban al
+  fallar: un worker silencioso no se puede observar.
+- **ADR-0024** con las 7 decisiones. Total 24 ADRs.
+- **Verificado:** lint:ci, typecheck, 184 unit, e2e completos, build, migración
+  desde cero en BD desechable sin drift, y correlación comprobada a mano contra
+  el sistema real (una petición → 4 líneas de worker con su misma traza).
+
+**Gotchas de la fase 8 (dos caros):**
+- **Un `GRANT` por COLUMNA no alcanza a las columnas añadidas después.** El rol
+  `helpdesk_outbox_publisher` tiene grants por columna sobre `outbox_messages`
+  (ADR-0019), así que al añadir `request_id` la función `outbox_claim_batch`
+  empezó a fallar con `42501 permission denied for table outbox_messages` y el
+  outbox dejó de drenarse ENTERO. Cada columna nueva de esa tabla necesita su
+  `GRANT SELECT (columna)` en la migración.
+- **`CREATE OR REPLACE FUNCTION` no puede cambiar el tipo de retorno**: hay que
+  `DROP` + `CREATE`, y entonces se pierden el `OWNER` y los `GRANT` — que en una
+  función `SECURITY DEFINER` son justo lo que le da sus permisos. Rehacerlos en
+  la misma migración.
+- **`@nestjs/terminus@12` es solo ESM** y Jest no lo parsea: fijado a `^11`. Es
+  la CUARTA vez (jwt, bullmq, websockets, terminus). Con Nest 11, fijar todo el
+  ecosistema `@nestjs/*` a `^11` sin pensarlo.
+- `customProps` vs `mixin` en pino: ver arriba. Se perdió un rato buscando por
+  qué los logs del worker no llevaban la traza.
+- **Otra vez:** no canalizar la salida de los e2e por `| tail` o `| grep` — el
+  buffer del pipe la oculta hasta el final y parece que el proceso se colgó.
 
 **Fase 7 (Realtime) — BACKEND CERRADO.** Primera fase que empuja datos hacia el
 cliente, y primera en la que el aislamiento por tenant se sostiene FUERA del ciclo

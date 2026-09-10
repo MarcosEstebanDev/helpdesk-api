@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { getRequestId } from '../observability/request-context';
 import { OutboxRecord, OutboxWriter } from '../../shared-kernel';
 import { PrismaRepository } from './prisma.repository';
 import { PrismaService } from './prisma.service';
@@ -37,6 +38,11 @@ export class PrismaOutboxWriter
       );
     }
 
+    // La correlación se lee AQUÍ y no se pide por parámetro: es un dato de
+    // infraestructura, y meterlo en el puerto `OutboxWriter` obligaría al
+    // dominio y a los casos de uso a saber que existen las peticiones HTTP.
+    const requestId = getRequestId();
+
     await this.runInTenant(tenantId, async (tx) => {
       await tx.outboxMessage.createMany({
         data: records.map((record) => ({
@@ -48,6 +54,7 @@ export class PrismaOutboxWriter
           version: record.version,
           payload: record.payload as Prisma.InputJsonValue,
           occurredAt: record.occurredAt,
+          requestId,
         })),
       });
     });

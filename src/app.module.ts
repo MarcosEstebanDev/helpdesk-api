@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { ConfigModule } from './infrastructure/config/config.module';
+import { LoggerModule } from './infrastructure/observability/logger.module';
 import { OutboxModule } from './infrastructure/outbox/outbox.module';
 import { PrismaModule } from './infrastructure/prisma/prisma.module';
 import { QueueModule } from './infrastructure/queue/queue.module';
@@ -25,6 +26,9 @@ import { RolesGuard } from './modules/iam/infrastructure/auth/roles.guard';
 @Module({
   imports: [
     ConfigModule,
+    // Antes que nada: si el logger se registrara después, los mensajes de
+    // arranque de los demás módulos saldrían con el logger por defecto de Nest.
+    LoggerModule,
     PrismaModule,
     SystemModule,
     QueueModule,
