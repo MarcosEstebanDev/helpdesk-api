@@ -291,11 +291,14 @@ describe('Members (e2e)', () => {
 
     const ticketId = (ticket.body as { id: string }).id;
 
+    // 200 y no 201: asignar no CREA nada, muta un ticket que ya existe. El verbo
+    // es POST porque la operación no es idempotente sobre un recurso propio,
+    // pero no hay recurso nuevo del que dar cuenta.
     const asignado = await request(app.getHttpServer())
       .post(`/tickets/${ticketId}/assign`)
       .set('Authorization', `Bearer ${token}`)
       .send({ assigneeId: destinatario!.userId })
-      .expect(201);
+      .expect(200);
 
     expect((asignado.body as { assigneeId: string }).assigneeId).toBe(
       destinatario!.userId,
