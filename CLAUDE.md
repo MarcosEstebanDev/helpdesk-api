@@ -121,6 +121,13 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 - Sanitizar HTML del email entrante (anti stored-XSS). Verificar firmas de webhooks.
 - Rate limiting en auth (ADR-0013): guard global + `@Throttle` estricto en login/registro/refresh.
 
+## Por dónde retomar
+
+**Leer primero `docs/ROADMAP.md`** — estado de los dos repos, cómo levantar el
+entorno local con credenciales, qué mejorar del producto (ordenado por lo que es
+producto Y arquitectura a la vez), las cuatro restricciones de despliegue que
+salen del propio código, y las decisiones que están esperando tu OK.
+
 ## Ramas (desde 2026-09-10)
 
 - **`main` = producción.** No se le mergea nada sin los e2e en verde.
