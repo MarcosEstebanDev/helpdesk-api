@@ -11,8 +11,9 @@
 
 ## 1. Dónde estamos
 
-Las dos ramas `dev` están al día y pusheadas. `main` sigue en el estado previo a
-esta tanda, a la espera de que decidas mergear.
+Las dos ramas `dev` están al día y pusheadas, y el **2026-09-30 se mergearon a
+`main`** en los dos repos, después de volver a correr toda la verificación de la
+tabla de abajo con los mismos resultados.
 
 | | `helpdesk-api` | `helpdesk-web` |
 |---|---|---|
@@ -219,8 +220,8 @@ el deploy es corto.
 
 ## 5. Decisiones pendientes de tu parte
 
-- [ ] ¿Mergear `dev` → `main` en los dos repos? Los e2e están en verde, que era
-      la condición. Primero el api, porque el front consume sus endpoints.
+- [x] ¿Mergear `dev` → `main` en los dos repos? Hecho el 2026-09-30, primero el
+      api y después el web, con los e2e en verde.
 - [ ] ¿Desplegar, o seguir con features?
 - [ ] ¿Endurecer `AssignTicket` a AGENT+, o dejarlo mitigado por la interfaz?
 - [ ] Los ADRs están en español y el README en inglés. Ahora que el api es
