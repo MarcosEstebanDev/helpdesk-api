@@ -260,10 +260,31 @@ mayor. (−) Se limita por IP+ruta, no por cuenta: un atacante que agote el lím
 fuera al usuario legítimo que comparta esa IP — hay un test que lo deja explícito en
 vez de esconderlo. (−) Detrás de un proxy hay que configurar `trust proxy`, o todas
 las peticiones compartirán la IP del proxy y el límite se aplicará a todo el tráfico
-junto (pendiente: depende de la topología de despliegue).
+junto (resuelto en la adenda de abajo).
 **Revisar si.** Se despliega más de una instancia (→ mover el almacenamiento a Redis,
 ya disponible desde la fase 5), o si el bloqueo del usuario legítimo resulta un
 problema real (→ limitar por cuenta además de por IP).
+
+**Adenda (2026-09-30) — detrás de un proxy.** El despliegue pone a Caddy delante de
+la API, así que el pendiente de arriba deja de ser teórico: sin configurar nada,
+cinco logins fallidos de cualquier persona bloquean el login de todas.
+**Decisión.** Variable `TRUST_PROXY_HOPS`, un **número de saltos**: `0` por defecto
+(se ignora `X-Forwarded-For`, igual que antes) y `1` en producción. Express toma
+entonces la IP que añadió el último proxy y descarta lo que el cliente escribió a
+la izquierda. Se aplica en `configureApp`, así que los e2e ejercitan el mismo
+código que producción.
+**Alternativas descartadas.**
+- *`trust proxy: true`*: Express confía en la cabecera entera y toma la IP de más a
+  la izquierda, que la escribe el cliente. Bastaría una IP inventada por intento
+  para saltarse el límite.
+- *Confiar por rango de red* (`'loopback, uniquelocal'`): depende de las IPs que
+  asigne Docker a su red, que no controlamos. Un número de saltos describe la
+  topología, que sí controlamos.
+**Consecuencias.** (+) Cada cliente tiene su contador y falsificar la cabecera no
+sirve: lo cubre `trust-proxy.e2e-spec.ts`. (−) Es correcto **solo si la API no es
+alcanzable sin pasar por el proxy**. Si se publicara su puerto, un cliente directo
+podría mandar un `X-Forwarded-For` que sí se creería. Por eso el compose de
+producción no publica el puerto de la API.
 
 
 ## ADR-0014 — Autorización por jerarquía de roles (no permisos granulares)
