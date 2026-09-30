@@ -56,6 +56,7 @@ lo que costaría revertirla.
 
 - [ADR-0004](#adr-0004--contratos-vía-openapi) — Contratos vía OpenAPI
 - [ADR-0024](#adr-0024--observabilidad-logs-estructurados-correlación-hasta-el-worker-y-sondas-separadas) — Observabilidad: logs estructurados, correlación hasta el worker y sondas separadas
+- [ADR-0026](#adr-0026--despliegue-gestionado-rol-dueño-propio-prisma-en-la-imagen-y-rotación-de-credenciales) — Despliegue gestionado: rol dueño propio, Prisma en la imagen y rotación de credenciales
 
 ---
 
@@ -1120,3 +1121,72 @@ pero `AssignTicket` manual acepta a **cualquier miembro**: solo comprueba
 asignarle un ticket al cliente que lo abrió. Se decidió **no** endurecer la regla
 en esta ronda —es un cambio de negocio con su propio diseño— y mitigarlo
 mostrando el rol de cada persona en el selector.
+
+---
+
+## ADR-0026 — Despliegue gestionado: rol dueño propio, Prisma en la imagen y rotación de credenciales
+
+**Contexto.** El primer despliegue es en Railway: Postgres, Redis, la API (con los
+workers en el mismo proceso) y el front, cada uno como servicio. Al ensayarlo
+aparecieron tres choques entre lo que el código asumía y lo que da una plataforma
+gestionada:
+
+1. Las migraciones asumen que el dueño de las tablas se llama **`helpdesk`**
+   (`ALTER DEFAULT PRIVILEGES FOR ROLE helpdesk` en la inicial). En local y en CI es
+   el superusuario del contenedor; en Railway el superusuario se llama `postgres`,
+   y la primera migración fallaría.
+2. Las migraciones tienen que correr **antes** de arrancar la API, en el Pre-Deploy
+   Command. Pero Railway construye siempre la **última** etapa del Dockerfile, y
+   esa imagen no traía el CLI de Prisma (dependencia de desarrollo).
+3. La migración inicial crea `helpdesk_app` con la contraseña `'helpdesk_app'`,
+   pública en el repo. En Railway, además, el Postgres puede tener un proxy TCP
+   público.
+
+### Decisión 1 — Crear el rol `helpdesk` en el despliegue, no cambiar las migraciones
+
+`src/deploy/prepare-database.ts owner` se conecta con el superusuario de la
+plataforma (`DATABASE_SUPERUSER_URL`) y crea `helpdesk` (LOGIN SUPERUSER) si no
+existe, o solo le fija la contraseña si existe. Las migraciones corren con ese
+rol, igual que en local y en CI.
+
+Descartado: reescribir las migraciones para no depender del nombre del dueño.
+Son historia aplicada; editarlas cambia su checksum y rompe toda base que ya las
+tenga. Y el entorno queda **idéntico** en los tres sitios, que es lo que hace que
+el CI pruebe lo mismo que se despliega.
+
+### Decisión 2 — El CLI de Prisma pasa a dependencia de producción
+
+Con eso el Pre-Deploy puede migrar desde la misma imagen que se despliega, y la
+secuencia queda **atómica** por despliegue: preparar el dueño → migrar → rotar la
+contraseña de la app → seed idempotente → arrancar. Si algo falla, Railway no
+arranca la versión nueva.
+
+Descartado: un servicio `migrate` aparte (Railway despliega los servicios en
+paralelo y la API podría arrancar contra un esquema viejo), y publicar imágenes
+por etapa desde el CI a un registry (lo más prolijo, pero suma registry, tokens y
+un paso de CI para un proyecto de una sola instancia).
+
+Costo: la imagen deja de ser mínima (unos 40 MB más con los motores de Prisma).
+
+### Decisión 3 — Rotar la contraseña de `helpdesk_app` en cada despliegue
+
+`prepare-database.ts app` fija la contraseña de `APP_DB_PASSWORD` después de
+migrar. `ALTER ROLE ... PASSWORD` no admite parámetros enlazados, así que la
+contraseña va dentro del SQL: en vez de escaparla, se **exige** que sea
+hexadecimal en minúsculas de 32+ caracteres (`database-roles.ts`), un alfabeto
+sin ningún carácter capaz de cerrar el literal. Lo mismo para la del dueño.
+
+El compose de producción para una VPS (`infra/docker-compose.prod.yml`) hace lo
+mismo con `psql` y una variable enlazada (`:'pw'`), porque ahí sí hay cliente.
+
+### Consecuencias
+
+- (+) Mismo esquema de roles en local, CI y producción; ensayado contra un
+  Postgres con la forma del de Railway (superusuario `postgres`, base `railway`):
+  el Pre-Deploy es idempotente y la contraseña pública queda rechazada.
+- (+) Rotar cualquiera de las dos contraseñas es cambiar una variable y
+  redesplegar.
+- (−) El rol dueño es SUPERUSER, como en local. Su credencial solo la usa el
+  Pre-Deploy, nunca la API, que sigue con el rol restringido sin BYPASSRLS
+  (ADR-0010).
+- (−) La imagen de producción carga con el CLI de Prisma.

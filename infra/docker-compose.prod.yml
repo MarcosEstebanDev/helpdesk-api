@@ -1,0 +1,184 @@
+# Despliegue en UNA máquina: base de datos, cache, migraciones, API, web y Caddy
+# delante con HTTPS automático. Guía paso a paso en docs/DEPLOY.md.
+#
+#     docker compose -f infra/docker-compose.prod.yml --env-file infra/prod.env up -d --build
+#
+# Diferencias con docker-compose.demo.yml, que es para correr en local:
+#   - Ningún secreto escrito aquí: todos salen de infra/prod.env (fuera de git).
+#   - Solo Caddy publica puertos (80 y 443). La API NO es alcanzable sin pasar
+#     por el proxy, y de eso depende que TRUST_PROXY_HOPS=1 sea seguro (adenda
+#     del ADR-0013): un cliente directo podría inventarse un X-Forwarded-For.
+#   - La contraseña del rol de aplicación se rota después de migrar (servicio
+#     `db-roles`): la migración inicial la crea con un valor público.
+#
+# El servicio `web` construye desde el repo VECINO `helpdesk-web`, clonado al
+# lado de este (ADR-0001).
+name: helpdesk-prod
+
+x-database-url: &database-url postgresql://helpdesk_app:${APP_DB_PASSWORD:?falta APP_DB_PASSWORD}@postgres:5432/helpdesk?schema=public
+x-migration-database-url: &migration-database-url postgresql://helpdesk:${OWNER_DB_PASSWORD:?falta OWNER_DB_PASSWORD}@postgres:5432/helpdesk?schema=public
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: helpdesk
+      POSTGRES_PASSWORD: ${OWNER_DB_PASSWORD:?falta OWNER_DB_PASSWORD}
+      POSTGRES_DB: helpdesk
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # `-h 127.0.0.1`: sin él comprueba el socket UNIX y da "healthy" antes de
+      # que Postgres escuche en TCP (ver docker-compose.demo.yml).
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U helpdesk -d helpdesk']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Migraciones con el rol OWNER, el único que puede hacer DDL (ADR-0010).
+  migrate:
+    build:
+      context: ..
+      target: build
+    command: ['pnpm', 'prisma', 'migrate', 'deploy']
+    environment:
+      DATABASE_URL: *database-url
+      MIGRATION_DATABASE_URL: *migration-database-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  # La migración inicial crea `helpdesk_app` con la contraseña 'helpdesk_app',
+  # que es pública en el repo. No se cambia la migración (rompería las bases que
+  # ya la aplicaron): se rota aquí, en cada arranque, con la de prod.env.
+  #
+  # La contraseña entra como variable de psql (`:'pw'`), que la cita como
+  # literal SQL. Nunca concatenada dentro del SQL.
+  db-roles:
+    image: postgres:17-alpine
+    environment:
+      PGHOST: postgres
+      PGUSER: helpdesk
+      PGDATABASE: helpdesk
+      PGPASSWORD: ${OWNER_DB_PASSWORD:?falta OWNER_DB_PASSWORD}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?falta APP_DB_PASSWORD}
+    command:
+      - sh
+      - -c
+      - >-
+        echo "ALTER ROLE helpdesk_app PASSWORD :'pw';" |
+        psql -v ON_ERROR_STOP=1 -v pw="$$APP_DB_PASSWORD"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: 'no'
+
+  # Datos de demo (src/seed.ts), idempotente: se puede correr en cada arranque.
+  # Las credenciales son públicas a propósito, para que cualquiera pueda entrar
+  # a mirar. WORKER_ENABLED=0: sus eventos los procesa la API.
+  seed:
+    build:
+      context: ..
+      target: build
+    command: ['node', 'dist/seed.js']
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: *database-url
+      REDIS_URL: redis://redis:6379
+      WORKER_ENABLED: '0'
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?falta JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?falta JWT_REFRESH_SECRET}
+    depends_on:
+      db-roles:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: 'no'
+
+  api:
+    build:
+      context: ..
+      target: runner
+    restart: unless-stopped
+    # Sin `ports`: solo se llega a través de Caddy.
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      DATABASE_URL: *database-url
+      REDIS_URL: redis://redis:6379
+      # Workers dentro del proceso de la API: una sola instancia, que además es
+      # lo que exige el rate limiting en memoria (ADR-0013).
+      WORKER_ENABLED: '1'
+      TRUST_PROXY_HOPS: '1'
+      CORS_ORIGINS: https://app.${DOMAIN:?falta DOMAIN}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?falta JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?falta JWT_REFRESH_SECRET}
+      LOG_LEVEL: info
+    depends_on:
+      db-roles:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/health/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  web:
+    build:
+      context: ../../helpdesk-web
+      args:
+        # La usa el NAVEGADOR y se fija en el build (NEXT_PUBLIC_*): cambiar el
+        # dominio obliga a reconstruir esta imagen.
+        NEXT_PUBLIC_API_URL: https://api.${DOMAIN:?falta DOMAIN}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # Único servicio con puertos publicados. Pide y renueva solo los certificados
+  # de Let's Encrypt, y hace de proxy también para el WebSocket.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    environment:
+      DOMAIN: ${DOMAIN:?falta DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+      - web
+
+volumes:
+  postgres-data:
+  redis-data:
+  caddy-data:
+  caddy-config:
