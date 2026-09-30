@@ -12,7 +12,13 @@ no cantidad de features.
 Dos repos separados (NO monorepo — decisión deliberada, ver ADR-0001):
 - `helpdesk-api` (este) — NestJS, arquitectura hexagonal.
 - `helpdesk-web` — Next.js App Router. **Ya scaffoldeado** (Fase 1 cerrada): repo PÚBLICO
-  https://github.com/MarcosEstebanDev/helpdesk-web (ojo: el web es público, este api es privado).
+  https://github.com/MarcosEstebanDev/helpdesk-web
+- **Los DOS repos son PÚBLICOS** (verificado en GitHub el 2026-09-10; este archivo
+  decía que el api era privado y estaba desactualizado). Cuidado con lo que se
+  commitea: los secretos entran SOLO por variables de entorno validadas con Zod
+  (`env.schema.ts`), y `.env` nunca estuvo versionado. Lo que sí hay escrito en el
+  repo son valores de CI, demo y tests, y cada uno lo dice en su propio valor
+  (`ci-...-no-usar-en-produccion`, `demo-...-no-usar-fuera-de-esta-demo`).
 
 ## Stack y tooling
 
@@ -115,6 +121,21 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 - Sanitizar HTML del email entrante (anti stored-XSS). Verificar firmas de webhooks.
 - Rate limiting en auth (ADR-0013): guard global + `@Throttle` estricto en login/registro/refresh.
 
+## Por dónde retomar
+
+**Leer primero `docs/ROADMAP.md`** — estado de los dos repos, cómo levantar el
+entorno local con credenciales, qué mejorar del producto (ordenado por lo que es
+producto Y arquitectura a la vez), las cuatro restricciones de despliegue que
+salen del propio código, y las decisiones que están esperando tu OK.
+
+## Ramas (desde 2026-09-10)
+
+- **`main` = producción.** No se le mergea nada sin los e2e en verde.
+- **`dev` = integración.** Es donde entra el trabajo terminado que todavía no se
+  verificó de punta a punta. Los merges van con `--no-ff` para que el historial
+  muestre dónde entró cada tanda.
+- Las ramas de feature salen de `dev` y vuelven a `dev`.
+
 ## Metodología de trabajo (IMPORTANTE)
 
 1. Para CADA fase: **proponer estructura/decisiones y esperar OK del usuario antes de generar código.**
@@ -137,6 +158,41 @@ Defensa en profundidad. Puntos críticos a respetar siempre:
 
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
+
+## Estado actual (2026-09-10) — Directorio de miembros (ADR-0025)
+
+Rama `feat/members-endpoint`. Cierra la carencia que bloqueaba tres pantallas del
+frontend a la vez.
+
+- **`GET /members`** (`iam`, `@MinRole('AGENT')`) — `{ items: [{ userId, email,
+  role, joinedAt }] }`. Sin paginación ni filtros a propósito; el envoltorio
+  `{ items }` deja que añadir `nextCursor` mañana sea aditivo. `MemberReadModel`
+  con `select` explícito: `users` guarda `password_hash` en la misma tabla, así
+  que la proyección se escribe campo a campo y **nunca** con un spread.
+- **El rango es AGENT y no VIEWER**, y es la decisión de fondo del ADR: un VIEWER
+  es el cliente final, y el listado de empleados en sus manos es una lista de
+  correos cosechable servida por un endpoint autenticado. La regla que sale de
+  ahí: **el rango se decide por qué se revela, no por si el verbo es de lectura.**
+- **`GET /auth/me` devuelve `email`**, leído de la base; el `role` sigue saliendo
+  del TOKEN, porque los guards autorizan con el del token y devolver uno fresco
+  haría que la UI habilitara acciones que cada petición rechaza con 403. Un token
+  válido de alguien que ya no es miembro responde 401.
+- **`GET /tickets` acepta `requesterId`**, simétrico a `assigneeId`: un VIEWER
+  nunca tiene tickets asignados, así que sin esto "mis tickets" solo significaba
+  algo para un agente.
+- **Sin migración ni índice nuevo**: `memberships` ya tiene `@@unique([tenantId,
+  userId])`, cuyo btree cubre el `where tenant_id`.
+
+**Deuda que este endpoint DESTAPA (anotada, no resuelta):** `AutoAssignTicket`
+reparte solo entre AGENT y ADMIN, pero `AssignTicket` manual acepta a cualquier
+miembro — solo mira `isMember`, no el rol. Hoy no se nota porque el frontend solo
+ofrece "Asignármelo"; con un selector de personas, un admin puede asignarle un
+ticket al cliente que lo abrió. Se decidió mitigarlo mostrando el rol en el
+selector y NO cambiar la regla de negocio en esta ronda.
+
+**Sigue pendiente:** los nombres en la conversación de un ticket los necesita un
+VIEWER, y con `/members` en AGENT no los tiene. La salida acordada es enriquecer
+`GET /tickets/:id` con los participantes de ESE ticket, no aflojar el directorio.
 
 ## Estado actual (2026-09-10)
 
@@ -615,7 +671,7 @@ las policies usan `NULLIF(current_setting(...), '')` para colapsar "sin setear" 
 - `Dockerfile` multi-stage (pnpm via corepack, runner no-root) + `.dockerignore`.
 - CI GitHub Actions (`.github/workflows/ci.yml`): install → `lint:ci` → test → test:e2e → build. (`lint:ci` = eslint sin `--fix`, `--max-warnings 0`).
 - `.gitignore` + `.gitattributes` (normaliza EOL a LF) + **git init + commit inicial** (`24d8cb3`, rama `main`, 36 archivos).
-- **Remote en GitHub:** `origin` → https://github.com/MarcosEstebanDev/helpdesk-api (privado). `main` trackea `origin/main`.
+- **Remote en GitHub:** `origin` → https://github.com/MarcosEstebanDev/helpdesk-api (PÚBLICO). `main` trackea `origin/main`.
 - **Verificado:** `pnpm lint:ci`, `pnpm build`, 7/7 unit, 1/1 e2e en verde.
 
 ## PENDIENTE (retomar acá → fase 9 opcional, o cerrar carencias)

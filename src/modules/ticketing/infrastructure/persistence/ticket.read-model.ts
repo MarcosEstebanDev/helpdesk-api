@@ -102,6 +102,7 @@ export class TicketReadModel extends PrismaRepository {
     options: {
       status?: TicketStatus;
       assigneeId?: string;
+      requesterId?: string;
       limit: number;
       cursor?: string;
     },
@@ -116,6 +117,9 @@ export class TicketReadModel extends PrismaRepository {
           ...(options.assigneeId === undefined
             ? {}
             : { assigneeId: options.assigneeId }),
+          ...(options.requesterId === undefined
+            ? {}
+            : { requesterId: options.requesterId }),
         },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         // `skip: 1` porque el cursor es el ÚLTIMO elemento ya entregado.

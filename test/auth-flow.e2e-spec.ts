@@ -158,6 +158,92 @@ describe('Auth flow (e2e)', () => {
     });
   });
 
+  /**
+   * El email NO viaja en el token: se lee de la base (ADR-0025, decisión 5).
+   * Sin esto, el cliente se quedaba sin email en cuanto recargaba la página.
+   */
+  it('GET /auth/me devuelve el email del usuario autenticado', async () => {
+    const login = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ organizationSlug: orgSlug, email, password })
+      .expect(200);
+
+    const { accessToken } = login.body as { accessToken: string };
+
+    const res = await request(app.getHttpServer())
+      .get('/auth/me')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+
+    expect((res.body as { email: string }).email).toBe(email);
+  });
+
+  /**
+   * La reproducción exacta del bug: el access token vive solo en memoria, así
+   * que una recarga de página empieza canjeando el refresh y llamando a
+   * `/auth/me`. Si por ese camino no viniera el email, el usuario quedaría con
+   * el email vacío hasta el siguiente login.
+   */
+  it('tras refrescar la sesión, /auth/me sigue devolviendo el email', async () => {
+    const login = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ organizationSlug: orgSlug, email, password })
+      .expect(200);
+
+    const cookies = login.get('Set-Cookie') ?? [];
+
+    const refresh = await request(app.getHttpServer())
+      .post('/auth/refresh')
+      .set('Cookie', cookies)
+      .expect(200);
+
+    const { accessToken } = refresh.body as { accessToken: string };
+
+    const res = await request(app.getHttpServer())
+      .get('/auth/me')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+
+    expect((res.body as { email: string }).email).toBe(email);
+  });
+
+  /**
+   * Fija la decisión 5 del ADR-0025: el `role` sale del TOKEN aunque el email
+   * se lea de la base. Devolver un rol fresco haría que `/auth/me` contradijera
+   * a los guards, que autorizan comparando contra el rol del token.
+   */
+  it('el rol de /auth/me es el del TOKEN, no el de la base de datos', async () => {
+    const login = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ organizationSlug: orgSlug, email, password })
+      .expect(200);
+
+    const { accessToken } = login.body as { accessToken: string };
+    const tenantId = decodeTenantId(accessToken);
+
+    // Se degrada el rol en la base SIN volver a hacer login.
+    await prisma.withTenant(tenantId, (tx) =>
+      tx.membership.updateMany({
+        where: { tenantId },
+        data: { role: 'VIEWER' },
+      }),
+    );
+
+    const res = await request(app.getHttpServer())
+      .get('/auth/me')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+
+    expect((res.body as { role: string }).role).toBe('ADMIN');
+
+    await prisma.withTenant(tenantId, (tx) =>
+      tx.membership.updateMany({
+        where: { tenantId },
+        data: { role: 'ADMIN' },
+      }),
+    );
+  });
+
   it('GET /auth/me sin token devuelve 401', async () => {
     await request(app.getHttpServer()).get('/auth/me').expect(401);
   });

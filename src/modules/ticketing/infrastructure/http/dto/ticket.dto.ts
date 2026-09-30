@@ -86,6 +86,14 @@ export class ListTicketsQueryDto {
   @IsUUID()
   assigneeId?: string;
 
+  // Simétrico a `assigneeId`, y no redundante con él: existe para que el cliente
+  // final —un VIEWER, que nunca tiene tickets asignados— pueda ver los que abrió.
+  // Sin esto, "mis tickets" solo significa algo para un agente.
+  @ApiPropertyOptional({ description: 'Filtra por quien abrió el ticket.' })
+  @IsOptional()
+  @IsUUID()
+  requesterId?: string;
+
   @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 100 })
   @IsOptional()
   // Los query params llegan como string; sin esta conversión `@IsInt` fallaría

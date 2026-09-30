@@ -52,8 +52,20 @@ export class AuthResponseDto {
   accessToken!: string;
 }
 
+/**
+ * El principal autenticado.
+ *
+ * Cada campo tiene un origen deliberado (ADR-0025, decisión 5): el `email` se
+ * LEE de la base de datos y el `role` sale del TOKEN. No es una incoherencia:
+ * los guards autorizan comparando contra el rol del token, así que devolver aquí
+ * un rol fresco haría que la interfaz habilitara acciones que cada petición
+ * rechazaría con 403 hasta que el token caducase. Un desfase conocido y
+ * coherente es mejor que dos verdades simultáneas.
+ */
 export class MeResponseDto {
   @ApiProperty() userId!: string;
   @ApiProperty() tenantId!: string;
   @ApiProperty({ enum: ['ADMIN', 'AGENT', 'VIEWER'] }) role!: string;
+  @ApiProperty({ description: 'Se lee de la base, no viaja en el token.' })
+  email!: string;
 }

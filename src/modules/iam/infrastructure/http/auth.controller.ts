@@ -27,8 +27,10 @@ import { Login } from '../../application/login.use-case';
 import { Logout } from '../../application/logout.use-case';
 import { RefreshTokens } from '../../application/refresh-tokens.use-case';
 import { RegisterOrganization } from '../../application/register-organization.use-case';
+import { TenantId, UserId } from '../../domain/ids';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { MemberReadModel } from '../persistence/member.read-model';
 import {
   AuthResponseDto,
   LoginDto,
@@ -56,6 +58,9 @@ export class AuthController {
     private readonly refreshTokens: RefreshTokens,
     private readonly logout: Logout,
     private readonly config: ConfigService<Env, true>,
+    // Lectura directa (CQRS-lite, ADR-0008): componer el principal no es una
+    // decisión de negocio.
+    private readonly members: MemberReadModel,
   ) {}
 
   @Post('register')
@@ -136,8 +141,34 @@ export class AuthController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Devuelve el principal autenticado' })
   @ApiResponse({ status: 200, type: MeResponseDto })
-  me(@CurrentUser() user: TenantContext): MeResponseDto {
-    return { userId: user.userId, tenantId: user.tenantId, role: user.role };
+  @ApiResponse({
+    status: 401,
+    description: 'El usuario del token ya no existe.',
+  })
+  async me(@CurrentUser() user: TenantContext): Promise<MeResponseDto> {
+    // El email NO viaja en el token (ADR-0025): sería PII en una credencial que
+    // se manda en cada cabecera, y se quedaría vieja igual que el rol. Se lee.
+    const member = await this.members.findById(
+      TenantId(user.tenantId),
+      UserId(user.userId),
+    );
+
+    // Token válido de alguien que ya no es miembro: la sesión no corresponde a
+    // nadie. Un 200 con el email vacío obligaría al cliente a manejar un estado
+    // imposible ("hay sesión pero no hay usuario").
+    if (member === null) {
+      throw new UnauthorizedException(
+        'La sesión ya no corresponde a un usuario.',
+      );
+    }
+
+    return {
+      userId: user.userId,
+      tenantId: user.tenantId,
+      // El rol sale del TOKEN, no de `member`: es lo que comparan los guards.
+      role: user.role,
+      email: member.email,
+    };
   }
 
   // ---------------------------------------------------------------------------

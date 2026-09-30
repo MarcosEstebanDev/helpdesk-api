@@ -106,6 +106,7 @@ export class TicketController {
     return this.tickets.list(TenantId(user.tenantId), {
       status: query.status,
       assigneeId: query.assigneeId,
+      requesterId: query.requesterId,
       limit: query.limit ?? DEFAULT_PAGE_SIZE,
       cursor: query.cursor,
     });
