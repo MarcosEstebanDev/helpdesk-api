@@ -172,6 +172,11 @@ demuestra nada nuevo), métricas (esperan a tener datos de verdad) y billing
 
 ## 4. Despliegue
 
+> **Actualización 2026-09-30:** preparado para Railway (`railway.json` en los dos
+> repos, ADR-0026, adenda del ADR-0013) y para una VPS (`infra/docker-compose.prod.yml`).
+> Paso a paso en [`DEPLOY.md`](DEPLOY.md). Lo de abajo es el análisis original,
+> que sigue valiendo.
+
 Hoy **no está desplegado en ningún lado**: ningún archivo de plataforma en
 ninguno de los dos repos, y el CI tiene un solo job (`verify`) que no publica
 imagen ni despliega.

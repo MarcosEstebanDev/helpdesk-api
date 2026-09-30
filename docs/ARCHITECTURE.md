@@ -56,6 +56,7 @@ lo que costaría revertirla.
 
 - [ADR-0004](#adr-0004--contratos-vía-openapi) — Contratos vía OpenAPI
 - [ADR-0024](#adr-0024--observabilidad-logs-estructurados-correlación-hasta-el-worker-y-sondas-separadas) — Observabilidad: logs estructurados, correlación hasta el worker y sondas separadas
+- [ADR-0026](#adr-0026--despliegue-gestionado-rol-dueño-propio-prisma-en-la-imagen-y-rotación-de-credenciales) — Despliegue gestionado: rol dueño propio, Prisma en la imagen y rotación de credenciales
 
 ---
 
@@ -260,10 +261,31 @@ mayor. (−) Se limita por IP+ruta, no por cuenta: un atacante que agote el lím
 fuera al usuario legítimo que comparta esa IP — hay un test que lo deja explícito en
 vez de esconderlo. (−) Detrás de un proxy hay que configurar `trust proxy`, o todas
 las peticiones compartirán la IP del proxy y el límite se aplicará a todo el tráfico
-junto (pendiente: depende de la topología de despliegue).
+junto (resuelto en la adenda de abajo).
 **Revisar si.** Se despliega más de una instancia (→ mover el almacenamiento a Redis,
 ya disponible desde la fase 5), o si el bloqueo del usuario legítimo resulta un
 problema real (→ limitar por cuenta además de por IP).
+
+**Adenda (2026-09-30) — detrás de un proxy.** El despliegue pone a Caddy delante de
+la API, así que el pendiente de arriba deja de ser teórico: sin configurar nada,
+cinco logins fallidos de cualquier persona bloquean el login de todas.
+**Decisión.** Variable `TRUST_PROXY_HOPS`, un **número de saltos**: `0` por defecto
+(se ignora `X-Forwarded-For`, igual que antes) y `1` en producción. Express toma
+entonces la IP que añadió el último proxy y descarta lo que el cliente escribió a
+la izquierda. Se aplica en `configureApp`, así que los e2e ejercitan el mismo
+código que producción.
+**Alternativas descartadas.**
+- *`trust proxy: true`*: Express confía en la cabecera entera y toma la IP de más a
+  la izquierda, que la escribe el cliente. Bastaría una IP inventada por intento
+  para saltarse el límite.
+- *Confiar por rango de red* (`'loopback, uniquelocal'`): depende de las IPs que
+  asigne Docker a su red, que no controlamos. Un número de saltos describe la
+  topología, que sí controlamos.
+**Consecuencias.** (+) Cada cliente tiene su contador y falsificar la cabecera no
+sirve: lo cubre `trust-proxy.e2e-spec.ts`. (−) Es correcto **solo si la API no es
+alcanzable sin pasar por el proxy**. Si se publicara su puerto, un cliente directo
+podría mandar un `X-Forwarded-For` que sí se creería. Por eso el compose de
+producción no publica el puerto de la API.
 
 
 ## ADR-0014 — Autorización por jerarquía de roles (no permisos granulares)
@@ -1099,3 +1121,72 @@ pero `AssignTicket` manual acepta a **cualquier miembro**: solo comprueba
 asignarle un ticket al cliente que lo abrió. Se decidió **no** endurecer la regla
 en esta ronda —es un cambio de negocio con su propio diseño— y mitigarlo
 mostrando el rol de cada persona en el selector.
+
+---
+
+## ADR-0026 — Despliegue gestionado: rol dueño propio, Prisma en la imagen y rotación de credenciales
+
+**Contexto.** El primer despliegue es en Railway: Postgres, Redis, la API (con los
+workers en el mismo proceso) y el front, cada uno como servicio. Al ensayarlo
+aparecieron tres choques entre lo que el código asumía y lo que da una plataforma
+gestionada:
+
+1. Las migraciones asumen que el dueño de las tablas se llama **`helpdesk`**
+   (`ALTER DEFAULT PRIVILEGES FOR ROLE helpdesk` en la inicial). En local y en CI es
+   el superusuario del contenedor; en Railway el superusuario se llama `postgres`,
+   y la primera migración fallaría.
+2. Las migraciones tienen que correr **antes** de arrancar la API, en el Pre-Deploy
+   Command. Pero Railway construye siempre la **última** etapa del Dockerfile, y
+   esa imagen no traía el CLI de Prisma (dependencia de desarrollo).
+3. La migración inicial crea `helpdesk_app` con la contraseña `'helpdesk_app'`,
+   pública en el repo. En Railway, además, el Postgres puede tener un proxy TCP
+   público.
+
+### Decisión 1 — Crear el rol `helpdesk` en el despliegue, no cambiar las migraciones
+
+`src/deploy/prepare-database.ts owner` se conecta con el superusuario de la
+plataforma (`DATABASE_SUPERUSER_URL`) y crea `helpdesk` (LOGIN SUPERUSER) si no
+existe, o solo le fija la contraseña si existe. Las migraciones corren con ese
+rol, igual que en local y en CI.
+
+Descartado: reescribir las migraciones para no depender del nombre del dueño.
+Son historia aplicada; editarlas cambia su checksum y rompe toda base que ya las
+tenga. Y el entorno queda **idéntico** en los tres sitios, que es lo que hace que
+el CI pruebe lo mismo que se despliega.
+
+### Decisión 2 — El CLI de Prisma pasa a dependencia de producción
+
+Con eso el Pre-Deploy puede migrar desde la misma imagen que se despliega, y la
+secuencia queda **atómica** por despliegue: preparar el dueño → migrar → rotar la
+contraseña de la app → seed idempotente → arrancar. Si algo falla, Railway no
+arranca la versión nueva.
+
+Descartado: un servicio `migrate` aparte (Railway despliega los servicios en
+paralelo y la API podría arrancar contra un esquema viejo), y publicar imágenes
+por etapa desde el CI a un registry (lo más prolijo, pero suma registry, tokens y
+un paso de CI para un proyecto de una sola instancia).
+
+Costo: la imagen deja de ser mínima (unos 40 MB más con los motores de Prisma).
+
+### Decisión 3 — Rotar la contraseña de `helpdesk_app` en cada despliegue
+
+`prepare-database.ts app` fija la contraseña de `APP_DB_PASSWORD` después de
+migrar. `ALTER ROLE ... PASSWORD` no admite parámetros enlazados, así que la
+contraseña va dentro del SQL: en vez de escaparla, se **exige** que sea
+hexadecimal en minúsculas de 32+ caracteres (`database-roles.ts`), un alfabeto
+sin ningún carácter capaz de cerrar el literal. Lo mismo para la del dueño.
+
+El compose de producción para una VPS (`infra/docker-compose.prod.yml`) hace lo
+mismo con `psql` y una variable enlazada (`:'pw'`), porque ahí sí hay cliente.
+
+### Consecuencias
+
+- (+) Mismo esquema de roles en local, CI y producción; ensayado contra un
+  Postgres con la forma del de Railway (superusuario `postgres`, base `railway`):
+  el Pre-Deploy es idempotente y la contraseña pública queda rechazada.
+- (+) Rotar cualquiera de las dos contraseñas es cambiar una variable y
+  redesplegar.
+- (−) El rol dueño es SUPERUSER, como en local. Su credencial solo la usa el
+  Pre-Deploy, nunca la API, que sigue con el rol restringido sin BYPASSRLS
+  (ADR-0010).
+- (−) La imagen de producción carga con el CLI de Prisma.

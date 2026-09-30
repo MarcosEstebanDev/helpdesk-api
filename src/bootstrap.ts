@@ -1,7 +1,7 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import cookieParser from 'cookie-parser';
-import type { NextFunction, Request, Response } from 'express';
+import type { Express, NextFunction, Request, Response } from 'express';
 import type { Env } from './infrastructure/config/env.schema';
 import { requestIdMiddleware } from './infrastructure/observability/request-id.middleware';
 import { TenantContextMiddleware } from './modules/iam/infrastructure/auth/tenant-context.middleware';
@@ -14,6 +14,17 @@ import { TenantContextMiddleware } from './modules/iam/infrastructure/auth/tenan
  * no es el que se despliega — el fallo más caro y silencioso de una suite e2e.
  */
 export function configureApp(app: INestApplication): void {
+  const config = app.get(ConfigService<Env, true>);
+
+  // Antes que cualquier middleware: de esto depende `req.ip`, que usa el rate
+  // limiting. Detrás de un proxy sin esta línea, todos comparten la IP del proxy
+  // y el límite de login se vuelve global (adenda del ADR-0013).
+  const proxyHops = config.get('TRUST_PROXY_HOPS', { infer: true });
+  if (proxyHops > 0) {
+    const express = app.getHttpAdapter().getInstance() as Express;
+    express.set('trust proxy', proxyHops);
+  }
+
   // Correlación PRIMERO: todo lo que ocurra después —validación, auth, la
   // petición entera— tiene que poder decir a qué request pertenece.
   app.use(requestIdMiddleware);
@@ -30,7 +41,6 @@ export function configureApp(app: INestApplication): void {
   // `Access-Control-Allow-Credentials` para dejar viajar la cookie httpOnly del
   // refresh token. Con `enableCors()` a secas el front no puede ni renovar
   // sesión, y no hay test de backend que lo detecte: supertest no aplica CORS.
-  const config = app.get(ConfigService<Env, true>);
   app.enableCors({
     origin: config.get('CORS_ORIGINS', { infer: true }),
     credentials: true,

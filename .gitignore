@@ -30,3 +30,6 @@ Thumbs.db
 # Misc
 *.tsbuildinfo
 .cache/
+
+# Secretos de producción (docker-compose.prod.yml). El .example sí va.
+infra/prod.env

@@ -2,8 +2,9 @@
 # Etapas: deps (todas + cliente Prisma) -> build -> prod-deps -> runner.
 #
 # `build` se usa también como imagen de tareas puntuales (migraciones, seed) en
-# infra/docker-compose.demo.yml: es la única etapa que tiene el CLI de Prisma y
-# los scripts de desarrollo. Así la imagen que se despliega no carga con ellos.
+# los composes de infra/. La imagen final TAMBIÉN trae el CLI de Prisma, que es
+# dependencia de producción desde el ADR-0026: Railway construye siempre la
+# última etapa y migra desde ella en el Pre-Deploy (ver railway.json).
 
 # ---- base: habilita pnpm una sola vez ----
 FROM node:24-alpine AS base

@@ -1,0 +1,16 @@
+# Front y API en dos subdominios del MISMO sitio (p. ej. app.x.duckdns.org y
+# api.x.duckdns.org). La cookie del refresh es SameSite=Lax: con dominios de
+# sitios distintos el navegador no la mandaría y cada recarga cerraría sesión.
+#
+# Caddy añade la IP real del cliente al final de X-Forwarded-For; la API confía
+# en ese único salto (TRUST_PROXY_HOPS=1).
+
+app.{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy web:3000
+}
+
+api.{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy api:3000
+}

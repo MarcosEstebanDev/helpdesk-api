@@ -60,6 +60,14 @@ export const envSchema = z.object({
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
     .default('info'),
+  // Proxies inversos de confianza delante de la API (adenda del ADR-0013).
+  //
+  // Con 0 (por defecto) se ignora `X-Forwarded-For` y la IP es la del socket.
+  // Detrás de un proxy hay que poner cuántos saltos hay (1 con Caddy): si no,
+  // todas las peticiones traen la IP del proxy y el rate limiting por IP se
+  // vuelve global. Un número y no `true`: con `true` Express cree la cabecera
+  // entera, y un cliente se inventa una IP por intento.
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
   // Orígenes del navegador autorizados, separados por coma.
   //
   // El frontend manda `credentials: 'include'` para que viaje la cookie httpOnly
