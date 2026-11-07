@@ -172,6 +172,24 @@ demuestra nada nuevo), métricas (esperan a tener datos de verdad) y billing
 
 ## 4. Despliegue
 
+> **Actualización 2026-11-07 — el plan pasa a ser GRATIS:** Vercel (web) +
+> Render Free (API con los workers en el mismo proceso) + Neon (Postgres) +
+> Render Key Value (Redis) + is-a.dev. Preparado y ensayado en local, nada
+> creado todavía en ninguna plataforma:
+> - `render.yaml` (Blueprint: web free + Key Value free con `noeviction`).
+> - `prepare-database.ts` con `DATABASE_OWNER_MODE=external` para Postgres sin
+>   SUPERUSER y paso nuevo `verify` (adenda del ADR-0026). Ensayado contra un
+>   Postgres 17 con dueño solo-CREATEROLE: destapó que la 2.ª migración fallaba
+>   (`ALTER ... OWNER TO` exige CREATE en el esquema sin superusuario) y que el
+>   modo viejo pisaba en silencio la contraseña del dueño. Los dos, resueltos.
+> - Memoria medida con `--memory=512m`: pico 216 MiB. Entra en Render Free; lo
+>   justo es la CPU (0.1: arranque en frío ~77 s).
+> - Web: `packageManager` + `engines` para que Vercel use pnpm 11 y Node 24.
+>
+> Pasos manuales (cuentas, roles en Neon, migraciones desde la PC, registros
+> de is-a.dev) en [`DEPLOY.md`](DEPLOY.md#despliegue-gratis-vercel--render--neon).
+> Railway queda como plan B.
+>
 > **Actualización 2026-09-30:** preparado para Railway (`railway.json` en los dos
 > repos, ADR-0026, adenda del ADR-0013) y para una VPS (`infra/docker-compose.prod.yml`).
 > Paso a paso en [`DEPLOY.md`](DEPLOY.md). Lo de abajo es el análisis original,
@@ -227,7 +245,8 @@ el deploy es corto.
 
 - [x] ¿Mergear `dev` → `main` en los dos repos? Hecho el 2026-09-30, primero el
       api y después el web, con los e2e en verde.
-- [ ] ¿Desplegar, o seguir con features?
+- [x] ¿Desplegar, o seguir con features? Desplegar, gratis (2026-11-07):
+      falta lo manual de `DEPLOY.md` (Neon, Render, Vercel, PR a is-a.dev).
 - [ ] ¿Endurecer `AssignTicket` a AGENT+, o dejarlo mitigado por la interfaz?
 - [ ] Los ADRs están en español y el README en inglés. Ahora que el api es
       público, un párrafo en inglés al principio del índice de ADRs explicando

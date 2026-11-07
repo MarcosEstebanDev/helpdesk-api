@@ -159,7 +159,46 @@ salen del propio código, y las decisiones que están esperando tu OK.
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
-## Estado actual (2026-09-10) — Directorio de miembros (ADR-0025)
+## Estado actual (2026-11-07) — Despliegue gratis (adenda del ADR-0026)
+
+Plan elegido por el usuario: **Vercel + Render Free + Neon + Render Key Value +
+is-a.dev**. Todo preparado y ensayado en LOCAL; nada creado en las plataformas.
+Paso a paso manual en `docs/DEPLOY.md` ("Despliegue gratis").
+
+- **`render.yaml`**: web `helpdesk-api` (docker, free, `WORKER_ENABLED=1`,
+  `/health/ready`, `NODE_OPTIONS=--max-old-space-size=256`) + Key Value free con
+  `maxmemoryPolicy: noeviction` (BullMQ). Render Free no tiene Pre-Deploy ni
+  Background Workers: migraciones desde la PC, workers en el proceso de la API.
+- **`src/deploy/prepare-database.ts`**: `DATABASE_OWNER_MODE=create|external` y
+  paso nuevo `verify`. `external` = Neon: `helpdesk` creado en la consola, todo
+  corre con `MIGRATION_DATABASE_URL`.
+- **Web**: `packageManager: pnpm@11.13.1` + `engines.node: 24.x` (Vercel con
+  `ENABLE_EXPERIMENTAL_COREPACK=1`); el CI ya no pasa `version` a
+  `pnpm/action-setup` (falla si hay las dos).
+- **Medido**: imagen de prod con `--memory=512m`, API+workers, 25 sockets y
+  ~900 peticiones → pico de RSS 216 MiB. Con `--cpus=0.1`: arranque 77 s, login
+  0.6–1.6 s.
+
+**Gotchas caros (ensayo tipo Neon, Postgres 17 con dueño solo-CREATEROLE):**
+- **Sin superusuario, `ALTER FUNCTION ... OWNER TO x` exige que `x` tenga CREATE
+  en el esquema.** La 2.ª migración fallaba con `42501 permission denied for
+  schema public`. Local y CI nunca lo vieron porque el dueño es SUPERUSER. Modo
+  `external`: CREATE temporal a los 3 roles NOLOGIN en `owner`, revocado en `app`,
+  y `verify` falla si alguno lo conserva. **Toda migración futura que cambie el
+  dueño de una función a un rol nuevo necesita ese rol en `DEFINER_ROLES`.**
+- **El modo `create` "funcionaba" contra Neon si `helpdesk` ya existía**: caía
+  en `ALTER ROLE helpdesk PASSWORD` y le pisaba la contraseña de la consola.
+  Ahora exige SUPERUSER real antes de tocar nada.
+- En la imagen oficial de Postgres, `127.0.0.1` DENTRO del contenedor es `trust`:
+  para probar una contraseña hay que conectar por la IP de red del contenedor.
+- En este HDD el Postgres desechable tardó minutos en el `initdb` y Prisma agotó
+  su `connect_timeout` de 5 s (P1001): usar `connect_timeout=120` en las URLs.
+- La carga local dio P2028 (transacción interactiva > 5 s) por el disco lento,
+  no por memoria.
+- El `Dockerfile` hace `corepack enable` sin `packageManager` en `package.json`:
+  el build de hoy usó **pnpm 12.18.0**. Funcionó, pero no está fijado.
+
+## Estado anterior (2026-09-10) — Directorio de miembros (ADR-0025)
 
 Rama `feat/members-endpoint`. Cierra la carencia que bloqueaba tres pantallas del
 frontend a la vez.
