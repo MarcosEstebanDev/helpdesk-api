@@ -1246,7 +1246,10 @@ CPU: con 0.1 CPU el arranque en frío tardó 77 s y un login 0.6–1.6 s.
 - (+) El mismo código y las mismas migraciones sirven con y sin superusuario;
   ensayado de punta a punta dos veces seguidas (idempotente): 7 migraciones, 12
   tablas con RLS + FORCE, `helpdesk_app` sin BYPASSRLS, funciones `SECURITY
-  DEFINER` de sus roles, contraseña pública rechazada.
+  DEFINER` de sus roles, contraseña pública rechazada. Contra esa misma base, con
+  la app entrando como `helpdesk_app`: seed OK y 75/75 e2e de RLS, auth,
+  tickets, outbox, colas y SLA (el de SLA necesitó `--testTimeout=180000` por el
+  disco lento de la PC; con 30 s caían los `beforeAll`, sin errores de permisos).
 - (+) `verify` convierte el ADR-0010 en una comprobación ejecutable del
   despliegue, no solo de los e2e.
 - (−) Las migraciones en producción son un paso manual desde la PC: hay que
