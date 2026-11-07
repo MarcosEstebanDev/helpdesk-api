@@ -56,7 +56,7 @@ lo que costaría revertirla.
 
 - [ADR-0004](#adr-0004--contratos-vía-openapi) — Contratos vía OpenAPI
 - [ADR-0024](#adr-0024--observabilidad-logs-estructurados-correlación-hasta-el-worker-y-sondas-separadas) — Observabilidad: logs estructurados, correlación hasta el worker y sondas separadas
-- [ADR-0026](#adr-0026--despliegue-gestionado-rol-dueño-propio-prisma-en-la-imagen-y-rotación-de-credenciales) — Despliegue gestionado: rol dueño propio, Prisma en la imagen y rotación de credenciales
+- [ADR-0026](#adr-0026--despliegue-gestionado-rol-dueño-propio-prisma-en-la-imagen-y-rotación-de-credenciales) — Despliegue gestionado: rol dueño propio, Prisma en la imagen y rotación de credenciales (adenda: Postgres sin superusuario y despliegue gratis)
 
 ---
 
@@ -1190,3 +1190,70 @@ mismo con `psql` y una variable enlazada (`:'pw'`), porque ahí sí hay cliente.
   Pre-Deploy, nunca la API, que sigue con el rol restringido sin BYPASSRLS
   (ADR-0010).
 - (−) La imagen de producción carga con el CLI de Prisma.
+
+**Adenda (2026-11-07) — Postgres gestionado SIN superusuario (Neon) y despliegue gratis.**
+El despliegue preferido pasa a ser gratis: Vercel (front), Render Free (API con
+los workers en el mismo proceso), Render Key Value (Redis) y Neon (Postgres).
+Neon no da SUPERUSER: su rol más alto tiene CREATEROLE. Ensayado contra un
+Postgres 17 local con esa forma (dueño `helpdesk` con CREATEROLE y CREATEDB,
+nada más), aparecieron tres cosas:
+
+1. `CREATE ROLE helpdesk ... SUPERUSER` falla ("Only roles with the SUPERUSER
+   attribute may create roles with the SUPERUSER attribute"). Esperado.
+2. **Peor: si `helpdesk` ya existe, el paso `owner` NO falla.** Cae en la rama
+   `ALTER ROLE helpdesk PASSWORD` (cambiarse la propia contraseña está
+   permitido) y pisa en silencio la contraseña que dio la consola.
+3. **La segunda migración falla** con `42501 permission denied for schema
+   public`. Sin superusuario, `ALTER FUNCTION ... OWNER TO x` exige que `x`
+   tenga CREATE en el esquema de la función, y los roles dueños de las
+   funciones `SECURITY DEFINER` (ADR-0012, 0019, 0021) solo tienen USAGE. Un
+   superusuario se salta ese chequeo: por eso local y CI nunca lo vieron.
+
+**Decisión.** `DATABASE_OWNER_MODE=create|external` en `prepare-database.ts`
+(`create` por defecto, lo de siempre):
+- `external`: `helpdesk` se crea a mano en la consola del proveedor. `owner`
+  solo comprueba que `MIGRATION_DATABASE_URL` entre como `helpdesk` con
+  CREATEROLE, y crea los tres roles NOLOGIN (idénticos a como los crean las
+  migraciones, que los saltan si existen) con **CREATE temporal en `public`**.
+  `app` corre con la misma conexión —desde Postgres 16 el creador de un rol
+  tiene ADMIN OPTION sobre él— y retira ese CREATE.
+- `create` ahora exige que la conexión sea SUPERUSER de verdad antes de tocar
+  nada, y si no lo es sugiere `external`. Cierra el punto 2.
+- Paso nuevo `verify`, para los dos modos: falla si `helpdesk_app` es SUPERUSER
+  o tiene BYPASSRLS, si alguna tabla no tiene RLS con FORCE o es de
+  `helpdesk_app`, o si algún rol conserva CREATE en `public`. En un Postgres
+  gestionado no se puede dar por hecho que los roles salgan como en local.
+- Render Free no tiene Pre-Deploy: la secuencia `owner → migrate deploy → app →
+  verify` se corre desde la PC contra la conexión **directa** de Neon (no la del
+  pooler). Detalle en `docs/DEPLOY.md`.
+
+**Alternativas descartadas.**
+- *Editar las migraciones* para que no cambien dueños o den el GRANT ellas: son
+  historia aplicada (cambia el checksum, Decisión 1).
+- *Dar CREATE en `public` a esos roles para siempre*: es más privilegio del que
+  necesitan; solo hace falta en el instante del `ALTER ... OWNER`.
+- *Pooler de Neon para la API*: `set_config(..., true)` es transaccional y
+  funcionaría en modo transacción, pero Prisma pediría `pgbouncer=true` y no se
+  ensayó. Directa, que es lo probado.
+
+**Memoria (la duda que bloqueaba Render Free, 512 MB).** Imagen de producción
+con `--memory=512m`, API + workers en un proceso, 25 WebSockets y ~900
+peticiones: pico de RSS 216 MiB, estable en ~160 MB. Entra. Se fija igual
+`NODE_OPTIONS=--max-old-space-size=256` en `render.yaml`. Lo que aprieta es la
+CPU: con 0.1 CPU el arranque en frío tardó 77 s y un login 0.6–1.6 s.
+
+**Consecuencias.**
+- (+) El mismo código y las mismas migraciones sirven con y sin superusuario;
+  ensayado de punta a punta dos veces seguidas (idempotente): 7 migraciones, 12
+  tablas con RLS + FORCE, `helpdesk_app` sin BYPASSRLS, funciones `SECURITY
+  DEFINER` de sus roles, contraseña pública rechazada. Contra esa misma base, con
+  la app entrando como `helpdesk_app`: seed OK y 75/75 e2e de RLS, auth,
+  tickets, outbox, colas y SLA (el de SLA necesitó `--testTimeout=180000` por el
+  disco lento de la PC; con 30 s caían los `beforeAll`, sin errores de permisos).
+- (+) `verify` convierte el ADR-0010 en una comprobación ejecutable del
+  despliegue, no solo de los e2e.
+- (−) Las migraciones en producción son un paso manual desde la PC: hay que
+  correrlas antes de que se despliegue el código que las necesita.
+- (−) Render Free duerme sin tráfico y con él los workers (los eventos esperan
+  en el outbox y los vencimientos en `sla_timers`), y el Key Value Free no
+  persiste: un reinicio pierde los jobs en cola. Aceptable para una demo.

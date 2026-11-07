@@ -1,0 +1,73 @@
+# Blueprint de Render para el despliegue gratis (ver docs/DEPLOY.md, sección
+# "Despliegue gratis (Vercel + Render + Neon)", y la adenda del ADR-0026).
+#
+# Una sola pieza de cómputo: la API con los workers DENTRO del mismo proceso
+# (WORKER_ENABLED=1). El plan free de Render no tiene Background Workers, y el
+# código ya estaba pensado para esto: separar el worker es cambiar una variable
+# el día que haya plan pago.
+#
+# Lo que NO hace este archivo, porque Render Free no lo permite:
+# - Migraciones: no hay preDeployCommand en el plan free. Se corren desde la PC
+#   contra la conexión DIRECTA de Neon (docs/DEPLOY.md).
+# - Postgres: va en Neon (el Postgres free de Render caduca a los 30 días).
+#
+# Las variables con `sync: false` las pide el panel al crear el Blueprint y no
+# quedan escritas acá: el repo es público.
+services:
+  - type: web
+    name: helpdesk-api
+    runtime: docker
+    plan: free
+    # Misma región que la Key Value (red privada) y cerca de la región de Neon
+    # (aws-us-east-1). Cambiar las tres juntas.
+    region: virginia
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health/ready
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: WORKER_ENABLED
+        value: '1'
+      - key: LOG_LEVEL
+        value: info
+      # El tráfico llega por el proxy de Render (adenda del ADR-0013). Comprobar
+      # en los logs que `remoteAddress` sea la IP del cliente y no la del proxy.
+      - key: TRUST_PROXY_HOPS
+        value: '1'
+      # Techo explícito del heap de V8, por debajo de los 512 MB de la instancia.
+      # Node 24 ya lo deriva del límite del cgroup (dio 259 MB con
+      # --memory=512m), pero así no depende de que la plataforma lo exponga.
+      # Medido: pico de RSS de 216 MiB con carga (docs/DEPLOY.md).
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=256
+      # Rol restringido, sin BYPASSRLS (ADR-0010). Conexión DIRECTA de Neon (sin
+      # "-pooler" en el host) y con sslmode=require.
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: helpdesk-redis
+          property: connectionString
+      # 256 bits aleatorios cada uno, generados por Render. Distintos a
+      # propósito (ADR-0011).
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      # https://app.<nombre>.is-a.dev (exacto, sin barra final).
+      - key: CORS_ORIGINS
+        sync: false
+
+  # Redis de Render (Valkey). BullMQ exige `noeviction`: con una política LRU
+  # Redis tiraría jobs en silencio cuando se llene, y los 25 MB del plan free se
+  # llenan. Sin lista de IPs permitidas: solo se alcanza por la red privada.
+  - type: keyvalue
+    name: helpdesk-redis
+    plan: free
+    region: virginia
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
