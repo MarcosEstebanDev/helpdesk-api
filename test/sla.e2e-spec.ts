@@ -11,6 +11,7 @@ import type { EventJobData } from '../src/infrastructure/outbox/outbox-publisher
 import { OutboxPublisher } from '../src/infrastructure/outbox/outbox-publisher.service';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 import {
+  AI_TRIAGE_QUEUE,
   SLA_QUEUE,
   TICKET_ROUTING_QUEUE,
 } from '../src/infrastructure/queue/queues';
@@ -195,6 +196,10 @@ describe('SLA (e2e)', () => {
     for (const id of mensajesEncolados) {
       await slaQueue.remove(id).catch(() => undefined);
       await routingQueue.remove(id).catch(() => undefined);
+      await app
+        .get<Queue>(getQueueToken(AI_TRIAGE_QUEUE))
+        .remove(id)
+        .catch(() => undefined);
     }
     await prisma.withTenant(tenantId, (tx) =>
       tx.organization.deleteMany({ where: { id: tenantId } }),

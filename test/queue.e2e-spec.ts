@@ -11,6 +11,7 @@ import type { EventJobData } from '../src/infrastructure/outbox/outbox-publisher
 import { OutboxPublisher } from '../src/infrastructure/outbox/outbox-publisher.service';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 import {
+  AI_TRIAGE_QUEUE,
   DEAD_LETTER_QUEUE,
   SLA_QUEUE,
   TICKET_ROUTING_QUEUE,
@@ -130,6 +131,11 @@ describe('Colas y outbox (e2e)', () => {
       // con el mismo jobId. Borrar de las dos evita dejar jobs huérfanos en el
       // Redis de desarrollo.
       await sla.remove(id).catch(() => undefined);
+      // Desde el ADR-0027 también va a la cola de triage con IA.
+      await app
+        .get<Queue>(getQueueToken(AI_TRIAGE_QUEUE))
+        .remove(id)
+        .catch(() => undefined);
     }
     await prisma.withTenant(tenantId, (tx) =>
       tx.organization.deleteMany({ where: { id: tenantId } }),
