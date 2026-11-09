@@ -348,4 +348,86 @@ describe('Triage con IA (e2e)', () => {
       );
     }
   });
+  describe('en la bandeja', () => {
+    type Fila = {
+      id: string;
+      aiTriage?: { category: string; suggestedPriority: string } | null;
+    };
+    const bandeja = async (tk: string, qs = ''): Promise<Fila[]> =>
+      request(app.getHttpServer())
+        .get(`/tickets?limit=100${qs}`)
+        .set('Authorization', `Bearer ${tk}`)
+        .expect(200)
+        .then((res) => (res.body as { items: Fila[] }).items);
+
+    it('cada fila trae la sugerencia, o null si todavía no la hay', async () => {
+      const clasificado = await crearTicket();
+      await processor.process(await jobDeTriage(clasificado));
+      const sinClasificar = await crearTicket();
+
+      const filas = await bandeja(token);
+
+      expect(filas.find((f) => f.id === clasificado)?.aiTriage).toEqual({
+        category: 'billing',
+        suggestedPriority: 'HIGH',
+      });
+      expect(filas.find((f) => f.id === sinClasificar)?.aiTriage).toBeNull();
+    });
+
+    it('aiSuggestsHigher deja solo los que la IA cree más urgentes', async () => {
+      const masUrgente = await crearTicket(); // NORMAL, la IA dice HIGH
+      await processor.process(await jobDeTriage(masUrgente));
+
+      const menosUrgente = await crearTicket(); // NORMAL, la IA dice LOW
+      proxima = {
+        status: 200,
+        body: {
+          ...(RESPUESTA_OK.body as object),
+          classification: {
+            category: 'how_to',
+            priority: 'LOW',
+            sentiment: 'neutral',
+            language: 'es',
+          },
+        },
+      };
+      await processor.process(await jobDeTriage(menosUrgente));
+
+      const sinSugerencia = await crearTicket();
+
+      const ids = (await bandeja(token, '&aiSuggestsHigher=true')).map(
+        (f) => f.id,
+      );
+
+      expect(ids).toContain(masUrgente);
+      expect(ids).not.toContain(menosUrgente);
+      expect(ids).not.toContain(sinSugerencia);
+    });
+
+    it('a un VIEWER no le llega la sugerencia ni puede filtrar por ella', async () => {
+      const ticketId = await crearTicket();
+      await processor.process(await jobDeTriage(ticketId));
+      const tokenViewer = await tokenConRol('VIEWER');
+
+      try {
+        const filas = await bandeja(tokenViewer);
+        // La clave NO existe (no es null: null diría "sin sugerencia").
+        expect(filas.every((f) => !('aiTriage' in f))).toBe(true);
+
+        await request(app.getHttpServer())
+          .get('/tickets?aiSuggestsHigher=true')
+          .set('Authorization', `Bearer ${tokenViewer}`)
+          .expect(403);
+      } finally {
+        token = await tokenConRol('ADMIN');
+      }
+    });
+
+    it('un valor que no es booleano es un 400, no un "sí"', async () => {
+      await request(app.getHttpServer())
+        .get('/tickets?aiSuggestsHigher=yes')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(400);
+    });
+  });
 });

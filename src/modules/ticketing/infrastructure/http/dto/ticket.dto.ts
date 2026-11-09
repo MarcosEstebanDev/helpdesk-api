@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -99,6 +100,19 @@ export class ListTicketsQueryDto {
   @IsUUID()
   requesterId?: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Solo AGENT o superior: tickets en los que la IA sugiere MÁS urgencia que la prioridad actual.',
+  })
+  @IsOptional()
+  // Los query params llegan como string. 'true'/'false' se convierten; cualquier
+  // otra cosa pasa tal cual y la rechaza `@IsBoolean` (mejor un 400 que un "sí").
+  @Transform(({ value }: { value: unknown }) =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @IsBoolean()
+  aiSuggestsHigher?: boolean;
+
   @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 100 })
   @IsOptional()
   // Los query params llegan como string; sin esta conversión `@IsInt` fallaría
@@ -166,8 +180,23 @@ export class TicketDetailDto extends TicketSummaryDto {
   @ApiProperty({ type: [TicketSlaDto] }) sla!: TicketSlaDto[];
 }
 
+export class TicketTriageSummaryDto {
+  @ApiProperty() category!: string;
+  @ApiProperty({ enum: TICKET_PRIORITIES }) suggestedPriority!: string;
+}
+
+export class TicketListItemDto extends TicketSummaryDto {
+  @ApiPropertyOptional({
+    type: TicketTriageSummaryDto,
+    nullable: true,
+    description:
+      'Solo para AGENT o superior (para un VIEWER la clave no aparece). `null` = sin sugerencia.',
+  })
+  aiTriage?: TicketTriageSummaryDto | null;
+}
+
 export class TicketPageDto {
-  @ApiProperty({ type: [TicketSummaryDto] }) items!: TicketSummaryDto[];
+  @ApiProperty({ type: [TicketListItemDto] }) items!: TicketListItemDto[];
   @ApiProperty({
     nullable: true,
     description: 'Cursor de la página siguiente; `null` si no hay más.',
