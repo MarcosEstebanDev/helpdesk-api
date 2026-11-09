@@ -149,6 +149,14 @@ export class TicketTriaged implements IntegrationEvent {
       language: string;
       model: string;
       promptVersion: string;
+      /**
+       * Foto del ticket al clasificarlo. Viaja para que el aviso en vivo pueda
+       * decir "#336 sugiere Urgente (actual: Normal)" sin que el cliente tenga
+       * que pedir el ticket. Es la prioridad de ESE instante: si un agente la
+       * cambia despues, este evento no se entera (ni debe).
+       */
+      ticketNumber: number;
+      ticketPriority: TicketPriority;
     },
   ) {}
 }

@@ -114,6 +114,18 @@ describe('TriageTicket', () => {
     });
   });
 
+  it('el evento lleva la foto del ticket para el aviso en vivo', async () => {
+    const { sut, tickets, outbox } = buildSut();
+    const ticket = await tickets.findById(TENANT, TICKET_ID);
+
+    await sut.execute(input);
+
+    expect(outbox.records[0]?.payload).toMatchObject({
+      ticketNumber: ticket?.number,
+      ticketPriority: ticket?.priority,
+    });
+  });
+
   it('NO cambia la prioridad del ticket: la IA sugiere, no decide', async () => {
     const { sut, tickets } = buildSut();
 

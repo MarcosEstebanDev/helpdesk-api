@@ -163,6 +163,8 @@ export class BroadcastTicketEvent {
                 ...base,
                 category: input.payload.category,
                 suggestedPriority: input.payload.suggestedPriority,
+                number: input.payload.ticketNumber,
+                currentPriority: input.payload.ticketPriority,
               },
             },
           },

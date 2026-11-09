@@ -104,6 +104,8 @@ export class TicketTriage extends AggregateRoot<TicketId, TicketingEvent> {
     tenantId: TenantId;
     classification: TriageClassification;
     provenance: TriageProvenance;
+    /** Del ticket clasificado; solo viaja en el evento, no se persiste. */
+    ticket: { number: number; priority: TicketPriority };
     now: Date;
   }): TicketTriage {
     const triage = new TicketTriage(input.ticketId, {
@@ -117,6 +119,8 @@ export class TicketTriage extends AggregateRoot<TicketId, TicketingEvent> {
         ...input.classification,
         model: input.provenance.model,
         promptVersion: input.provenance.promptVersion,
+        ticketNumber: input.ticket.number,
+        ticketPriority: input.ticket.priority,
       }),
     );
     return triage;

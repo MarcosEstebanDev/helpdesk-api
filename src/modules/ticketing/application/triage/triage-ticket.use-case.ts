@@ -111,6 +111,7 @@ export class TriageTicket {
           tenantId: input.tenantId,
           classification,
           provenance,
+          ticket: { number: ticket.number, priority: ticket.priority },
           now,
         });
         await this.triages.save(triage);
