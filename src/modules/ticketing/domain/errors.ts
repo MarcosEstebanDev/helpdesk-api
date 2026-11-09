@@ -80,6 +80,28 @@ export class InvalidSlaTargetError extends DomainError {
   }
 }
 
+/**
+ * El servicio de IA no está disponible ahora (caído, timeout, sobrecargado).
+ * Es TRANSITORIO: el consumidor lo lanza para que la cola reintente con backoff.
+ */
+export class TriageUnavailableError extends DomainError {
+  readonly code = 'ticketing.triage_unavailable';
+  constructor(detail: string) {
+    super(detail);
+  }
+}
+
+/**
+ * El servicio de IA rechazó la petición o devolvió algo que no aceptamos.
+ * Es PERMANENTE: reintentar el mismo texto daría lo mismo, va a la DLQ.
+ */
+export class TriageRejectedError extends DomainError {
+  readonly code = 'ticketing.triage_rejected';
+  constructor(detail: string) {
+    super(detail);
+  }
+}
+
 export type TicketingError =
   | InvalidTicketSubjectError
   | InvalidTicketDescriptionError
@@ -88,4 +110,6 @@ export type TicketingError =
   | TicketClosedError
   | AssigneeNotFoundError
   | EmptyCommentError
-  | InvalidSlaTargetError;
+  | InvalidSlaTargetError
+  | TriageUnavailableError
+  | TriageRejectedError;

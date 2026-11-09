@@ -71,6 +71,19 @@ export interface AuditEntryView {
   occurredAt: Date;
 }
 
+export type TicketTriageView =
+  | { status: 'pending' }
+  | {
+      status: 'ready';
+      category: string;
+      suggestedPriority: TicketPriority;
+      sentiment: string;
+      language: string;
+      model: string;
+      promptVersion: string;
+      triagedAt: Date;
+    };
+
 export const TICKETS_PAGE_SIZE_MAX = 100;
 
 @Injectable()
@@ -191,6 +204,40 @@ export class TicketReadModel extends PrismaRepository {
             describeSlaTimer({ ...timer, kind: timer.kind }, now),
           ),
       };
+    });
+  }
+
+  /**
+   * Sugerencia de triage de un ticket (ADR-0027). `null` si el ticket no existe
+   * (o es de otro tenant: RLS lo hace invisible), `pending` si aún no hay.
+   *
+   * Selección campo a campo y SIN tokens ni latencia: eso es telemetría para
+   * las métricas, no información para quien atiende el ticket.
+   */
+  async triage(
+    tenantId: TenantId,
+    ticketId: TicketId,
+  ): Promise<TicketTriageView | null> {
+    return this.runInTenant(tenantId, async (tx) => {
+      const row = await tx.ticket.findFirst({
+        where: { id: ticketId, tenantId },
+        select: {
+          triage: {
+            select: {
+              category: true,
+              suggestedPriority: true,
+              sentiment: true,
+              language: true,
+              model: true,
+              promptVersion: true,
+              triagedAt: true,
+            },
+          },
+        },
+      });
+      if (row === null) return null;
+      if (row.triage === null) return { status: 'pending' };
+      return { status: 'ready', ...row.triage };
     });
   }
 

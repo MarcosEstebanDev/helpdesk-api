@@ -49,6 +49,7 @@ model Organization {
   processed     ProcessedMessage[]
   slaPolicies   SlaPolicy[]
   slaTimers     SlaTimer[]
+  ticketTriages TicketTriage[]
 
   @@map("organizations")
 }
@@ -159,11 +160,12 @@ model Ticket {
   resolvedAt  DateTime?      @map("resolved_at")
   closedAt    DateTime?      @map("closed_at")
 
-  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  requester    User         @relation("TicketRequester", fields: [requesterId], references: [id], onDelete: Cascade)
-  assignee     User?        @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  organization Organization  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  requester    User          @relation("TicketRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  assignee     User?         @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
   comments     Comment[]
   slaTimers    SlaTimer[]
+  triage       TicketTriage?
 
   // El número es único DENTRO del tenant, nunca global.
   @@unique([tenantId, number])
@@ -356,4 +358,41 @@ model SlaTimer {
   @@index([dueAt])
   @@index([tenantId, ticketId])
   @@map("sla_timers")
+}
+
+/// Sugerencia de triage de la IA para un ticket (ADR-0027).
+///
+/// Tabla aparte y NO columnas en `tickets`: la IA sugiere, no decide. La
+/// prioridad real del ticket (y con ella los relojes de SLA) solo la cambia una
+/// persona; aquí queda lo que el modelo propuso, para mostrarlo y, más adelante,
+/// medir cuánto acierta contra lo que el agente terminó eligiendo.
+///
+/// `ticket_id` es la clave primaria: como mucho una sugerencia por ticket, y esa
+/// restricción es también la garantía de idempotencia al guardarla.
+///
+/// `category`, `sentiment` y `language` son texto y no enums de Postgres: la
+/// lista la valida el dominio, y cambiarla no debería exigir una migración que
+/// bloquee la tabla. `model` y `prompt_version` permiten comparar sugerencias
+/// por su origen.
+model TicketTriage {
+  ticketId          String         @id @map("ticket_id") @db.Uuid
+  tenantId          String         @map("tenant_id") @db.Uuid
+  category          String
+  suggestedPriority TicketPriority @map("suggested_priority")
+  sentiment         String
+  language          String
+  provider          String
+  model             String
+  promptVersion     String         @map("prompt_version")
+  latencyMs         Int            @map("latency_ms")
+  inputTokens       Int?           @map("input_tokens")
+  outputTokens      Int?           @map("output_tokens")
+  triagedAt         DateTime       @map("triaged_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ticket       Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  // Métricas por categoría dentro del tenant.
+  @@index([tenantId, category])
+  @@map("ticket_triages")
 }

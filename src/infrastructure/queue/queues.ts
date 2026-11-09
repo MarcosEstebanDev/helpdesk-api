@@ -18,6 +18,13 @@ export const SLA_QUEUE = 'sla';
 /** Empuje a los clientes conectados por WebSocket (ADR-0023). */
 export const REALTIME_QUEUE = 'realtime';
 
+/**
+ * Triage con IA (ADR-0027). Cola propia y no un paso más de `ticket-routing`:
+ * la IA tarda segundos y puede estar caída, y la auto-asignación no debe
+ * esperar a un modelo ni reintentarse porque el modelo falló.
+ */
+export const AI_TRIAGE_QUEUE = 'ai-triage';
+
 /** Cola de descarte: aquí acaban los jobs que agotaron sus reintentos. */
 export const DEAD_LETTER_QUEUE = 'dead-letter';
 
@@ -25,11 +32,18 @@ export const QUEUE_NAMES = [
   TICKET_ROUTING_QUEUE,
   SLA_QUEUE,
   REALTIME_QUEUE,
+  AI_TRIAGE_QUEUE,
   DEAD_LETTER_QUEUE,
 ] as const;
 
 export const EVENT_ROUTING: Readonly<Record<string, readonly string[]>> = {
-  'ticket.created': [TICKET_ROUTING_QUEUE, SLA_QUEUE, REALTIME_QUEUE],
+  'ticket.created': [
+    TICKET_ROUTING_QUEUE,
+    SLA_QUEUE,
+    REALTIME_QUEUE,
+    AI_TRIAGE_QUEUE,
+  ],
+  'ticket.triaged': [REALTIME_QUEUE],
   'comment.added': [SLA_QUEUE, REALTIME_QUEUE],
   'ticket.status_changed': [SLA_QUEUE, REALTIME_QUEUE],
   'ticket.assigned': [REALTIME_QUEUE],

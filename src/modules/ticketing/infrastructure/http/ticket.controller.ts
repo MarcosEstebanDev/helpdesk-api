@@ -39,6 +39,7 @@ import {
   TicketDetailDto,
   TicketPageDto,
   TicketSummaryDto,
+  TicketTriageDto,
 } from './dto/ticket.dto';
 import { TicketReadModel } from '../persistence/ticket.read-model';
 import { toHttpException } from './ticketing-http.mapper';
@@ -131,6 +132,29 @@ export class TicketController {
       throw new NotFoundException('El ticket no existe.');
     }
     return ticket;
+  }
+
+  /**
+   * AGENT y no VIEWER, por la regla del ADR-0025: el rango se decide por lo que
+   * se revela. La sugerencia incluye el sentimiento que la IA atribuye al
+   * cliente, y el cliente es justamente el VIEWER.
+   */
+  @Get(':id/triage')
+  @MinRole('AGENT')
+  @ApiOperation({ summary: 'Sugerencia de la IA: categoría y prioridad' })
+  @ApiResponse({ status: 200, type: TicketTriageDto })
+  async triage(
+    @CurrentUser() user: TenantContext,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<TicketTriageDto> {
+    const view = await this.tickets.triage(
+      TenantId(user.tenantId),
+      TicketId(id),
+    );
+    if (view === null) {
+      throw new NotFoundException('El ticket no existe.');
+    }
+    return view;
   }
 
   @Get(':id/history')

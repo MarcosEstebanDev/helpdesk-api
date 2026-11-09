@@ -127,10 +127,37 @@ export class SlaBreached implements IntegrationEvent {
   ) {}
 }
 
+/**
+ * El clasificador de IA propuso categoría y prioridad para el ticket (ADR-0027).
+ *
+ * Lleva `model` y `promptVersion` para que un consumidor futuro (métricas de
+ * acierto, por ejemplo) pueda separar las sugerencias por su origen.
+ */
+export class TicketTriaged implements IntegrationEvent {
+  readonly eventName = 'ticket.triaged';
+  readonly aggregateType = AGGREGATE_TYPE;
+  readonly version = 1;
+
+  constructor(
+    readonly aggregateId: string,
+    readonly tenantId: string,
+    readonly occurredAt: Date,
+    readonly payload: {
+      category: string;
+      suggestedPriority: TicketPriority;
+      sentiment: string;
+      language: string;
+      model: string;
+      promptVersion: string;
+    },
+  ) {}
+}
+
 export type TicketingEvent =
   | TicketCreated
   | TicketAssigned
   | TicketUnassigned
   | TicketStatusChanged
   | CommentAdded
-  | SlaBreached;
+  | SlaBreached
+  | TicketTriaged;

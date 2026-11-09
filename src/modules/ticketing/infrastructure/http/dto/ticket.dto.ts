@@ -12,6 +12,11 @@ import {
 } from 'class-validator';
 import { SLA_KINDS } from '../../../domain/sla/sla-timer.entity';
 import {
+  TRIAGE_CATEGORIES,
+  TRIAGE_LANGUAGES,
+  TRIAGE_SENTIMENTS,
+} from '../../../domain/triage/ticket-triage.entity';
+import {
   TICKET_PRIORITIES,
   TICKET_STATUSES,
 } from '../../../domain/ticket-status';
@@ -176,4 +181,20 @@ export class AuditEntryDto {
   @ApiProperty({ example: 'ticket.status_changed' }) action!: string;
   @ApiProperty({ nullable: true, type: Object }) metadata!: unknown;
   @ApiProperty() occurredAt!: Date;
+}
+
+/**
+ * Sugerencia de la IA para un ticket (ADR-0027). `pending` mientras el worker no
+ * la haya producido —o si el servicio de IA está desactivado—: la pantalla
+ * distingue "todavía no" de "no existe el ticket" sin un 404 que parezca error.
+ */
+export class TicketTriageDto {
+  @ApiProperty({ enum: ['pending', 'ready'] }) status!: 'pending' | 'ready';
+  @ApiPropertyOptional({ enum: TRIAGE_CATEGORIES }) category?: string;
+  @ApiPropertyOptional({ enum: TICKET_PRIORITIES }) suggestedPriority?: string;
+  @ApiPropertyOptional({ enum: TRIAGE_SENTIMENTS }) sentiment?: string;
+  @ApiPropertyOptional({ enum: TRIAGE_LANGUAGES }) language?: string;
+  @ApiPropertyOptional({ example: 'qwen2.5:3b-instruct' }) model?: string;
+  @ApiPropertyOptional({ example: 'triage-v1' }) promptVersion?: string;
+  @ApiPropertyOptional() triagedAt?: Date;
 }

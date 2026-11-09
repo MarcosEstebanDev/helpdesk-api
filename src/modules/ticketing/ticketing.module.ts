@@ -70,6 +70,18 @@ import {
   PrismaSlaTimerRepository,
 } from './infrastructure/persistence/prisma-sla.repository';
 import { TicketReadModel } from './infrastructure/persistence/ticket.read-model';
+import { TriageTicket } from './application/triage/triage-ticket.use-case';
+import {
+  TICKET_CLASSIFIER,
+  TicketClassifier,
+} from './domain/ports/ticket-classifier';
+import {
+  TICKET_TRIAGE_REPOSITORY,
+  TicketTriageRepository,
+} from './domain/ports/ticket-triage.repository';
+import { HttpTicketClassifier } from './infrastructure/ai/http-ticket-classifier';
+import { PrismaTicketTriageRepository } from './infrastructure/persistence/prisma-ticket-triage.repository';
+import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
 
 /**
  * Composición del bounded context Ticketing.
@@ -103,6 +115,9 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
     SlaProcessor,
     RealtimeProcessor,
     SlaSweeper,
+    PrismaTicketTriageRepository,
+    HttpTicketClassifier,
+    AiTriageProcessor,
 
     // --- Puertos -> adapters ---
     { provide: TICKET_REPOSITORY, useExisting: PrismaTicketRepository },
@@ -115,6 +130,11 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
     { provide: MEMBER_DIRECTORY, useExisting: PrismaMemberDirectory },
     { provide: SLA_POLICY_REPOSITORY, useExisting: PrismaSlaPolicyRepository },
     { provide: SLA_TIMER_REPOSITORY, useExisting: PrismaSlaTimerRepository },
+    {
+      provide: TICKET_TRIAGE_REPOSITORY,
+      useExisting: PrismaTicketTriageRepository,
+    },
+    { provide: TICKET_CLASSIFIER, useExisting: HttpTicketClassifier },
 
     // --- Aplicación (clases puras, construidas a mano) ---
     {
@@ -328,6 +348,39 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
         ),
     },
     {
+      provide: TriageTicket,
+      inject: [
+        TRANSACTION_MANAGER,
+        TICKET_REPOSITORY,
+        TICKET_TRIAGE_REPOSITORY,
+        TICKET_CLASSIFIER,
+        PROCESSED_MESSAGES,
+        AuditRecorder,
+        EventRecorder,
+        CLOCK,
+      ],
+      useFactory: (
+        transactions: TransactionManager,
+        tickets: TicketRepository,
+        triages: TicketTriageRepository,
+        classifier: TicketClassifier,
+        processed: ProcessedMessages,
+        audit: AuditRecorder,
+        events: EventRecorder,
+        clock: Clock,
+      ): TriageTicket =>
+        new TriageTicket(
+          transactions,
+          tickets,
+          triages,
+          classifier,
+          processed,
+          audit,
+          events,
+          clock,
+        ),
+    },
+    {
       provide: AddComment,
       inject: [
         TRANSACTION_MANAGER,
@@ -359,6 +412,12 @@ import { TicketReadModel } from './infrastructure/persistence/ticket.read-model'
     },
   ],
   // El publicador del outbox (fase 5b) lo necesita para dirigirlo desde los e2e.
-  exports: [AutoAssignTicket, SlaSweeper, StartSlaTimers, StopSlaTimer],
+  exports: [
+    AutoAssignTicket,
+    SlaSweeper,
+    StartSlaTimers,
+    StopSlaTimer,
+    TriageTicket,
+  ],
 })
 export class TicketingModule {}
