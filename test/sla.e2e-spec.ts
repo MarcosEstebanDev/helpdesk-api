@@ -331,6 +331,27 @@ describe('SLA (e2e)', () => {
       expect(timers.find((t) => t.kind === 'RESPONSE')?.stoppedAt).toBeNull();
     });
 
+    it('una nota interna del equipo NO para el reloj de respuesta (ADR-0028)', async () => {
+      // El hueco que abriría la funcionalidad sin este cambio: el agente escribe
+      // "lo miro mañana" como nota, el cliente no recibe nada y el SLA se da
+      // por cumplido.
+      token = await tokenConRol('ADMIN');
+      // `procesarSla` toma el último `comment.added` por `occurredAt`: con el
+      // reloj quieto empataría con el comentario del cliente del test anterior.
+      reloj.avanzarMinutos(1);
+      await request(app.getHttpServer())
+        .post(`/tickets/${ticketId}/comments`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ body: 'Lo miro mañana.', visibility: 'INTERNAL' })
+        .expect(201);
+
+      const resultado = await procesarSla(ticketId, 'comment.added');
+
+      expect(resultado).toEqual({ action: 'ignored', detail: 'nota interna' });
+      const timers = await timersDe(ticketId);
+      expect(timers.find((t) => t.kind === 'RESPONSE')?.stoppedAt).toBeNull();
+    });
+
     it('el comentario de un agente sí lo para, con la hora del comentario', async () => {
       token = await tokenConRol('ADMIN');
       reloj.avanzarMinutos(30);

@@ -44,6 +44,9 @@ interface Delivery {
  *    al tenant va lo justo para refrescar una lista; los datos de quién atiende
  *    a quién se quedan en la sala del equipo.
  */
+const isPublicComment = (visibility: unknown): boolean =>
+  visibility === undefined || visibility === 'PUBLIC';
+
 export class BroadcastTicketEvent {
   constructor(private readonly realtime: RealtimePublisher) {}
 
@@ -102,7 +105,14 @@ export class BroadcastTicketEvent {
       case 'comment.added':
         return [
           {
-            audience: ticket,
+            // Una nota interna se le avisa solo al equipo (ADR-0028). El aviso no
+            // lleva el cuerpo, pero a la sala del ticket le llegaría al cliente
+            // que lo tiene abierto, y ya sabría que el equipo escribió algo y
+            // cuándo. Falla cerrado: un v2 no trae el campo y era público, pero un
+            // valor desconocido va al equipo, no al cliente.
+            audience: isPublicComment(input.payload.visibility)
+              ? ticket
+              : staff,
             message: {
               event: 'comment.added',
               // Va el id, no el cuerpo: el mensaje llega a todo el que tenga el

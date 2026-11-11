@@ -356,9 +356,9 @@ The full contract, with schemas, is at `/docs`.
 | `GET` | `/members` | AGENT | Directory of the caller's organization. Not VIEWER, on purpose |
 | `POST` | `/tickets` | VIEWER | |
 | `GET` | `/tickets` | VIEWER | Cursor-paginated; filters by `status`, `assigneeId`, `requesterId` |
-| `GET` | `/tickets/:id` | VIEWER | Includes live SLA clocks |
-| `GET` | `/tickets/:id/history` | VIEWER | Audit trail |
-| `POST` | `/tickets/:id/comments` | VIEWER | |
+| `GET` | `/tickets/:id` | VIEWER | Includes live SLA clocks. A VIEWER never receives internal notes |
+| `GET` | `/tickets/:id/history` | AGENT | Audit trail |
+| `POST` | `/tickets/:id/comments` | VIEWER | `visibility: INTERNAL` (team-only note, does not count as the SLA response) needs AGENT |
 | `PATCH` | `/tickets/:id/status` | AGENT | Rejects illegal transitions with 409 |
 | `POST` | `/tickets/:id/assign` | AGENT | |
 | `DELETE` | `/tickets/:id/assign` | AGENT | Back to the queue |

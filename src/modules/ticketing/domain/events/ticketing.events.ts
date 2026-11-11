@@ -1,4 +1,5 @@
 import { IntegrationEvent } from '../../../../shared-kernel';
+import { CommentVisibility } from '../comment-visibility';
 import { TicketPriority, TicketStatus } from '../ticket-status';
 
 /**
@@ -93,7 +94,7 @@ export class TicketStatusChanged implements IntegrationEvent {
 export class CommentAdded implements IntegrationEvent {
   readonly eventName = 'comment.added';
   readonly aggregateType = AGGREGATE_TYPE;
-  readonly version = 2;
+  readonly version = 3;
 
   constructor(
     readonly aggregateId: string,
@@ -103,6 +104,12 @@ export class CommentAdded implements IntegrationEvent {
       commentId: string;
       authorId: string;
       authorRole: string;
+      /**
+       * v3 (ADR-0028). Una nota interna no es una respuesta al cliente: el SLA
+       * no la cuenta y el tiempo real solo se la avisa al equipo. Un v2 no lo
+       * trae y se lee como `PUBLIC`, que es lo que eran todos los comentarios.
+       */
+      visibility: CommentVisibility;
     },
   ) {}
 }

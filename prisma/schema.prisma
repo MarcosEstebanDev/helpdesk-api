@@ -176,16 +176,26 @@ model Ticket {
   @@map("tickets")
 }
 
+/// Respuesta al cliente o nota del equipo (ADR-0028). El cliente (VIEWER) no
+/// ve las INTERNAL; hoy lo garantiza el read model, no una policy de RLS.
+enum CommentVisibility {
+  PUBLIC
+  INTERNAL
+
+  @@map("comment_visibility")
+}
+
 /// Comentario en un ticket. Parte del agregado Ticket a efectos de negocio, pero
 /// tabla propia: una conversación crece sin límite y no tiene sentido cargarla
 /// entera cada vez que se toca el ticket.
 model Comment {
-  id        String   @id @default(uuid()) @db.Uuid
-  tenantId  String   @map("tenant_id") @db.Uuid
-  ticketId  String   @map("ticket_id") @db.Uuid
-  authorId  String   @map("author_id") @db.Uuid
-  body      String
-  createdAt DateTime @default(now()) @map("created_at")
+  id         String            @id @default(uuid()) @db.Uuid
+  tenantId   String            @map("tenant_id") @db.Uuid
+  ticketId   String            @map("ticket_id") @db.Uuid
+  authorId   String            @map("author_id") @db.Uuid
+  body       String
+  visibility CommentVisibility @default(PUBLIC)
+  createdAt  DateTime          @default(now()) @map("created_at")
 
   organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   ticket       Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)

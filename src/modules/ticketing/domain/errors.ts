@@ -64,6 +64,17 @@ export class EmptyCommentError extends DomainError {
 }
 
 /**
+ * Solo el equipo escribe notas internas (ADR-0028). Es un 403 y no un 400: la
+ * petición está bien formada, lo que falta es el rango.
+ */
+export class InternalNoteForbiddenError extends DomainError {
+  readonly code = 'ticketing.internal_note_forbidden';
+  constructor() {
+    super('Solo el equipo de soporte puede escribir notas internas.');
+  }
+}
+
+/**
  * El objetivo de SLA que intenta configurar la organización no es aplicable.
  *
  * Cubre tanto los valores imposibles (cero, negativos, fracciones de minuto,
@@ -110,6 +121,7 @@ export type TicketingError =
   | TicketClosedError
   | AssigneeNotFoundError
   | EmptyCommentError
+  | InternalNoteForbiddenError
   | InvalidSlaTargetError
   | TriageUnavailableError
   | TriageRejectedError;

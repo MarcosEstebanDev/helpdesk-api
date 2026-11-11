@@ -17,7 +17,8 @@ import {
 import { StartSlaTimers } from '../../application/sla/start-sla-timers.use-case';
 import { StopSlaTimer } from '../../application/sla/stop-sla-timer.use-case';
 import { TenantId, TicketId } from '../../domain/ids';
-import { isResponder } from '../../domain/sla/responder-role';
+import { isCommentVisibility } from '../../domain/comment-visibility';
+import { countsAsResponse, isResponder } from '../../domain/sla/responder-role';
 import { isTicketPriority } from '../../domain/ticket-status';
 
 /** Resultado del job, solo informativo (queda en el registro de BullMQ). */
@@ -144,10 +145,25 @@ export class SlaProcessor extends WorkerHost implements OnApplicationBootstrap {
       return this.discard(job, 'el payload no trae authorRole');
     }
 
-    if (!isResponder(authorRole)) {
+    // v3 trae la visibilidad (ADR-0028). Un v2 no la trae y se lee como PUBLIC:
+    // antes de las notas internas todos los comentarios lo eran, así que no es
+    // una suposición sino lo que pasó. Un valor desconocido, en cambio, no se
+    // adivina: es un fallo permanente y va a la DLQ.
+    const visibility = data.version >= 3 ? data.payload.visibility : 'PUBLIC';
+    if (!isCommentVisibility(visibility)) {
+      return this.discard(job, 'el payload no trae una visibilidad válida');
+    }
+
+    if (!countsAsResponse({ authorRole, visibility })) {
       // Comentario del cliente: no para nada. Si lo parara, bastaría con que
       // insistiera para que su propio SLA de respuesta se diera por cumplido.
-      return { action: 'ignored', detail: 'comentario del solicitante' };
+      // Nota interna: tampoco, porque el cliente no recibió ninguna respuesta.
+      return {
+        action: 'ignored',
+        detail: isResponder(authorRole)
+          ? 'nota interna'
+          : 'comentario del solicitante',
+      };
     }
 
     const result = await this.stopTimer.execute({

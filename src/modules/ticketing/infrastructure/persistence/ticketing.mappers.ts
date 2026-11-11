@@ -58,5 +58,6 @@ export const toComment = (row: CommentRow): Comment =>
     ticketId: TicketId(row.ticketId),
     authorId: UserId(row.authorId),
     body: row.body,
+    visibility: row.visibility,
     createdAt: row.createdAt,
   });

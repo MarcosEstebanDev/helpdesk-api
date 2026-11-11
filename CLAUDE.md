@@ -108,6 +108,11 @@ uso dependen de la interfaz, nunca del adapter.
   es la fuente de verdad, rol `helpdesk_sla_sweeper` + `sla_due_timers`
   (SECURITY DEFINER, devuelve solo `id` y `tenant_id`), idempotencia por condición
   —no por bloqueo—, y todo fechado con el `occurredAt` del evento.
+- ADR-0028 **Notas internas**: `comments.visibility` (PUBLIC|INTERNAL, inmutable),
+  solo el equipo las escribe (regla en `Comment.write`), el read model las filtra
+  en el WHERE para el VIEWER, `comment.added` v3 (v2 se lee como PUBLIC) y el SLA
+  usa `countsAsResponse` (equipo Y público). El aviso de una nota va a la sala
+  `staff`. **Sin RLS por rol todavía**: entra con el rol CLIENTE del portal.
 
 ## Seguridad (modelo, "portfolio-pragmático")
 
@@ -159,7 +164,33 @@ salen del propio código, y las decisiones que están esperando tu OK.
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
-## Estado actual (2026-11-09) — Triage con IA, fase 1 (ADR-0027)
+## Estado actual (2026-11-11) — Tanda 1 de producto: notas internas (ADR-0028)
+
+Se comparó con Zendesk, Freshdesk, Help Scout y Zammad y se acordó con el
+usuario un plan en tres tandas. **Tanda 1** (lo que un agente extraña el primer
+día): notas internas ✅, estado "esperando al cliente" que pausa el SLA + horario
+laboral, respuestas predefinidas, etiquetas + búsqueda + vistas guardadas.
+**Tanda 2**: rol CLIENTE con portal (acá entra el RLS por rol), email, adjuntos,
+CSAT. **Tanda 3**: reglas de automatización, reportes (read models), base de
+conocimiento (+ RAG de helpdesk-ai).
+
+- `feat/ai-triage` se mergeó a `dev` (`65de8af`, web `b107d8c`).
+- Rama `feat/notas-internas` en los dos repos. Migración
+  `20261111120000_internal_notes`. ADR-0028 (total 28).
+- **Hallazgo:** sin el cambio del SLA, una nota interna habría parado el reloj de
+  primera respuesta (el SLA se cumpliría sin responderle al cliente).
+- **Verificado:** typecheck, lint:ci, 249 unit, **145/145 e2e**, `migrate diff`
+  vacío. Web: 96 tests, eslint y tsc limpios.
+- El README decía que `GET /tickets/:id/history` era VIEWER; es AGENT. Corregido.
+
+**Gotcha nuevo:** el helper `procesarSla` del e2e toma el último evento por
+`occurredAt`; con el reloj inyectado quieto, dos comentarios seguidos empatan y
+procesa el anterior. Avanzar el reloj entre comentarios.
+
+**Gotcha de herramientas (Windows):** `python - <<EOF` decodifica stdin en
+cp1252; los acentos de los anclajes no coinciden. Usar `PYTHONUTF8=1`.
+
+## Estado anterior (2026-11-09) — Triage con IA, fase 1 (ADR-0027)
 
 Rama `feat/ai-triage` (sale de `dev`, sin mergear ni pushear). Nuevo repo
 hermano **`helpdesk-ai`** (Python/FastAPI, en `../helpdesk-ai`, sin remoto aún):
