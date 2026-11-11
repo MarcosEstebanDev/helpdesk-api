@@ -159,7 +159,46 @@ salen del propio código, y las decisiones que están esperando tu OK.
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
-## Estado actual (2026-11-07) — Despliegue gratis (adenda del ADR-0026)
+## Estado actual (2026-11-09) — Triage con IA, fase 1 (ADR-0027)
+
+Rama `feat/ai-triage` (sale de `dev`, sin mergear ni pushear). Nuevo repo
+hermano **`helpdesk-ai`** (Python/FastAPI, en `../helpdesk-ai`, sin remoto aún):
+servicio sin estado que clasifica el texto de un ticket con un LLM.
+
+- **Flujo:** `ticket.created` → cola `ai-triage` → `AiTriageProcessor` →
+  `TriageTicket` → `HttpTicketClassifier` (POST `/v1/classify`) → tabla
+  `ticket_triages` (RLS) + auditoría `ticket.triaged` + evento `ticket.triaged`
+  (→ realtime, solo sala staff). `GET /tickets/:id/triage` (AGENT) devuelve
+  `pending` o la sugerencia.
+- **La IA sugiere, no decide:** nunca toca `tickets.priority` (cambiaría los SLA).
+- **Llamada al modelo FUERA de la transacción** (puede tardar 90 s en CPU);
+  transacción corta después con `processed_messages` + sugerencia + audit + evento.
+- **`lockDuration: 180_000`** en el worker: con los 30 s por defecto BullMQ
+  re-entregaría el job mientras el primero espera al modelo.
+- Errores: red/timeout/429/5xx≠502 → `TriageUnavailableError` (reintenta);
+  4xx/502/respuesta inválida → `TriageRejectedError` (DLQ `dlq-ai-<eventId>`).
+- **Opcional:** sin `AI_SERVICE_URL` el consumidor descarta como `disabled`.
+  Env nuevas: `AI_SERVICE_URL`, `AI_SERVICE_TOKEN` (≥16), `AI_TIMEOUT_MS`.
+- Migración `20261109120000_ai_triage`. ADR-0027 (total 27).
+- **Verificado:** typecheck, lint:ci, 237 unit, e2e completos (7 nuevos en
+  `ai-triage.e2e-spec.ts` con un servidor HTTP falso que hace de helpdesk-ai).
+
+**Gotchas nuevos:**
+- `ConfigModule.forRoot` valida `process.env` AL IMPORTAR `AppModule`: para que
+  una suite e2e cambie el entorno hay que fijarlo en un módulo importado PRIMERO
+  (`test/support/ai-triage-env.ts`). `import()` dinámico no sirve: con
+  `moduleResolution: nodenext` exige extensión `.js`.
+- **El e2e del barrido de SLA depende del estado global de la BD**: `sla_due_timers`
+  devuelve los 100 relojes vencidos MÁS ANTIGUOS de todos los tenants, y el test
+  adelanta el reloj 25 h. Con >100 relojes viejos corriendo en la BD de desarrollo
+  (pasó: 341 de `acme-support` tras la prueba de carga del 7/11), el barrido no
+  llega a los del test y fallan 4-5 tests sin relación con el cambio. Correr los
+  e2e los drena (y marca esos relojes de demo como incumplidos). Arreglo pendiente:
+  que el test barra hasta agotar, o que filtre por su tenant.
+- `ticket.created` va ahora a CUATRO colas con el mismo jobId: las suites que
+  limpian jobs borran también de `ai-triage`.
+
+## Estado anterior (2026-11-07) — Despliegue gratis (adenda del ADR-0026)
 
 Plan elegido por el usuario: **Vercel + Render Free + Neon + Render Key Value +
 is-a.dev**. Todo preparado y ensayado en LOCAL; nada creado en las plataformas.

@@ -58,6 +58,10 @@ lo que costaría revertirla.
 - [ADR-0024](#adr-0024--observabilidad-logs-estructurados-correlación-hasta-el-worker-y-sondas-separadas) — Observabilidad: logs estructurados, correlación hasta el worker y sondas separadas
 - [ADR-0026](#adr-0026--despliegue-gestionado-rol-dueño-propio-prisma-en-la-imagen-y-rotación-de-credenciales) — Despliegue gestionado: rol dueño propio, Prisma en la imagen y rotación de credenciales (adenda: Postgres sin superusuario y despliegue gratis)
 
+**IA** — Dónde entra un modelo de lenguaje y qué puede tocar.
+
+- [ADR-0027](#adr-0027--triage-con-ia-servicio-externo-sin-estado-y-la-ia-sugiere-no-decide) — Triage con IA: servicio externo sin estado, y la IA sugiere, no decide
+
 ---
 
 ## ADR-0001 — Repos separados (no monorepo)
@@ -1257,3 +1261,118 @@ CPU: con 0.1 CPU el arranque en frío tardó 77 s y un login 0.6–1.6 s.
 - (−) Render Free duerme sin tráfico y con él los workers (los eventos esperan
   en el outbox y los vencimientos en `sla_timers`), y el Key Value Free no
   persiste: un reinicio pierde los jobs en cola. Aceptable para una demo.
+
+
+## ADR-0027 — Triage con IA: servicio externo sin estado, y la IA sugiere, no decide
+
+**Estado:** aceptado (2026-11-09). Primera fase de la capa de IA: clasificación.
+La respuesta sugerida con RAG queda para una fase posterior.
+
+### Contexto
+
+Un agente abre cada ticket nuevo sin contexto: tiene que leerlo para saber de
+qué va y cuán urgente es de verdad. Un modelo de lenguaje puede adelantar ese
+trabajo —categoría, prioridad sugerida, tono del cliente, idioma— en cuanto el
+ticket entra. Pero meter un LLM en el sistema abre tres problemas que este ADR
+resuelve de forma explícita:
+
+1. **El texto del ticket es input no confiable.** Lo escribe el cliente, y un
+   LLM puede ser manipulado por instrucciones escondidas en ese texto (prompt
+   injection).
+2. **El modelo se equivoca**, y de forma no determinista. Las evals del servicio
+   (`helpdesk-ai/evals`) lo cuantifican: con un modelo local de 3B, la categoría
+   acierta el 63% y la prioridad exacta el 36% (95% a un paso o menos).
+3. **Es lento y puede no estar.** En CPU tarda ~3 s por ticket y ~90 s en el
+   primero tras arrancar; un proveedor externo puede caerse o limitar.
+
+### Decisión 1 — Servicio Python aparte, sin base de datos ni tenant
+
+`helpdesk-ai` es un repo propio (coherente con el ADR-0001) en Python/FastAPI,
+donde vive el ecosistema de IA. Es **sin estado**: recibe asunto y descripción y
+devuelve un JSON validado. No conoce ids, ni tenants, ni tiene credenciales de
+Postgres.
+
+Es la defensa principal contra el prompt injection: lo peor que consigue un
+ticket malicioso es una etiqueta equivocada, porque al otro lado no hay nada que
+leer ni que escribir. Las capas del prompt (texto delimitado, etiquetas de
+cierre neutralizadas, salida restringida a enums) reducen la probabilidad; esta
+decisión acota el daño.
+
+Alternativas descartadas:
+- *Python consume de BullMQ directamente*: acopla un segundo lenguaje al formato
+  interno de los jobs en Redis.
+- *Python escribe en Postgres*: necesitaría un rol con acceso a datos de todos
+  los tenants, justo lo que el ADR-0010 evita.
+
+### Decisión 2 — Un consumidor más del outbox, con la llamada FUERA de la transacción
+
+`ticket.created` va también a la cola `ai-triage`. El consumidor
+(`AiTriageProcessor` → `TriageTicket`) trabaja en tres pasos:
+
+1. Comprobaciones baratas sin transacción (¿existe el ticket?, ¿ya tiene
+   triage?), para no pagar una llamada al modelo en vano.
+2. La llamada HTTP al servicio, **sin transacción abierta**: con un modelo lento,
+   una transacción que lo espere retiene una conexión del pool por cada ticket
+   en curso.
+3. Una transacción corta: marca en `processed_messages`, sugerencia, auditoría
+   (`ticket.triaged`, actor sistema) y evento `ticket.triaged` al outbox.
+
+El precio: dos entregas simultáneas del mismo evento pagan dos llamadas y solo
+una guarda. Es raro y acotado; a cambio, la base de datos nunca espera a la IA.
+
+`lockDuration` del worker en 180 s: con el valor por defecto de BullMQ (30 s),
+un job que espera al modelo se daría por colgado y se entregaría a otro worker
+mientras el primero sigue esperando — dos llamadas por el mismo ticket.
+
+### Decisión 3 — La IA sugiere, no decide
+
+La sugerencia vive en su propia tabla, `ticket_triages` (una fila por ticket,
+RLS como el resto), y **no modifica el ticket**. Si la prioridad sugerida se
+escribiera en `tickets.priority`, una salida del modelo cambiaría los relojes de
+SLA sin que nadie la aceptara. La prioridad real solo la cambia una persona.
+
+Se guardan `model` y `prompt_version`: es lo que permitirá medir con datos
+reales cuánto acierta cada versión contra lo que el agente terminó eligiendo.
+
+### Decisión 4 — Errores: transitorio reintenta, permanente a la DLQ
+
+El adapter (`HttpTicketClassifier`) traduce el contrato HTTP del servicio:
+
+| Respuesta | Error | Qué hace la cola |
+|---|---|---|
+| red caída, timeout, 429, 5xx (salvo 502) | `TriageUnavailableError` | reintenta con backoff |
+| 4xx, 502, o respuesta que no valida | `TriageRejectedError` | DLQ (`dlq-ai-<eventId>`) |
+
+La respuesta se **revalida** contra los valores del dominio aunque el servicio
+ya valide la suya: es un sistema externo, y lo que entra en nuestra base lo
+decide esta frontera.
+
+### Decisión 5 — Solo el equipo ve la sugerencia
+
+`GET /tickets/:id/triage` exige AGENT (regla del ADR-0025: el rango se decide
+por lo que se revela). Incluye el sentimiento que la IA atribuye al cliente, y
+el cliente es el VIEWER. Por el mismo motivo `ticket.triaged` va solo a la sala
+`staff` del WebSocket. La vista no expone tokens ni latencia: eso es telemetría.
+
+### Decisión 6 — La IA es opcional
+
+Sin `AI_SERVICE_URL`, el consumidor descarta los eventos como `disabled` (no se
+acumulan en Redis) y el endpoint responde `pending`. El sistema arranca y
+funciona igual. Entre servicios autentica un secreto compartido
+(`AI_SERVICE_TOKEN` → cabecera `X-Internal-Token`).
+
+### Consecuencias
+
+- (+) El aislamiento entre tenants no depende del comportamiento del modelo.
+- (+) Cambiar de modelo o de proveedor (Ollama local ↔ API de Anthropic) es una
+  variable de entorno del servicio, y las evals comparan ambos con el mismo
+  dataset.
+- (+) Un fallo de la IA nunca bloquea crear, asignar o atender un ticket.
+- (−) Un servicio más que desplegar y vigilar.
+- (−) La lista de categorías está duplicada (dominio TS y `schema.py`). Es
+  deliberado —cada lado decide qué acepta—: si divergen, el adapter rechaza la
+  categoría desconocida y el job va a la DLQ, en vez de guardarla en silencio.
+- (−) Con el modelo de 3B, el prompt injection consigue subir la prioridad
+  sugerida (0/6 en ese subconjunto de las evals). Como la sugerencia no se
+  aplica sola, el efecto es una etiqueta engañosa para el agente; mejorarlo es
+  trabajo de prompt y de modelo, medible con las evals.

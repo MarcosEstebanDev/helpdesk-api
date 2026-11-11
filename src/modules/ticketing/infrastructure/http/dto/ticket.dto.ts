@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -11,6 +12,11 @@ import {
   Min,
 } from 'class-validator';
 import { SLA_KINDS } from '../../../domain/sla/sla-timer.entity';
+import {
+  TRIAGE_CATEGORIES,
+  TRIAGE_LANGUAGES,
+  TRIAGE_SENTIMENTS,
+} from '../../../domain/triage/ticket-triage.entity';
 import {
   TICKET_PRIORITIES,
   TICKET_STATUSES,
@@ -94,6 +100,19 @@ export class ListTicketsQueryDto {
   @IsUUID()
   requesterId?: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Solo AGENT o superior: tickets en los que la IA sugiere MÁS urgencia que la prioridad actual.',
+  })
+  @IsOptional()
+  // Los query params llegan como string. 'true'/'false' se convierten; cualquier
+  // otra cosa pasa tal cual y la rechaza `@IsBoolean` (mejor un 400 que un "sí").
+  @Transform(({ value }: { value: unknown }) =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @IsBoolean()
+  aiSuggestsHigher?: boolean;
+
   @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 100 })
   @IsOptional()
   // Los query params llegan como string; sin esta conversión `@IsInt` fallaría
@@ -161,8 +180,23 @@ export class TicketDetailDto extends TicketSummaryDto {
   @ApiProperty({ type: [TicketSlaDto] }) sla!: TicketSlaDto[];
 }
 
+export class TicketTriageSummaryDto {
+  @ApiProperty() category!: string;
+  @ApiProperty({ enum: TICKET_PRIORITIES }) suggestedPriority!: string;
+}
+
+export class TicketListItemDto extends TicketSummaryDto {
+  @ApiPropertyOptional({
+    type: TicketTriageSummaryDto,
+    nullable: true,
+    description:
+      'Solo para AGENT o superior (para un VIEWER la clave no aparece). `null` = sin sugerencia.',
+  })
+  aiTriage?: TicketTriageSummaryDto | null;
+}
+
 export class TicketPageDto {
-  @ApiProperty({ type: [TicketSummaryDto] }) items!: TicketSummaryDto[];
+  @ApiProperty({ type: [TicketListItemDto] }) items!: TicketListItemDto[];
   @ApiProperty({
     nullable: true,
     description: 'Cursor de la página siguiente; `null` si no hay más.',
@@ -176,4 +210,20 @@ export class AuditEntryDto {
   @ApiProperty({ example: 'ticket.status_changed' }) action!: string;
   @ApiProperty({ nullable: true, type: Object }) metadata!: unknown;
   @ApiProperty() occurredAt!: Date;
+}
+
+/**
+ * Sugerencia de la IA para un ticket (ADR-0027). `pending` mientras el worker no
+ * la haya producido —o si el servicio de IA está desactivado—: la pantalla
+ * distingue "todavía no" de "no existe el ticket" sin un 404 que parezca error.
+ */
+export class TicketTriageDto {
+  @ApiProperty({ enum: ['pending', 'ready'] }) status!: 'pending' | 'ready';
+  @ApiPropertyOptional({ enum: TRIAGE_CATEGORIES }) category?: string;
+  @ApiPropertyOptional({ enum: TICKET_PRIORITIES }) suggestedPriority?: string;
+  @ApiPropertyOptional({ enum: TRIAGE_SENTIMENTS }) sentiment?: string;
+  @ApiPropertyOptional({ enum: TRIAGE_LANGUAGES }) language?: string;
+  @ApiPropertyOptional({ example: 'qwen2.5:3b-instruct' }) model?: string;
+  @ApiPropertyOptional({ example: 'triage-v1' }) promptVersion?: string;
+  @ApiPropertyOptional() triagedAt?: Date;
 }

@@ -39,8 +39,35 @@ export interface TicketSummary {
   updatedAt: Date;
 }
 
+/** Lo justo de la sugerencia de la IA para pintar la bandeja (ADR-0027). */
+export interface TicketTriageSummary {
+  category: string;
+  suggestedPriority: TicketPriority;
+}
+
+/**
+ * Fila de la bandeja. `aiTriage` solo EXISTE para AGENT o superior: para un
+ * VIEWER la clave ni aparece (no es `null`, que significaría "sin sugerencia").
+ */
+export interface TicketListItem extends TicketSummary {
+  aiTriage?: TicketTriageSummary | null;
+}
+
+/**
+ * Para cada prioridad, las que son MÁS urgentes. Es la traducción a Prisma de
+ * "la IA sugiere más urgencia que la actual": comparar dos columnas de tablas
+ * distintas no se puede expresar en su `where`, pero un OR de tres casos sí, y
+ * así el filtro convive con la paginación por cursor sin SQL a mano.
+ */
+const MAS_URGENTES: Record<TicketPriority, TicketPriority[]> = {
+  LOW: ['NORMAL', 'HIGH', 'URGENT'],
+  NORMAL: ['HIGH', 'URGENT'],
+  HIGH: ['URGENT'],
+  URGENT: [],
+};
+
 export interface TicketPage {
-  items: TicketSummary[];
+  items: TicketListItem[];
   /** Id del último elemento; se pasa como `cursor` para pedir la página siguiente. */
   nextCursor: string | null;
 }
@@ -70,6 +97,19 @@ export interface AuditEntryView {
   metadata: unknown;
   occurredAt: Date;
 }
+
+export type TicketTriageView =
+  | { status: 'pending' }
+  | {
+      status: 'ready';
+      category: string;
+      suggestedPriority: TicketPriority;
+      sentiment: string;
+      language: string;
+      model: string;
+      promptVersion: string;
+      triagedAt: Date;
+    };
 
 export const TICKETS_PAGE_SIZE_MAX = 100;
 
@@ -103,6 +143,10 @@ export class TicketReadModel extends PrismaRepository {
       status?: TicketStatus;
       assigneeId?: string;
       requesterId?: string;
+      /** Incluir la sugerencia de la IA en cada fila (solo AGENT o superior). */
+      withTriage?: boolean;
+      /** Solo tickets donde la IA sugiere más urgencia que la actual. */
+      aiSuggestsHigher?: boolean;
       limit: number;
       cursor?: string;
     },
@@ -120,6 +164,16 @@ export class TicketReadModel extends PrismaRepository {
           ...(options.requesterId === undefined
             ? {}
             : { requesterId: options.requesterId }),
+          ...(options.aiSuggestsHigher === true
+            ? {
+                OR: (['LOW', 'NORMAL', 'HIGH'] as const).map((priority) => ({
+                  priority,
+                  triage: {
+                    is: { suggestedPriority: { in: MAS_URGENTES[priority] } },
+                  },
+                })),
+              }
+            : {}),
         },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         // `skip: 1` porque el cursor es el ÚLTIMO elemento ya entregado.
@@ -137,11 +191,18 @@ export class TicketReadModel extends PrismaRepository {
           assigneeId: true,
           createdAt: true,
           updatedAt: true,
+          // Una relación 1:1 en `select`: Prisma la resuelve con UNA consulta
+          // `IN (...)` para toda la página, no una por fila.
+          triage: { select: { category: true, suggestedPriority: true } },
         },
       });
 
+      const items: TicketListItem[] = rows.map(({ triage, ...ticket }) =>
+        options.withTriage === true ? { ...ticket, aiTriage: triage } : ticket,
+      );
+
       return {
-        items: rows,
+        items,
         // Solo hay cursor si la página vino llena: si vino corta, no queda nada.
         nextCursor:
           rows.length === take ? (rows[rows.length - 1]?.id ?? null) : null,
@@ -191,6 +252,40 @@ export class TicketReadModel extends PrismaRepository {
             describeSlaTimer({ ...timer, kind: timer.kind }, now),
           ),
       };
+    });
+  }
+
+  /**
+   * Sugerencia de triage de un ticket (ADR-0027). `null` si el ticket no existe
+   * (o es de otro tenant: RLS lo hace invisible), `pending` si aún no hay.
+   *
+   * Selección campo a campo y SIN tokens ni latencia: eso es telemetría para
+   * las métricas, no información para quien atiende el ticket.
+   */
+  async triage(
+    tenantId: TenantId,
+    ticketId: TicketId,
+  ): Promise<TicketTriageView | null> {
+    return this.runInTenant(tenantId, async (tx) => {
+      const row = await tx.ticket.findFirst({
+        where: { id: ticketId, tenantId },
+        select: {
+          triage: {
+            select: {
+              category: true,
+              suggestedPriority: true,
+              sentiment: true,
+              language: true,
+              model: true,
+              promptVersion: true,
+              triagedAt: true,
+            },
+          },
+        },
+      });
+      if (row === null) return null;
+      if (row.triage === null) return { status: 'pending' };
+      return { status: 'ready', ...row.triage };
     });
   }
 

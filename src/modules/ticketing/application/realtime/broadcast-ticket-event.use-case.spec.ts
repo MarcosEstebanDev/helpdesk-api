@@ -75,6 +75,39 @@ describe('BroadcastTicketEvent', () => {
       expect(realtime.para('ticket')).toHaveLength(0);
     });
 
+    it('la sugerencia de la IA va solo al equipo, sin el tono del cliente', async () => {
+      const { sut, realtime } = montar();
+
+      await sut.execute(
+        evento('ticket.triaged', {
+          category: 'bug',
+          suggestedPriority: 'URGENT',
+          sentiment: 'negative',
+          language: 'es',
+          model: 'qwen2.5:3b-instruct',
+          promptVersion: 'triage-v2',
+          ticketNumber: 336,
+          ticketPriority: 'NORMAL',
+        }),
+      );
+
+      expect(realtime.emisiones).toHaveLength(1);
+      expect(realtime.emisiones[0].audience).toEqual({
+        scope: 'staff',
+        tenantId: TENANT,
+      });
+      // Lo justo para el aviso en vivo. El sentimiento que la IA le atribuye al
+      // cliente NO viaja: quien lo necesite lo pide por HTTP, con permisos.
+      expect(realtime.emisiones[0].message.payload).toEqual({
+        ticketId: TICKET_ID,
+        occurredAt: OCURRIO.toISOString(),
+        category: 'bug',
+        suggestedPriority: 'URGENT',
+        number: 336,
+        currentPriority: 'NORMAL',
+      });
+    });
+
     it('a quién le toca un ticket solo lo ve el equipo', async () => {
       const { sut, realtime } = montar();
 

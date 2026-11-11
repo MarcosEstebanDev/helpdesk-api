@@ -8,7 +8,16 @@ import {
   RealtimeMessage,
   RealtimePublisher,
   TransactionManager,
+  err,
+  ok,
 } from '../../../shared-kernel';
+import { TriageRejectedError, TriageUnavailableError } from '../domain/errors';
+import {
+  ClassifierOutput,
+  TicketClassifier,
+} from '../domain/ports/ticket-classifier';
+import { TicketTriageRepository } from '../domain/ports/ticket-triage.repository';
+import { TicketTriage } from '../domain/triage/ticket-triage.entity';
 import { AuditLog } from '../domain/entities/audit-log.entity';
 import { Comment } from '../domain/entities/comment.entity';
 import { Ticket } from '../domain/entities/ticket.entity';
@@ -292,6 +301,70 @@ export const fakeSlaTimers = (): FakeSlaTimers => {
       ),
     findById: (tenantId, id) =>
       Promise.resolve(store.get(`${tenantId}:${id}`) ?? null),
+  };
+};
+
+export interface FakeTicketTriages extends TicketTriageRepository {
+  readonly saved: TicketTriage[];
+}
+
+/** Imita la PK por ticket: la primera sugerencia gana, igual que en Postgres. */
+export const fakeTicketTriages = (): FakeTicketTriages => {
+  const store = new Map<string, TicketTriage>();
+  const saved: TicketTriage[] = [];
+  return {
+    saved,
+    save: (triage) => {
+      const clave = `${triage.tenantId}:${triage.ticketId}`;
+      if (!store.has(clave)) store.set(clave, triage);
+      saved.push(triage);
+      return Promise.resolve();
+    },
+    findByTicket: (tenantId, ticketId) =>
+      Promise.resolve(store.get(`${tenantId}:${ticketId}`) ?? null),
+  };
+};
+
+export const CLASIFICACION_EJEMPLO: ClassifierOutput = {
+  classification: {
+    category: 'billing',
+    suggestedPriority: 'HIGH',
+    sentiment: 'negative',
+    language: 'es',
+  },
+  provenance: {
+    provider: 'fake',
+    model: 'fake-model',
+    promptVersion: 'triage-v1',
+    latencyMs: 42,
+    inputTokens: 300,
+    outputTokens: 30,
+  },
+};
+
+export interface FakeClassifier extends TicketClassifier {
+  readonly calls: { subject: string; description: string }[];
+}
+
+/** Clasificador que responde lo que se le diga, o el error que se le pase. */
+export const fakeClassifier = (
+  respuesta:
+    | ClassifierOutput
+    | TriageUnavailableError
+    | TriageRejectedError = CLASIFICACION_EJEMPLO,
+): FakeClassifier => {
+  const calls: { subject: string; description: string }[] = [];
+  return {
+    calls,
+    classify: (input) => {
+      calls.push(input);
+      return Promise.resolve(
+        respuesta instanceof TriageUnavailableError ||
+          respuesta instanceof TriageRejectedError
+          ? err(respuesta)
+          : ok(respuesta),
+      );
+    },
   };
 };
 

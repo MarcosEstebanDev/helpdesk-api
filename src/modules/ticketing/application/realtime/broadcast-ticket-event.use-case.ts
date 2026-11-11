@@ -151,6 +151,25 @@ export class BroadcastTicketEvent {
           },
         ];
 
+      case 'ticket.triaged':
+        // Solo al equipo (ADR-0027). La sugerencia incluye el sentimiento que
+        // la IA le atribuye al cliente: no es algo que el cliente deba ver.
+        return [
+          {
+            audience: staff,
+            message: {
+              event: 'ticket.triaged',
+              payload: {
+                ...base,
+                category: input.payload.category,
+                suggestedPriority: input.payload.suggestedPriority,
+                number: input.payload.ticketNumber,
+                currentPriority: input.payload.ticketPriority,
+              },
+            },
+          },
+        ];
+
       default:
         return [];
     }

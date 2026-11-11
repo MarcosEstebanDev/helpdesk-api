@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.schema';
 import { QueueRegistry } from './queue-registry';
 import {
+  AI_TRIAGE_QUEUE,
   DEAD_LETTER_QUEUE,
   REALTIME_QUEUE,
   SLA_QUEUE,
@@ -38,6 +39,7 @@ import {
       { name: TICKET_ROUTING_QUEUE },
       { name: SLA_QUEUE },
       { name: REALTIME_QUEUE },
+      { name: AI_TRIAGE_QUEUE },
       { name: DEAD_LETTER_QUEUE },
     ),
   ],

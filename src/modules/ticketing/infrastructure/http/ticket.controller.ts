@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   HttpCode,
+  ForbiddenException,
   HttpStatus,
   NotFoundException,
   Param,
@@ -20,6 +21,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import type { TenantContext } from '../../../../infrastructure/tenant/tenant-context';
+import { hasAtLeastRole, isRole } from '../../../iam/domain/role';
 import { CurrentUser } from '../../../iam/infrastructure/auth/current-user.decorator';
 import { JwtAuthGuard } from '../../../iam/infrastructure/auth/jwt-auth.guard';
 import { MinRole } from '../../../iam/infrastructure/auth/min-role.decorator';
@@ -39,6 +41,7 @@ import {
   TicketDetailDto,
   TicketPageDto,
   TicketSummaryDto,
+  TicketTriageDto,
 } from './dto/ticket.dto';
 import { TicketReadModel } from '../persistence/ticket.read-model';
 import { toHttpException } from './ticketing-http.mapper';
@@ -103,10 +106,21 @@ export class TicketController {
     @CurrentUser() user: TenantContext,
     @Query() query: ListTicketsQueryDto,
   ): Promise<TicketPageDto> {
+    // La sugerencia de la IA es del equipo (ADR-0027): incluye cómo la IA lee al
+    // cliente. Un VIEWER no la recibe, y si pide filtrar por ella se le dice que
+    // no en vez de ignorar el parámetro en silencio.
+    const esEquipo = isRole(user.role) && hasAtLeastRole(user.role, 'AGENT');
+    if (query.aiSuggestsHigher === true && !esEquipo) {
+      throw new ForbiddenException(
+        'Filtrar por la sugerencia de la IA requiere rol AGENT o superior.',
+      );
+    }
     return this.tickets.list(TenantId(user.tenantId), {
       status: query.status,
       assigneeId: query.assigneeId,
       requesterId: query.requesterId,
+      withTriage: esEquipo,
+      aiSuggestsHigher: query.aiSuggestsHigher,
       limit: query.limit ?? DEFAULT_PAGE_SIZE,
       cursor: query.cursor,
     });
@@ -131,6 +145,29 @@ export class TicketController {
       throw new NotFoundException('El ticket no existe.');
     }
     return ticket;
+  }
+
+  /**
+   * AGENT y no VIEWER, por la regla del ADR-0025: el rango se decide por lo que
+   * se revela. La sugerencia incluye el sentimiento que la IA atribuye al
+   * cliente, y el cliente es justamente el VIEWER.
+   */
+  @Get(':id/triage')
+  @MinRole('AGENT')
+  @ApiOperation({ summary: 'Sugerencia de la IA: categoría y prioridad' })
+  @ApiResponse({ status: 200, type: TicketTriageDto })
+  async triage(
+    @CurrentUser() user: TenantContext,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<TicketTriageDto> {
+    const view = await this.tickets.triage(
+      TenantId(user.tenantId),
+      TicketId(id),
+    );
+    if (view === null) {
+      throw new NotFoundException('El ticket no existe.');
+    }
+    return view;
   }
 
   @Get(':id/history')
