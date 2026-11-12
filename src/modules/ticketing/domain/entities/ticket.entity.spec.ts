@@ -1,4 +1,4 @@
-import { CommentId, TenantId, TicketId, UserId } from '../ids';
+import { CommentId, TagId, TenantId, TicketId, UserId } from '../ids';
 import { Ticket } from './ticket.entity';
 
 const TENANT = TenantId('11111111-1111-1111-1111-111111111111');
@@ -352,6 +352,33 @@ describe('Ticket', () => {
       expect(ticket.pullDomainEvents().map((e) => e.eventName)).toEqual([
         'comment.added',
       ]);
+    });
+  });
+
+  describe('etiquetas (ADR-0031)', () => {
+    const BUG = TagId('aaaaaaaa-0000-0000-0000-000000000000');
+    const VIP = TagId('bbbbbbbb-0000-0000-0000-000000000000');
+
+    it('sin cambios no emite ni toca la fecha', () => {
+      const ticket = abrirOk();
+      ticket.pullDomainEvents();
+
+      ticket.recordTagsChanged([], [], T1);
+
+      expect(ticket.pullDomainEvents()).toEqual([]);
+      expect(ticket.updatedAt).toEqual(T0);
+    });
+
+    it('con cambios emite ticket.tags_changed y actualiza la fecha', () => {
+      const ticket = abrirOk();
+      ticket.pullDomainEvents();
+
+      ticket.recordTagsChanged([BUG], [VIP], T1);
+
+      const eventos = ticket.pullDomainEvents();
+      expect(eventos.map((e) => e.eventName)).toEqual(['ticket.tags_changed']);
+      expect(eventos[0].payload).toEqual({ added: [BUG], removed: [VIP] });
+      expect(ticket.updatedAt).toEqual(T1);
     });
   });
 });

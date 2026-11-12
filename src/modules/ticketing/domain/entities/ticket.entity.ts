@@ -13,10 +13,11 @@ import {
   TicketAssigned,
   TicketCreated,
   TicketStatusChanged,
+  TicketTagsChanged,
   TicketUnassigned,
   TicketingEvent,
 } from '../events/ticketing.events';
-import { CommentId, TenantId, TicketId, UserId } from '../ids';
+import { CommentId, TagId, TenantId, TicketId, UserId } from '../ids';
 import { isResponder } from '../sla/responder-role';
 import {
   TicketPriority,
@@ -181,6 +182,23 @@ export class Ticket extends AggregateRoot<TicketId, TicketingEvent> {
       }),
     );
     return ok(undefined);
+  }
+
+  /**
+   * Registra que cambiaron las etiquetas (ADR-0031). Las etiquetas no son estado
+   * del agregado —viven en `ticket_tags`—, pero etiquetar ES actividad sobre el
+   * ticket: actualiza `updatedAt` y el evento sale desde la raíz, como todos.
+   * Sin cambios no hace nada: un `PUT` idéntico no debe avisar a nadie.
+   */
+  recordTagsChanged(added: TagId[], removed: TagId[], now: Date): void {
+    if (added.length === 0 && removed.length === 0) return;
+    this.touch(now);
+    this.addDomainEvent(
+      new TicketTagsChanged(this.id, this.props.tenantId, now, {
+        added: [...added],
+        removed: [...removed],
+      }),
+    );
   }
 
   /** ¿Admite todavía comentarios? Un ticket cerrado no. */
