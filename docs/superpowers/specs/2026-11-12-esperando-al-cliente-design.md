@@ -49,8 +49,10 @@ barrido por un proceso aparte, sin romper ninguna de las garantías actuales
 - Que el cliente pueda "despausar" o manipular el SLA con notas internas o que el
   equipo lo saque de la espera comentando: solo lo saca el solicitante (o un
   agente a mano).
-- Duplicar la regla de transiciones en el front o en el motor de SLA: sigue
-  habiendo UNA tabla (`domain/ticket-status.ts`).
+- Duplicar la regla de transiciones en el motor de SLA: la regla vive en UNA
+  tabla (`domain/ticket-status.ts`). El front YA tiene una copia de UX en
+  `helpdesk-web/src/lib/api/types.ts` (comentada como "UX, no validación"); se
+  amplía a mano, reconociendo la duplicación existente, sin crear otra nueva.
 - Guardar un campo `status` en el reloj: el estado se sigue DERIVANDO de fechas.
 
 ## Restricciones (del proyecto)
@@ -59,8 +61,9 @@ barrido por un proceso aparte, sin romper ninguna de las garantías actuales
   `docs/ARCHITECTURE.md`, tests junto al código, commitear pronto (OneDrive ya
   revirtió el árbol una vez).
 - Todos los cambios de estado pasan por `Ticket.changeStatus` (único camino).
-- Los relojes los mueve el **consumidor del outbox** (cola `sla`), fechando con
-  el `occurredAt` del evento, no con la hora del job (ADR-0020/0021).
+- Hasta hoy los relojes los mueve el **consumidor del outbox** (cola `sla`),
+  fechando con el `occurredAt` del evento (ADR-0020/0021). **Este diseño hace una
+  excepción deliberada para pausar/reanudar** (decisión 5, elegida por Marcos).
 - Gotchas que aplican directamente: un `GRANT SELECT` por columna no alcanza a
   columnas nuevas; `CREATE OR REPLACE FUNCTION` no puede cambiar el tipo de
   retorno; un valor nuevo de un enum (`ALTER TYPE ... ADD VALUE`) no se puede
@@ -98,8 +101,13 @@ CLOSED              -> (terminal)
   `countsAsResponse`, y con el rol CLIENTE de la Tanda 2 sigue valiendo. (Un
   agente que abrió el ticket en nombre de alguien no lo saca de la espera
   comentando, porque es staff — correcto: comentar no es "el cliente respondió".)
-- El cambio automático queda en el AuditLog como cualquier transición, con
-  `metadata.trigger = 'customer_reply'` y el id del comentario (decisión de Claude).
+- **Auditoría (decisión de Claude):** hoy la auditoría la escribe el CASO DE USO,
+  no el agregado (`AddComment` solo registra `comment.added`). Así que
+  `AddComment` detecta que el ticket cambió de estado (comparando el estado antes
+  y después de `registerComment`) y registra además un `ticket.status_changed`
+  con actor **`SYSTEM_ACTOR_ID`**, `automatic: true`, `trigger: 'customer_reply'`
+  y el `commentId` en `metadata` — el mismo patrón que la auto-asignación. El
+  autor del comentario queda en el registro del comentario.
 
 ### 3. Modelo de la pausa en `SlaTimer`
 
@@ -111,12 +119,25 @@ CLOSED              -> (terminal)
 - `pause(now)`: solo si corriendo; idempotente.
 - `resume(now, calendar)`: corre `due_at` hacia adelante lo que duró la pausa y
   limpia `paused_at`; idempotente si no está pausado.
-- `stop(now)` sobre un reloj pausado (resolver desde la espera): primero aplica
-  la reanudación lógica (corre `due_at`) y después para. Resultado: el margen
-  mostrado descuenta la pausa.
+- `stop(now)` sobre un reloj pausado (resolver desde la espera). **Esto NO
+  funciona hoy y hay que cambiarlo:** `stop()` sale sin hacer nada si
+  `!isRunning()`, y con `isRunning()` excluyendo los pausados un reloj pausado no
+  pararía nunca (quedaría pausado para siempre, ni cumplido ni incumplido).
+  `stop()` pasa a aceptar corriendo O pausado: si está pausado, primero aplica
+  la reanudación (corre `due_at`) y después para. Y en `StopSlaTimer` el margen
+  (`remainingMinutesAt(occurredAt)`) se calcula DESPUÉS de esa corrección, no
+  antes como hoy. Resultado: el margen descuenta la pausa.
 - `describeSlaTimer`: para un pausado, `remainingMinutes` se mide contra
   `paused_at` (congelado), igual que hoy un parado se mide contra `stopped_at`.
 - Se sigue persistiendo un único `due_at` "efectivo"; no se guarda el original.
+  **Esto revoca parte del ADR-0020 (decisión 4, "`due_at` inmutable")** y el
+  ADR-0029 lo dice explícitamente. El motivo de aquella regla era que cambiar la
+  POLÍTICA no tocara relojes en marcha, y eso se sigue cumpliendo: `due_at` solo
+  se mueve por una pausa del propio ticket, nunca por un cambio de política. El
+  objetivo original se puede reconstruir desde el AuditLog (las transiciones
+  hacia y desde la espera quedan fechadas); el reporting de la Tanda 3 lo
+  tendrá que hacer así o añadir una columna entonces (decisión de Claude: no
+  añadirla ahora).
 
 ### 4. Calendario (costura para el horario laboral)
 
@@ -127,28 +148,49 @@ CLOSED              -> (terminal)
 - El calendario que usa la reanudación es el mismo que usó el arranque (hoy
   siempre `CALENDAR_24_7`).
 
-### 5. Quién mueve los relojes
+### 5. Quién mueve los relojes — pausa SÍNCRONA (opción A, elegida por Marcos)
 
-En `sla.processor.ts`, `onStatusChanged` deja de ignorar todo lo que no sea
-`RESOLVED`:
+**Pausar y reanudar se hacen en la MISMA transacción que el cambio de estado**,
+no en el consumidor del outbox. `ChangeTicketStatus` (entrar/salir a mano) y
+`AddComment` (vuelta automática) cargan el reloj de `RESOLUTION` del ticket y lo
+pausan o reanudan con el mismo `now` del cambio, antes del commit.
 
-| Evento `ticket.status_changed` | Acción sobre `RESOLUTION` |
-|---|---|
-| `to = WAITING_ON_CUSTOMER` | `PauseSlaTimer` |
-| `from = WAITING_ON_CUSTOMER`, `to = IN_PROGRESS` | `ResumeSlaTimer` |
-| `to = RESOLVED` (desde cualquier estado) | `StopSlaTimer` existente (ya contempla pausado) |
-| resto | ignorado, como hoy |
+Por qué (va al ADR-0029): la opción diferida tenía dos fallos reales que
+encontró la revisión del diseño.
+1. Espera → `IN_PROGRESS` → espera antes de que el worker procese: reconciliar
+   contra el estado actual del ticket contaba como pausa el tramo trabajado (el
+   error favorecía al equipo).
+2. Una pausa procesada tarde llegaba después de que el barrido marcara un
+   incumplimiento definitivo, y pausa y barrido se pisaban (upsert sin condición).
 
-- Casos de uso nuevos `PauseSlaTimer` y `ResumeSlaTimer`, con idempotencia por
-  `processed_messages` (consumer `sla.pause:RESOLUTION` / `sla.resume:RESOLUTION`,
-  mismo patrón que `StopSlaTimer`) y fechados con `occurredAt`.
-- **Desorden de eventos:** la cola `sla` usa concurrencia 1 (default de BullMQ) y
-  el publicador saca en orden, así que pausa→reanudación llega en orden en una
-  instancia. Para que un desorden (varias instancias, reintentos) no deje un reloj
-  pausado para siempre, **los dos casos de uso reconcilian contra el estado ACTUAL
-  del ticket** dentro de la transacción: solo pausan si el ticket sigue en
-  `WAITING_ON_CUSTOMER` y solo reanudan si ya no lo está. Peor caso aceptado: en
-  un desorden se pierde la pausa (cuenta contra el SLA), nunca se queda pausado.
+Arrancar y parar un reloj toleran retraso (se fechan con `occurredAt` y nadie
+decide nada con el reloj mientras tanto); **pausar no**, porque el barrido usa ese
+dato para decidir un incumplimiento irreversible. Por eso es la única excepción
+al patrón del consumidor, y no se extiende a arrancar ni a parar.
+
+Consecuencias:
+- La lógica vive en un servicio de aplicación (p. ej. `SlaPauseCoordinator`) que
+  usan los dos casos de uso: dado el estado anterior y el nuevo, decide pausar,
+  reanudar o nada. Sin `processed_messages`: va en la transacción del cambio, no
+  hay reentrega posible.
+- Un ticket sin reloj de `RESOLUTION` (o con el reloj ya parado/incumplido) no es
+  un error: no se hace nada.
+- **El consumidor `sla` NO cambia** para la pausa: `onStatusChanged` sigue
+  ignorando las transiciones a/desde `WAITING_ON_CUSTOMER` y solo actúa en
+  `to = RESOLVED`, que ahora también para un reloj pausado (ver decisión 3).
+- **Escrituras condicionadas.** Hoy `PrismaSlaRepository.save` es un upsert por
+  `id` sin condición, y `MarkSlaBreached` lee y luego escribe, así que una pausa y
+  el barrido simultáneos se pisan. Las transiciones del reloj pasan a ser
+  `UPDATE ... WHERE` condicionados (incumplir solo
+  `WHERE stopped_at IS NULL AND breached_at IS NULL AND paused_at IS NULL`;
+  pausar solo `WHERE stopped_at IS NULL AND breached_at IS NULL AND paused_at IS NULL`;
+  reanudar solo `WHERE paused_at IS NOT NULL`), devolviendo si afectaron una
+  fila. Es lo que el ADR-0021 ya prometía ("idempotencia por condición, no por
+  bloqueo") y el repositorio no cumplía. Sin `FOR UPDATE`.
+- Carrera restante, aceptada: si el barrido incumple en el mismo instante en que
+  el agente pausa, gana quien escribe primero; si gana el barrido es porque el
+  reloj de verdad ya había vencido antes de la pausa, y el incumplimiento es
+  correcto.
 - `ticket.status_changed` sigue en **v1**: el payload no cambia, solo aparece un
   valor nuevo del enum. Revisar los demás consumidores que miran `to`/`from`
   (realtime, routing) para que el valor nuevo no caiga en una rama inesperada.
@@ -186,9 +228,11 @@ En `sla.processor.ts`, `onStatusChanged` deja de ignorar todo lo que no sea
 
 ### 9. Documentación
 
-- **ADR-0029** "Pausa del SLA: reloj pausable, vencimiento corrido y
-  reconciliación contra el ticket" + adenda al ADR-0015 (tabla) y al ADR-0020
-  (estado `paused`). Actualizar README (tabla de estados / carencias) y los
+- **ADR-0029** "Pausa del SLA: reloj pausable, vencimiento corrido y pausa en la
+  transacción del cambio" (con las dos alternativas descartadas: diferida con
+  reconciliación y diferida blindada con columnas extra) + adenda al ADR-0015
+  (tabla), revocación parcial explícita del ADR-0020 decisión 4 (`due_at`
+  inmutable) y adenda al ADR-0021 (escrituras condicionadas en el repositorio). Actualizar README (tabla de estados / carencias) y los
   CLAUDE.md de ambos repos.
 
 ## Pruebas que importan
@@ -199,13 +243,22 @@ En `sla.processor.ts`, `onStatusChanged` deja de ignorar todo lo que no sea
   `registerComment` con las 4 combinaciones (staff/no staff × PUBLIC/INTERNAL)
   en espera, y que fuera de la espera no cambia el estado.
 - Calendario: `workingMinutesBetween` del 24/7.
-- Casos de uso Pause/Resume: idempotencia por evento repetido y reconciliación
-  (pausa que llega cuando el ticket ya no espera → no pausa).
+- Coordinador de pausa: cada par (estado anterior, nuevo) → pausar/reanudar/nada;
+  ticket sin reloj o con reloj parado/incumplido → nada.
+- `ChangeTicketStatus` y `AddComment`: el reloj queda pausado/reanudado en la
+  misma transacción, y si el caso de uso falla (rollback) el reloj no cambia.
+- Repositorio: las escrituras condicionadas no pisan (incumplir un pausado no
+  afecta filas; pausar un incumplido tampoco).
+- `StopSlaTimer` sobre un reloj pausado: queda parado y su margen descuenta la
+  pausa.
 - e2e con **reloj inyectado** (`overrideProvider(CLOCK)`): agente manda a espera →
   avanza el reloj más allá del vencimiento → el barrido NO incumple → el VIEWER
   comenta → ticket en `IN_PROGRESS` y `due_at` corrido exactamente lo que duró la
   pausa → avanzar hasta el nuevo vencimiento → incumple. Más: resolver desde la
-  espera; nota interna en espera no lo saca.
+  espera; nota interna en espera no lo saca; espera → retomar → espera seguido
+  (el tramo trabajado SÍ cuenta). Ojo: `comment.added` y el `status_changed`
+  automático salen con el mismo `occurredAt` y el orden entre ellos en el outbox
+  es arbitrario; el e2e no debe depender de él (gotcha de `procesarSla`).
 - Migración desde cero en BD desechable sin drift, y el barrido funcionando con
   el rol `helpdesk_sla_sweeper` (cubre el GRANT por columna).
 - Front: badge, acciones legales por estado, panel "en pausa".
