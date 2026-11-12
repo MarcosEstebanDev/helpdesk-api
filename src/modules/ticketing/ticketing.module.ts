@@ -18,6 +18,16 @@ import { AddComment } from './application/add-comment.use-case';
 import { AssignTicket } from './application/assign-ticket.use-case';
 import { AutoAssignTicket } from './application/auto-assign-ticket.use-case';
 import { AuditRecorder } from './application/audit-recorder';
+import { CreateCannedResponse } from './application/canned-responses/create-canned-response.use-case';
+import { DeleteCannedResponse } from './application/canned-responses/delete-canned-response.use-case';
+import { ListCannedResponses } from './application/canned-responses/list-canned-responses.use-case';
+import { UpdateCannedResponse } from './application/canned-responses/update-canned-response.use-case';
+import {
+  CANNED_RESPONSE_REPOSITORY,
+  CannedResponseRepository,
+} from './domain/ports/canned-response.repository';
+import { CannedResponseController } from './infrastructure/http/canned-response.controller';
+import { PrismaCannedResponseRepository } from './infrastructure/persistence/prisma-canned-response.repository';
 import { ChangeTicketStatus } from './application/change-ticket-status.use-case';
 import { SlaPauseCoordinator } from './application/sla/sla-pause-coordinator';
 import { EventRecorder } from './application/event-recorder';
@@ -101,7 +111,11 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
  */
 @Module({
   imports: [IamModule],
-  controllers: [TicketController, SlaPolicyController],
+  controllers: [
+    TicketController,
+    SlaPolicyController,
+    CannedResponseController,
+  ],
   providers: [
     // --- Adapters ---
     PrismaTicketRepository,
@@ -119,8 +133,13 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
     PrismaTicketTriageRepository,
     HttpTicketClassifier,
     AiTriageProcessor,
+    PrismaCannedResponseRepository,
 
     // --- Puertos -> adapters ---
+    {
+      provide: CANNED_RESPONSE_REPOSITORY,
+      useExisting: PrismaCannedResponseRepository,
+    },
     { provide: TICKET_REPOSITORY, useExisting: PrismaTicketRepository },
     { provide: COMMENT_REPOSITORY, useExisting: PrismaCommentRepository },
     { provide: AUDIT_LOG_REPOSITORY, useExisting: PrismaAuditLogRepository },
@@ -298,6 +317,62 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
       inject: [REALTIME_PUBLISHER],
       useFactory: (realtime: RealtimePublisher): BroadcastTicketEvent =>
         new BroadcastTicketEvent(realtime),
+    },
+    {
+      provide: ListCannedResponses,
+      inject: [CANNED_RESPONSE_REPOSITORY],
+      useFactory: (responses: CannedResponseRepository): ListCannedResponses =>
+        new ListCannedResponses(responses),
+    },
+    {
+      provide: CreateCannedResponse,
+      inject: [
+        TRANSACTION_MANAGER,
+        CANNED_RESPONSE_REPOSITORY,
+        AuditRecorder,
+        ID_GENERATOR,
+        CLOCK,
+      ],
+      useFactory: (
+        transactions: TransactionManager,
+        responses: CannedResponseRepository,
+        audit: AuditRecorder,
+        ids: IdGenerator,
+        clock: Clock,
+      ): CreateCannedResponse =>
+        new CreateCannedResponse(transactions, responses, audit, ids, clock),
+    },
+    {
+      provide: UpdateCannedResponse,
+      inject: [
+        TRANSACTION_MANAGER,
+        CANNED_RESPONSE_REPOSITORY,
+        AuditRecorder,
+        CLOCK,
+      ],
+      useFactory: (
+        transactions: TransactionManager,
+        responses: CannedResponseRepository,
+        audit: AuditRecorder,
+        clock: Clock,
+      ): UpdateCannedResponse =>
+        new UpdateCannedResponse(transactions, responses, audit, clock),
+    },
+    {
+      provide: DeleteCannedResponse,
+      inject: [
+        TRANSACTION_MANAGER,
+        CANNED_RESPONSE_REPOSITORY,
+        AuditRecorder,
+        CLOCK,
+      ],
+      useFactory: (
+        transactions: TransactionManager,
+        responses: CannedResponseRepository,
+        audit: AuditRecorder,
+        clock: Clock,
+      ): DeleteCannedResponse =>
+        new DeleteCannedResponse(transactions, responses, audit, clock),
     },
     {
       provide: GetSlaPolicy,

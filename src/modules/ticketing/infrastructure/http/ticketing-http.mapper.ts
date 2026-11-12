@@ -21,6 +21,9 @@ const STATUS_BY_CODE: Record<string, HttpStatus> = {
   'ticketing.assignee_not_found': HttpStatus.NOT_FOUND,
   'ticketing.invalid_transition': HttpStatus.CONFLICT,
   'ticketing.ticket_closed': HttpStatus.CONFLICT,
+  'ticketing.invalid_canned_response': HttpStatus.BAD_REQUEST,
+  'ticketing.canned_response_not_found': HttpStatus.NOT_FOUND,
+  'ticketing.duplicate_canned_response_title': HttpStatus.CONFLICT,
 };
 
 export const toHttpException = (error: TicketingError): HttpException => {

@@ -34,7 +34,9 @@ const validar = (
   const b = body.trim();
 
   if (t.length === 0) {
-    return err(new InvalidCannedResponseError('El título no puede estar vacío.'));
+    return err(
+      new InvalidCannedResponseError('El título no puede estar vacío.'),
+    );
   }
   if (t.length > CANNED_TITLE_MAX) {
     return err(
@@ -44,7 +46,9 @@ const validar = (
     );
   }
   if (b.length === 0) {
-    return err(new InvalidCannedResponseError('El texto no puede estar vacío.'));
+    return err(
+      new InvalidCannedResponseError('El texto no puede estar vacío.'),
+    );
   }
   if (b.length > CANNED_BODY_MAX) {
     return err(

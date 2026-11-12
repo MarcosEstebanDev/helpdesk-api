@@ -35,7 +35,7 @@ const sembrada = (title: string, id = EXISTENTE): CannedResponse => {
     createdBy: ACTOR,
     now: AHORA,
   });
-  if (r.isErr()) throw r.error;
+  if (r.isErr()) throw new Error(r.error.message);
   return r.value;
 };
 
