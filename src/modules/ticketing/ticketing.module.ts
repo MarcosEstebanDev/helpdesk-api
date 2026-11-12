@@ -27,6 +27,19 @@ import {
   CannedResponseRepository,
 } from './domain/ports/canned-response.repository';
 import { CannedResponseController } from './infrastructure/http/canned-response.controller';
+import { TagController } from './infrastructure/http/tag.controller';
+import { PrismaTagRepository } from './infrastructure/persistence/prisma-tag.repository';
+import { PrismaTicketTagRepository } from './infrastructure/persistence/prisma-ticket-tag.repository';
+import { CreateTag } from './application/tags/create-tag.use-case';
+import { DeleteTag } from './application/tags/delete-tag.use-case';
+import { ListTags } from './application/tags/list-tags.use-case';
+import { SetTicketTags } from './application/tags/set-ticket-tags.use-case';
+import { UpdateTag } from './application/tags/update-tag.use-case';
+import { TAG_REPOSITORY, TagRepository } from './domain/ports/tag.repository';
+import {
+  TICKET_TAG_REPOSITORY,
+  TicketTagRepository,
+} from './domain/ports/ticket-tag.repository';
 import { PrismaCannedResponseRepository } from './infrastructure/persistence/prisma-canned-response.repository';
 import { ChangeTicketStatus } from './application/change-ticket-status.use-case';
 import { SlaPauseCoordinator } from './application/sla/sla-pause-coordinator';
@@ -115,6 +128,7 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
     TicketController,
     SlaPolicyController,
     CannedResponseController,
+    TagController,
   ],
   providers: [
     // --- Adapters ---
@@ -134,8 +148,12 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
     HttpTicketClassifier,
     AiTriageProcessor,
     PrismaCannedResponseRepository,
+    PrismaTagRepository,
+    PrismaTicketTagRepository,
 
     // --- Puertos -> adapters ---
+    { provide: TAG_REPOSITORY, useExisting: PrismaTagRepository },
+    { provide: TICKET_TAG_REPOSITORY, useExisting: PrismaTicketTagRepository },
     {
       provide: CANNED_RESPONSE_REPOSITORY,
       useExisting: PrismaCannedResponseRepository,
@@ -317,6 +335,78 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
       inject: [REALTIME_PUBLISHER],
       useFactory: (realtime: RealtimePublisher): BroadcastTicketEvent =>
         new BroadcastTicketEvent(realtime),
+    },
+    {
+      provide: ListTags,
+      inject: [TAG_REPOSITORY],
+      useFactory: (tags: TagRepository): ListTags => new ListTags(tags),
+    },
+    {
+      provide: CreateTag,
+      inject: [
+        TRANSACTION_MANAGER,
+        TAG_REPOSITORY,
+        AuditRecorder,
+        ID_GENERATOR,
+        CLOCK,
+      ],
+      useFactory: (
+        transactions: TransactionManager,
+        tags: TagRepository,
+        audit: AuditRecorder,
+        ids: IdGenerator,
+        clock: Clock,
+      ): CreateTag => new CreateTag(transactions, tags, audit, ids, clock),
+    },
+    {
+      provide: UpdateTag,
+      inject: [TRANSACTION_MANAGER, TAG_REPOSITORY, AuditRecorder, CLOCK],
+      useFactory: (
+        transactions: TransactionManager,
+        tags: TagRepository,
+        audit: AuditRecorder,
+        clock: Clock,
+      ): UpdateTag => new UpdateTag(transactions, tags, audit, clock),
+    },
+    {
+      provide: DeleteTag,
+      inject: [TRANSACTION_MANAGER, TAG_REPOSITORY, AuditRecorder, CLOCK],
+      useFactory: (
+        transactions: TransactionManager,
+        tags: TagRepository,
+        audit: AuditRecorder,
+        clock: Clock,
+      ): DeleteTag => new DeleteTag(transactions, tags, audit, clock),
+    },
+    {
+      provide: SetTicketTags,
+      inject: [
+        TRANSACTION_MANAGER,
+        TICKET_REPOSITORY,
+        TAG_REPOSITORY,
+        TICKET_TAG_REPOSITORY,
+        AuditRecorder,
+        EventRecorder,
+        CLOCK,
+      ],
+      useFactory: (
+        transactions: TransactionManager,
+        tickets: TicketRepository,
+        tags: TagRepository,
+        ticketTags: TicketTagRepository,
+        audit: AuditRecorder,
+        events: EventRecorder,
+        clock: Clock,
+      ): SetTicketTags =>
+        new SetTicketTags(
+          transactions,
+          tickets,
+          tags,
+          ticketTags,
+          audit,
+          events,
+          clock,
+        ),
     },
     {
       provide: ListCannedResponses,

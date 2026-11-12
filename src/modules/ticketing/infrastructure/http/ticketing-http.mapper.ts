@@ -24,6 +24,10 @@ const STATUS_BY_CODE: Record<string, HttpStatus> = {
   'ticketing.invalid_canned_response': HttpStatus.BAD_REQUEST,
   'ticketing.canned_response_not_found': HttpStatus.NOT_FOUND,
   'ticketing.duplicate_canned_response_title': HttpStatus.CONFLICT,
+  'ticketing.invalid_tag': HttpStatus.BAD_REQUEST,
+  'ticketing.too_many_tags': HttpStatus.BAD_REQUEST,
+  'ticketing.tag_not_found': HttpStatus.NOT_FOUND,
+  'ticketing.duplicate_tag_name': HttpStatus.CONFLICT,
 };
 
 export const toHttpException = (error: TicketingError): HttpException => {

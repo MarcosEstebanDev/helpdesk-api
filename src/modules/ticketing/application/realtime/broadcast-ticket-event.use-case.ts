@@ -161,6 +161,23 @@ export class BroadcastTicketEvent {
           },
         ];
 
+      case 'ticket.tags_changed':
+        // Solo al equipo (ADR-0031): las etiquetas son clasificación interna.
+        // Viajan ids; el cliente recarga el ticket para tener los nombres.
+        return [
+          {
+            audience: staff,
+            message: {
+              event: 'ticket.tags_changed',
+              payload: {
+                ...base,
+                added: input.payload.added,
+                removed: input.payload.removed,
+              },
+            },
+          },
+        ];
+
       case 'ticket.triaged':
         // Solo al equipo (ADR-0027). La sugerencia incluye el sentimiento que
         // la IA le atribuye al cliente: no es algo que el cliente deba ver.

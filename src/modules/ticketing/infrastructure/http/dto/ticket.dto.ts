@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsBoolean,
   IsIn,
   IsInt,
@@ -14,6 +15,7 @@ import {
 import { COMMENT_VISIBILITIES } from '../../../domain/comment-visibility';
 import type { CommentVisibility } from '../../../domain/comment-visibility';
 import { SLA_KINDS } from '../../../domain/sla/sla-timer.entity';
+import { TagDto } from './tag.dto';
 import {
   TRIAGE_CATEGORIES,
   TRIAGE_LANGUAGES,
@@ -142,6 +144,22 @@ export class ListTicketsQueryDto {
   @IsOptional()
   @IsUUID()
   cursor?: string;
+
+  @ApiPropertyOptional({
+    type: [String],
+    format: 'uuid',
+    maxItems: 10,
+    description:
+      'Solo AGENT o superior: tickets con AL MENOS UNA de estas etiquetas. Repetible (`?tagId=a&tagId=b`). Ids que no existen no dan error: simplemente no coinciden.',
+  })
+  @IsOptional()
+  // Un solo `?tagId=x` llega como string; varios, como array.
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? [value] : value,
+  )
+  @ArrayMaxSize(10)
+  @IsUUID('all', { each: true })
+  tagId?: string[];
 }
 
 // --------------------------------------------------------------- respuestas
@@ -197,6 +215,12 @@ export class TicketDetailDto extends TicketSummaryDto {
   @ApiProperty({ nullable: true }) closedAt!: Date | null;
   @ApiProperty({ type: [TicketCommentDto] }) comments!: TicketCommentDto[];
   @ApiProperty({ type: [TicketSlaDto] }) sla!: TicketSlaDto[];
+  @ApiPropertyOptional({
+    type: [TagDto],
+    description:
+      'Solo para AGENT o superior (para un VIEWER la clave no aparece). ADR-0031.',
+  })
+  tags?: TagDto[];
 }
 
 export class TicketTriageSummaryDto {
@@ -212,6 +236,12 @@ export class TicketListItemDto extends TicketSummaryDto {
       'Solo para AGENT o superior (para un VIEWER la clave no aparece). `null` = sin sugerencia.',
   })
   aiTriage?: TicketTriageSummaryDto | null;
+  @ApiPropertyOptional({
+    type: [TagDto],
+    description:
+      'Solo para AGENT o superior (para un VIEWER la clave no aparece). ADR-0031.',
+  })
+  tags?: TagDto[];
 }
 
 export class TicketPageDto {
