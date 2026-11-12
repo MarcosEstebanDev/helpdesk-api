@@ -261,6 +261,10 @@ export class Ticket extends AggregateRoot<TicketId, TicketingEvent> {
         break;
       case 'OPEN':
       case 'IN_PROGRESS':
+      case 'WAITING_ON_CUSTOMER':
+        // Esperar al cliente solo se alcanza desde IN_PROGRESS, así que no hay
+        // nada que limpiar; se agrupa aquí para que el switch siga cubriendo
+        // todos los estados.
         this.props.resolvedAt = null;
         this.props.closedAt = null;
         break;
