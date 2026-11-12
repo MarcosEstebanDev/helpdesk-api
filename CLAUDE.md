@@ -295,7 +295,7 @@ cp1252; los acentos de los anclajes no coinciden. Usar `PYTHONUTF8=1`.
 ## Estado anterior (2026-11-09) — Triage con IA, fase 1 (ADR-0027)
 
 Rama `feat/ai-triage` (sale de `dev`, sin mergear ni pushear). Nuevo repo
-hermano **`helpdesk-ai`** (Python/FastAPI, en `../helpdesk-ai`, sin remoto aún):
+hermano **`helpdesk-ai`** (Python/FastAPI, en `../helpdesk-ai`; PÚBLICO en https://github.com/MarcosEstebanDev/helpdesk-ai desde el 2026-11-12):
 servicio sin estado que clasifica el texto de un ticket con un LLM.
 
 - **Flujo:** `ticket.created` → cola `ai-triage` → `AiTriageProcessor` →
