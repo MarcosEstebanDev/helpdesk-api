@@ -40,6 +40,7 @@ lo que costaría revertirla.
 - [ADR-0028](#adr-0028--notas-internas-visibilidad-del-comentario-sla-y-sala-del-equipo) — Notas internas: visibilidad del comentario, SLA y sala del equipo
 - [ADR-0029](#adr-0029--pausa-del-sla-reloj-pausable-vencimiento-corrido-y-pausa-en-la-transacción-del-cambio) — Pausa del SLA: reloj pausable, vencimiento corrido y pausa en la transacción del cambio
 - [ADR-0030](#adr-0030--respuestas-predefinidas-solo-texto-variables-cerradas-y-relleno-en-el-cliente) — Respuestas predefinidas: solo texto, variables cerradas y relleno en el cliente
+- [ADR-0031](#adr-0031--etiquetas-catálogo-por-organización-clasificación-interna-y-fuera-del-agregado) — Etiquetas: catálogo por organización, clasificación interna y fuera del agregado
 
 **Trabajo asíncrono** — Cómo un cambio se convierte en efectos, sin perder eventos.
 
@@ -1702,3 +1703,77 @@ enterarse.
 **Revisar si.** Se piden métricas de uso (→ id opcional en el comentario), o
 llegan las automatizaciones (→ una "macro" sería una regla que además inserta
 una plantilla, no una plantilla con efectos).
+
+---
+
+## ADR-0031 — Etiquetas: catálogo por organización, clasificación interna y fuera del agregado
+
+**Estado:** aceptado (2026-11-12). Entrega 1 de 3 de "etiquetas + búsqueda +
+vistas guardadas" (tanda 1). Diseño en
+`docs/superpowers/specs/2026-11-12-etiquetas-design.md`.
+
+### Contexto
+
+El equipo necesita clasificar tickets con criterios propios ("facturación",
+"bug", "vip") para encontrarlos y repartirlos, y las vistas guardadas
+(ADR-0033) van a filtrar por eso.
+
+### Decisión 1 — Catálogo + tabla de relación, no texto libre
+
+`tags` (por organización) y `ticket_tags`. Zendesk usa texto libre por ticket;
+es más simple, pero renombrar obliga a reescribir miles de filas y los typos
+("factura" / "facturas") se multiplican. Con catálogo, renombrar es una fila y
+el color vive en un solo sitio. `ticket_tags` lleva `tenant_id` propio para
+que su policy de RLS sea idéntica a la del resto del esquema.
+
+### Decisión 2 — El agente crea al vuelo; el ADMIN administra
+
+`GET`/`POST /tags` y `PUT /tickets/:id/tags` piden AGENT: pedirle a un ADMIN
+que cree la etiqueta antes de usarla frena al agente en pleno trabajo.
+Renombrar, recolorear y borrar piden ADMIN, porque afectan a todos los
+tickets que la usan.
+
+### Decisión 3 — Clasificación INTERNA: el cliente no la ve
+
+Para un VIEWER la clave `tags` no existe en ninguna respuesta (se omite, no
+`[]`, para no insinuar nada), el read model ni siquiera la lee, el aviso en
+vivo va solo a la sala `staff` y filtrar por `tagId` le da 403. Es el mismo
+criterio que la sugerencia de la IA (ADR-0027).
+
+### Decisión 4 — Fuera del agregado `Ticket`; reglas en una función pura
+
+Las etiquetas no son estado del agregado: cargar un ticket no carga sus
+etiquetas, y cambiarlas pasa por `TicketTagRepository`. Las reglas del
+conjunto (deduplicar, máximo 10, qué se añadió y qué se quitó) viven en
+`diffTagSets`, una función pura del dominio, y no repartidas en el caso de
+uso. Etiquetar SÍ es actividad sobre el ticket: `Ticket.recordTagsChanged`
+actualiza `updatedAt` y emite `ticket.tags_changed` desde la raíz, como todos
+los eventos (ADR-0018). Un `PUT` sin cambios no audita ni emite.
+
+### Decisión 5 — Nombre único sin mayúsculas, paleta cerrada de colores
+
+`name_key` (recortado y en minúsculas) con `@@unique([tenant_id, name_key])`,
+el mismo patrón que `title_key` del ADR-0030. Ocho colores con nombre
+(`gray`…`purple`), no hex libre: con nombres, el front elige el tono legible
+en cada tema.
+
+### Decisión 6 — Historial con nombres; filtro tolerante
+
+La auditoría `ticket.tags_changed` guarda `{added, removed}` con id Y nombre,
+así el historial se lee aunque la etiqueta se renombre o se borre después.
+`GET /tickets?tagId=a&tagId=b` trae los tickets con al menos una, y un id que
+no existe simplemente no coincide (200): una vista guardada que apunta a una
+etiqueta borrada no queda rota.
+
+### Consecuencias
+
+- Migración `20261112140000_tags` (RLS en las dos tablas). Borrar una
+  etiqueta la quita de sus tickets por cascada, sin un evento por ticket (sería
+  una tormenta): el front invalida su caché al borrar.
+- Concurrencia: dos agentes etiquetando a la vez → gana el último; no se
+  bloquea la fila del ticket. En esa carrera el `added/removed` auditado puede
+  no coincidir exactamente con lo que vio cada uno.
+
+**Revisar si.** Llegan las reglas de automatización (etiquetar solo, tanda 3),
+o se piden etiquetas visibles para el cliente (→ una columna `public` en el
+catálogo, no una regla en el front).

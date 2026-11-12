@@ -124,6 +124,11 @@ uso dependen de la interfaz, nunca del adapter.
   `{{cliente.email}}`, `{{agente.email}}`), relleno en el FRONT y unicidad del
   título con `title_key`.
 
+- ADR-0031 **Etiquetas**: catálogo `tags` + `ticket_tags` (RLS en las dos),
+  el AGENT crea al vuelo y el ADMIN renombra/borra, **clasificación interna**
+  (el VIEWER no recibe la clave `tags` ni puede filtrar), fuera del agregado
+  con las reglas en `diffTagSets`, y `ticket.tags_changed` solo a `staff`.
+
 ## Seguridad (modelo, "portfolio-pragmático")
 
 Defensa en profundidad. Puntos críticos a respetar siempre:
@@ -174,7 +179,20 @@ salen del propio código, y las decisiones que están esperando tu OK.
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
-## Estado actual (2026-11-12) — Tanda 1: respuestas predefinidas (ADR-0030)
+## Estado actual (2026-11-12) — Tanda 1: etiquetas (ADR-0031)
+
+Rama `feat/etiquetas-busqueda-vistas` (sale de `dev` con ADR-0030 ya
+mergeado). Entrega 1 de 3: etiquetas → búsqueda (ADR-0032) → vistas
+guardadas (ADR-0033). Las 13 decisiones de las tres entregas las aprobó el
+usuario; spec y plan de etiquetas en `docs/superpowers/` (2026-11-12).
+
+- Dominio `ticketing/domain/tag/` (`Tag`, `diffTagSets`), casos de uso en
+  `application/tags/`, `TagController` + `PUT /tickets/:id/tags`.
+- Read model: `withTags` en el listado, por rol en el detalle; filtro
+  `tagId` repetible con `some` (un ticket con dos etiquetas sale una vez).
+- Migración `20261112140000_tags`. Seed: 3 etiquetas en 4 tickets.
+
+## Estado anterior (2026-11-12) — Tanda 1: respuestas predefinidas (ADR-0030)
 
 Rama `feat/respuestas-predefinidas` (sale de `dev`, sin mergear). Spec y plan
 en `docs/superpowers/` (2026-11-12). "Esperando al cliente" ya está en `dev`
