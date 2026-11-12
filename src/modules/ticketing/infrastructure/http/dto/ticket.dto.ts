@@ -174,13 +174,19 @@ export class TicketSlaDto {
   @ApiProperty({ nullable: true }) stoppedAt!: Date | null;
   @ApiProperty({ nullable: true }) breachedAt!: Date | null;
   @ApiProperty({
-    enum: ['running', 'met', 'breached'],
+    nullable: true,
+    description:
+      'Desde cuándo está en pausa (ticket esperando al cliente). Null si no lo está.',
+  })
+  pausedAt!: Date | null;
+  @ApiProperty({
+    enum: ['running', 'paused', 'met', 'breached'],
     description: 'Se deriva de las fechas; no hay un campo de estado guardado.',
   })
   status!: string;
   @ApiProperty({
     description:
-      'Minutos de margen, negativos si se pasó. El reloj en marcha se mide contra ahora; el parado, contra su hora de parada.',
+      'Minutos de margen, negativos si se pasó. El reloj en marcha se mide contra ahora; el parado, contra su hora de parada; el pausado, contra su hora de pausa (queda congelado).',
   })
   remainingMinutes!: number;
 }
