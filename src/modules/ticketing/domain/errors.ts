@@ -113,6 +113,33 @@ export class TriageRejectedError extends DomainError {
   }
 }
 
+/**
+ * La respuesta predefinida no es válida (ADR-0030). El mensaje dice QUÉ falla
+ * —y si es una variable, cuál—, porque el administrador está editando un
+ * formulario y tiene que poder corregirlo sin adivinar.
+ */
+export class InvalidCannedResponseError extends DomainError {
+  readonly code = 'ticketing.invalid_canned_response';
+  constructor(detail: string) {
+    super(detail);
+  }
+}
+
+export class CannedResponseNotFoundError extends DomainError {
+  readonly code = 'ticketing.canned_response_not_found';
+  constructor() {
+    super('La respuesta predefinida no existe.');
+  }
+}
+
+/** Dos respuestas con el mismo título (sin distinguir mayúsculas) confunden al elegir. */
+export class DuplicateCannedResponseTitleError extends DomainError {
+  readonly code = 'ticketing.duplicate_canned_response_title';
+  constructor() {
+    super('Ya hay una respuesta predefinida con ese título.');
+  }
+}
+
 export type TicketingError =
   | InvalidTicketSubjectError
   | InvalidTicketDescriptionError
@@ -124,4 +151,7 @@ export type TicketingError =
   | InternalNoteForbiddenError
   | InvalidSlaTargetError
   | TriageUnavailableError
-  | TriageRejectedError;
+  | TriageRejectedError
+  | InvalidCannedResponseError
+  | CannedResponseNotFoundError
+  | DuplicateCannedResponseTitleError;

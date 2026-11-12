@@ -39,6 +39,7 @@ lo que costaría revertirla.
 - [ADR-0017](#adr-0017--numeración-visible-correlativa-por-tenant) — Numeración visible correlativa por tenant
 - [ADR-0028](#adr-0028--notas-internas-visibilidad-del-comentario-sla-y-sala-del-equipo) — Notas internas: visibilidad del comentario, SLA y sala del equipo
 - [ADR-0029](#adr-0029--pausa-del-sla-reloj-pausable-vencimiento-corrido-y-pausa-en-la-transacción-del-cambio) — Pausa del SLA: reloj pausable, vencimiento corrido y pausa en la transacción del cambio
+- [ADR-0030](#adr-0030--respuestas-predefinidas-solo-texto-variables-cerradas-y-relleno-en-el-cliente) — Respuestas predefinidas: solo texto, variables cerradas y relleno en el cliente
 
 **Trabajo asíncrono** — Cómo un cambio se convierte en efectos, sin perder eventos.
 
@@ -1620,3 +1621,84 @@ adenda del ADR-0021.
 calendario del reloj y no uno global), o aparecen más estados que pausan el SLA
 (p. ej. "esperando a un tercero") → la regla del coordinador pasaría a ser una
 propiedad del estado en la tabla del ADR-0015.
+
+---
+
+## ADR-0030 — Respuestas predefinidas: solo texto, variables cerradas y relleno en el cliente
+
+**Estado:** aceptado (2026-11-12). Tercera pieza de la "tanda 1" de producto.
+Diseño en `docs/superpowers/specs/2026-11-12-respuestas-predefinidas-design.md`.
+
+### Contexto
+
+El agente escribe muchas veces por día lo mismo ("Gracias, lo estamos
+revisando", "¿Nos pasás una captura?"). Zendesk, Freshdesk, Help Scout y Zammad
+lo resuelven con plantillas; aquí no existían.
+
+### Decisión 1 — Solo texto, no "macros"
+
+Insertar una respuesta no cambia estado, prioridad ni asignación. Las macros de
+Zendesk sí lo hacen, pero eso es un motor de reglas con efectos sobre el
+agregado `Ticket` (tanda 3, automatización), y mezclarlo aquí haría que una
+plantilla de texto tuviera que pasar por la máquina de estados del ADR-0015.
+
+### Decisión 2 — Compartidas por organización; leer pide AGENT
+
+Las crea, edita y borra el ADMIN; el AGENT las lista y usa. **El VIEWER no las
+ve (403)**: cuentan cómo trabaja el equipo por dentro, y el VIEWER es el cliente
+final. Es la regla del ADR-0025 aplicada otra vez: el rango se decide por lo que
+se revela, no por si el verbo es de lectura. Plantillas personales quedan fuera;
+sumarlas sería una columna `owner_id` nullable, aditiva.
+
+### Decisión 3 — Variables cerradas, validadas al guardar
+
+Cuatro: `{{ticket.numero}}`, `{{ticket.asunto}}`, `{{cliente.email}}`,
+`{{agente.email}}` (sensibles a mayúsculas, espacio interno tolerado). El cuerpo
+es válido solo si, tras quitar las válidas, no queda ningún `{{` ni `}}`; así
+una variable mal escrita, una llave sin cerrar, `{{}}` o `{{{x}}}` son un 400
+que nombra el fragmento. El fallo que se evita es concreto: una variable que
+nadie rellena le llega literal al cliente.
+
+### Decisión 4 — El relleno es del CLIENTE, no del servidor
+
+El backend guarda y valida plantillas; el front las rellena al insertarlas y el
+agente puede editar el resultado antes de mandarlo, que sale como un
+`POST /tickets/:id/comments` normal. Se descartó que el servidor enviara la
+plantilla directamente: el agente no podría ajustarla, y "mandar sin ver" es
+justo lo que no se quiere. **Coste aceptado:** el sistema no sabe qué plantilla
+originó un comentario, así que no hay métricas de uso. Si hicieran falta, sería
+un `canned_response_id` opcional en el comentario.
+
+La regla de variables vive DOS veces —dominio del api y `fill.ts` del web—
+porque son repos separados (ADR-0001). Las dos tienen tests con los mismos
+casos.
+
+### Decisión 5 — Unicidad del título con una columna normalizada
+
+"Saludo" y " saludo " no pueden convivir: confunden al elegir. Se guarda
+`title_key` (recortado y en minúsculas, lo calcula el dominio) con
+`@@unique([tenant_id, title_key])`. Se descartó un índice único sobre
+`lower(title)`: Prisma no modela índices de expresión y `migrate diff` marcaría
+drift para siempre. La comprobación del caso de uso da el error claro; la
+restricción de la base cubre la carrera entre dos ADMIN, y el borde traduce su
+`P2002` al mismo 409.
+
+### Decisión 6 — Borrado físico, auditado con el contenido
+
+Ningún comentario apunta a una plantilla (Decisión 4), así que borrarla no deja
+nada colgando. `canned_response.created|updated|deleted` se auditan en la misma
+transacción (ADR-0016); el borrado guarda título y cuerpo, y la edición el antes
+y el después. Sin evento de outbox ni realtime: ningún consumidor necesita
+enterarse.
+
+### Consecuencias
+
+- Tabla `canned_responses` con RLS como todo lo demás (migración
+  `20261112130000_canned_responses`). Sin roles nuevos.
+- Endpoints `GET|POST /canned-responses`, `PUT|DELETE /canned-responses/:id`.
+- La sesión del web vuelve a leer el email de `/auth/me` al restaurarse: sin él,
+  `{{agente.email}}` quedaba sin rellenar tras cada recarga.
+
+**Revisar si.** Se piden métricas de uso (→ id opcional en el comentario), o
+llegan las automatizaciones (→ una "macro" sería una regla que además inserta
+una plantilla, no una plantilla con efectos).

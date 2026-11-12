@@ -383,6 +383,10 @@ The full contract, with schemas, is at `/docs`.
 | `GET` | `/sla-policy` | ADMIN | Four priorities, each flagged as agreed or default |
 | `PUT` | `/sla-policy/:priority` | ADMIN | |
 | `DELETE` | `/sla-policy/:priority` | ADMIN | Back to the default |
+| `GET` | `/canned-responses` | AGENT | Shared reply templates, by title. Not VIEWER, on purpose |
+| `POST` | `/canned-responses` | ADMIN | Unknown `{{variables}}` or stray braces are a 400 |
+| `PUT` | `/canned-responses/:id` | ADMIN | Replaces title and body |
+| `DELETE` | `/canned-responses/:id` | ADMIN | Hard delete, audited with its content |
 | `GET` | `/health/live` | — | No dependencies, on purpose |
 | `GET` | `/health/ready` | — | Postgres + Redis, via the app's own connections |
 

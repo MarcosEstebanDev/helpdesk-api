@@ -16,6 +16,9 @@ export const AUDIT_ACTIONS = [
   'sla.breached',
   'sla.policy_changed',
   'ticket.triaged',
+  'canned_response.created',
+  'canned_response.updated',
+  'canned_response.deleted',
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
