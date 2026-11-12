@@ -252,7 +252,7 @@ describe('MarkSlaBreached', () => {
       now: CREADO,
     });
     if (opciones.parado === true)
-      timer.stop(new Date('2026-09-09T10:30:00.000Z'));
+      timer.stop(new Date('2026-09-09T10:30:00.000Z'), CALENDAR_24_7);
     timers.seed(timer);
 
     const auditLogs = fakeAuditLogRepository();

@@ -7,6 +7,7 @@ import {
 import { TicketingError } from '../../domain/errors';
 import { TenantId, TicketId } from '../../domain/ids';
 import { SlaTimerRepository } from '../../domain/ports/sla.repository';
+import { CALENDAR_24_7 } from '../../domain/sla/sla-calendar';
 import { SlaKind } from '../../domain/sla/sla-timer.entity';
 import { runTransactional } from '../transactional';
 
@@ -82,7 +83,7 @@ export class StopSlaTimer {
         }
 
         const margen = timer.remainingMinutesAt(input.occurredAt);
-        timer.stop(input.occurredAt);
+        timer.stop(input.occurredAt, CALENDAR_24_7);
         await this.timers.save(timer);
 
         return ok({ status: 'stopped', remainingMinutes: margen } as const);

@@ -195,5 +195,6 @@ const toSlaTimer = (row: SlaTimerRow): SlaTimer => {
     dueAt: row.dueAt,
     stoppedAt: row.stoppedAt,
     breachedAt: row.breachedAt,
+    pausedAt: null, // provisional: la columna llega en la migración de la Task 5
   });
 };

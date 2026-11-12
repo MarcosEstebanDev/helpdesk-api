@@ -24,6 +24,8 @@ interface SlaTimerProps {
   stoppedAt: Date | null;
   /** Venció sin haberse parado. */
   breachedAt: Date | null;
+  /** Desde cuándo está en pausa (ticket esperando al cliente, ADR-0029). */
+  pausedAt: Date | null;
 }
 
 /**
@@ -70,8 +72,22 @@ export class SlaTimer extends Entity<SlaTimerId> {
     return this.props.breachedAt;
   }
 
+  get pausedAt(): Date | null {
+    return this.props.pausedAt;
+  }
+
+  /** Corriendo: ni parado, ni incumplido, ni en pausa. Solo este puede vencer. */
   isRunning(): boolean {
+    return this.isOpen() && this.props.pausedAt === null;
+  }
+
+  /** Abierto: todavía no se cumplió ni se incumplió (corriendo o en pausa). */
+  isOpen(): boolean {
     return this.props.stoppedAt === null && this.props.breachedAt === null;
+  }
+
+  isPaused(): boolean {
+    return this.isOpen() && this.props.pausedAt !== null;
   }
 
   isBreached(): boolean {
@@ -88,9 +104,38 @@ export class SlaTimer extends Entity<SlaTimerId> {
    * fecha, porque lo que interesa es CUÁNDO se cumplió, no la última vez que
    * alguien lo intentó.
    */
-  stop(now: Date): void {
-    if (!this.isRunning()) return;
+  stop(now: Date, calendar: SlaCalendar): void {
+    if (!this.isOpen()) return;
+    // Resolver directamente desde la espera: primero se reanuda (corre el
+    // vencimiento lo que duró la pausa) y después se para. Sin esto el reloj
+    // quedaría pausado para siempre, ni cumplido ni incumplido.
+    this.resume(now, calendar);
     this.props.stoppedAt = now;
+  }
+
+  /**
+   * Pausa el reloj: el ticket espera al cliente (ADR-0029). Solo un reloj que
+   * corre se puede pausar; uno ya cumplido o incumplido no tiene nada que
+   * pausar, y uno ya pausado conserva su primera pausa.
+   */
+  pause(now: Date): boolean {
+    if (!this.isRunning()) return false;
+    this.props.pausedAt = now;
+    return true;
+  }
+
+  /**
+   * Reanuda el reloj sin contar la pausa: el vencimiento se recalcula con el
+   * margen de TRABAJO que quedaba al pausar, medido en el calendario (no
+   * restando fechas), para que el horario laboral no cambie esta regla.
+   */
+  resume(now: Date, calendar: SlaCalendar): boolean {
+    const pausedAt = this.props.pausedAt;
+    if (!this.isOpen() || pausedAt === null) return false;
+    const restante = calendar.workingMinutesBetween(pausedAt, this.props.dueAt);
+    this.props.dueAt = calendar.dueAt(now, restante);
+    this.props.pausedAt = null;
+    return true;
   }
 
   /**
@@ -129,9 +174,12 @@ export class SlaTimer extends Entity<SlaTimerId> {
       // en cada lectura: si mañana el tenant cambia su política, los relojes ya
       // en marcha conservan el objetivo con el que nacieron. Cambiar las reglas
       // a mitad de partida es justo lo que no debe pasar en un SLA.
+      // Inmutable frente a cambios de POLÍTICA; lo único que lo mueve es una
+      // pausa del propio ticket (ADR-0029), que no cuenta como tiempo de SLA.
       dueAt: input.calendar.dueAt(input.now, input.minutes),
       stoppedAt: null,
       breachedAt: null,
+      pausedAt: null,
     });
   }
 
@@ -142,16 +190,17 @@ export class SlaTimer extends Entity<SlaTimerId> {
 }
 
 /**
- * Los tres estados en que puede estar un reloj. Se derivan de las fechas
+ * Los cuatro estados en que puede estar un reloj. Se derivan de las fechas
  * (ver `SlaTimer`), no se guardan.
  */
-export type SlaTimerStatus = 'running' | 'met' | 'breached';
+export type SlaTimerStatus = 'running' | 'paused' | 'met' | 'breached';
 
 export interface SlaTimerView {
   kind: SlaKind;
   dueAt: Date;
   stoppedAt: Date | null;
   breachedAt: Date | null;
+  pausedAt: Date | null;
   status: SlaTimerStatus;
   /** Minutos de margen; negativo si se pasó del objetivo. */
   remainingMinutes: number;
@@ -177,6 +226,7 @@ export const describeSlaTimer = (
     dueAt: Date;
     stoppedAt: Date | null;
     breachedAt: Date | null;
+    pausedAt: Date | null;
   },
   now: Date,
 ): SlaTimerView => {
@@ -185,17 +235,22 @@ export const describeSlaTimer = (
       ? 'breached'
       : timer.stoppedAt !== null
         ? 'met'
-        : 'running';
+        : timer.pausedAt !== null
+          ? 'paused'
+          : 'running';
 
   // Un reloj en marcha se mide contra ahora; uno detenido, contra el instante en
-  // que se detuvo (se cumpliera o se incumpliera).
-  const referencia = timer.breachedAt ?? timer.stoppedAt ?? now;
+  // que se detuvo (se cumpliera o se incumpliera); uno en pausa, contra el
+  // instante en que se pausó: su margen queda congelado mientras espera.
+  const referencia =
+    timer.breachedAt ?? timer.stoppedAt ?? timer.pausedAt ?? now;
 
   return {
     kind: timer.kind,
     dueAt: timer.dueAt,
     stoppedAt: timer.stoppedAt,
     breachedAt: timer.breachedAt,
+    pausedAt: timer.pausedAt,
     status,
     remainingMinutes: Math.round(
       (timer.dueAt.getTime() - referencia.getTime()) / 60_000,

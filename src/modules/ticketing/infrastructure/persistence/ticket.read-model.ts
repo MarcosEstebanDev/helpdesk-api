@@ -259,7 +259,7 @@ export class TicketReadModel extends PrismaRepository {
         sla: slaTimers
           .filter((timer) => isSlaKind(timer.kind))
           .map((timer) =>
-            describeSlaTimer({ ...timer, kind: timer.kind }, now),
+            describeSlaTimer({ ...timer, kind: timer.kind, pausedAt: null }, now),
           ),
       };
     });
