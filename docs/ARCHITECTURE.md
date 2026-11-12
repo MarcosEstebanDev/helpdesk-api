@@ -1856,10 +1856,20 @@ interna probando palabras y viendo si su ticket aparece.
 `?q=` se combina con los demás filtros y conserva el orden por fecha y el
 cursor. Prisma no admite `@@` en `where`, así que una consulta SQL devuelve
 los ids que coinciden — las **1000 más recientes** — y el `findMany` de
-siempre los usa como `id IN (…)`. **Coste aceptado:** una búsqueda que
-coincide con más de 1000 tickets solo muestra los 1000 más recientes. La
-alternativa (toda la página en SQL a mano) duplicaría cada filtro existente y
-su mantenimiento.
+siempre los usa como `id IN (…)`. Los filtros simples (estado, asignado,
+solicitante, etiquetas) van DENTRO de esa consulta, antes del tope: la
+primera versión los aplicaba después, y `q=factura&status=CLOSED` podía salir
+vacía si las 1000 coincidencias más recientes estaban abiertas (lo encontró la
+revisión final; hay un e2e con 1001 tickets). **Coste aceptado:** con más de
+1000 coincidencias que pasan esos filtros, solo se ven las 1000 más recientes;
+y "la IA sugiere más urgencia" se aplica después del tope. La alternativa
+(toda la página en SQL a mano) duplicaría cada filtro y su mantenimiento.
+
+Además, la `tsquery` se arma en SQL palabra por palabra: `helpdesk_unaccent` y
+DESPUÉS se descarta lo que no sea letra o número, porque `unaccent` convierte
+algunas letras en sintaxis (`ʼ` → `'`, `⑴` → `(1)`) y eso daba 500. Buscar
+`123` también encuentra textos con "1234…" (el número se busca además como
+prefijo): aceptado.
 
 **Revisar si.** Hace falta ordenar por relevancia, buscar con errores de
 tipeo (`pg_trgm`), o un tenant supera el volumen en el que 1000 coincidencias

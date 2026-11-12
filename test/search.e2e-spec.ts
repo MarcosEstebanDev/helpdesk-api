@@ -261,4 +261,52 @@ describe('Búsqueda (e2e, ADR-0032)', () => {
   it('un texto de más de 200 caracteres es un 400', async () => {
     await conAuth('get', `/tickets?q=${'x'.repeat(201)}`, agente).expect(400);
   });
+
+  it('el tope de 1000 coincidencias no se come a los filtros', async () => {
+    // Revisión final: el tope se aplicaba ANTES del filtro de estado. Con 1000
+    // coincidencias abiertas más recientes, el único ticket cerrado (más viejo)
+    // quedaba afuera y `status=CLOSED` devolvía una página vacía.
+    const volumen = await registrar(`vol-q-${run}`);
+    const clave = palabra('volumen');
+    const viejo = new Date('2026-01-01T00:00:00Z');
+    const base = {
+      tenantId: volumen.tenantId,
+      requesterId: volumen.userId,
+      description: 'Carga masiva para el test del tope.',
+    };
+    await prisma.withTenant(volumen.tenantId, async (tx) => {
+      await tx.ticket.create({
+        data: {
+          ...base,
+          number: 1,
+          subject: `Cerrado ${clave}`,
+          status: 'CLOSED',
+          createdAt: viejo,
+          updatedAt: viejo,
+          closedAt: viejo,
+        },
+      });
+      await tx.ticket.createMany({
+        data: Array.from({ length: 1000 }, (_, i) => ({
+          ...base,
+          number: i + 2,
+          subject: `Abierto ${i} ${clave}`,
+          updatedAt: new Date(),
+        })),
+      });
+    });
+
+    const res = await conAuth(
+      'get',
+      `/tickets?q=${clave}&status=CLOSED`,
+      volumen.token,
+    ).expect(200);
+
+    expect((res.body as Pagina).items.map((t) => t.number)).toEqual([1]);
+
+    await prisma.withTenant(volumen.tenantId, (tx) =>
+      tx.organization.deleteMany({ where: { id: volumen.tenantId } }),
+    );
+  });
 });
+

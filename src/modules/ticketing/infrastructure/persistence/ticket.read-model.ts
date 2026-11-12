@@ -192,7 +192,7 @@ export class TicketReadModel extends PrismaRepository {
       const coincidencias =
         options.search === undefined
           ? undefined
-          : await this.idsQueCoinciden(tx, tenantId, options.search);
+          : await this.idsQueCoinciden(tx, tenantId, options.search, options);
       if (coincidencias !== undefined && coincidencias.length === 0) {
         return { items: [], nextCursor: null };
       }
@@ -281,6 +281,12 @@ export class TicketReadModel extends PrismaRepository {
     tx: Prisma.TransactionClient,
     tenantId: TenantId,
     search: { text: string; viewerRole: string },
+    filtros: {
+      status?: TicketStatus;
+      assigneeId?: string;
+      requesterId?: string;
+      tagIds?: string[];
+    },
   ): Promise<string[] | undefined> {
     const { terms, number } = parseSearch(search.text);
     if (terms.length === 0 && number === null) return undefined;
@@ -315,9 +321,39 @@ export class TicketReadModel extends PrismaRepository {
             )
           )`;
 
+    // Los filtros simples van ACÁ, antes del tope: si se aplicaran después, las
+    // 1000 coincidencias más recientes podrían no incluir ninguna que pase el
+    // filtro, y la página saldría vacía habiendo resultados (revisión final).
+    // `aiSuggestsHigher` queda en Prisma: ver la consecuencia en el ADR-0032.
+    const condiciones: Prisma.Sql[] = [];
+    if (filtros.status !== undefined) {
+      condiciones.push(Prisma.sql`t.status = ${filtros.status}::ticket_status`);
+    }
+    if (filtros.assigneeId !== undefined) {
+      condiciones.push(Prisma.sql`t.assignee_id = ${filtros.assigneeId}::uuid`);
+    }
+    if (filtros.requesterId !== undefined) {
+      condiciones.push(
+        Prisma.sql`t.requester_id = ${filtros.requesterId}::uuid`,
+      );
+    }
+    if (filtros.tagIds !== undefined && filtros.tagIds.length > 0) {
+      condiciones.push(Prisma.sql`EXISTS (
+        SELECT 1 FROM ticket_tags tt
+        WHERE tt.ticket_id = t.id AND tt.tenant_id = t.tenant_id
+          AND tt.tag_id = ANY(${filtros.tagIds}::uuid[])
+      )`);
+    }
+    const otrosFiltros =
+      condiciones.length === 0
+        ? Prisma.sql`TRUE`
+        : Prisma.join(condiciones, ' AND ');
+
     const filas = await tx.$queryRaw<{ id: string }[]>`
       SELECT t.id FROM tickets t
-      WHERE t.tenant_id = ${tenantId}::uuid AND (${porNumero} OR ${porTexto})
+      WHERE t.tenant_id = ${tenantId}::uuid
+        AND (${porNumero} OR ${porTexto})
+        AND ${otrosFiltros}
       ORDER BY t.created_at DESC, t.id DESC
       LIMIT ${SEARCH_MATCH_LIMIT}`;
     return filas.map((f) => f.id);
