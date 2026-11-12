@@ -23,7 +23,16 @@ import { Comment } from '../domain/entities/comment.entity';
 import { Ticket } from '../domain/entities/ticket.entity';
 import { CannedResponse } from '../domain/canned-response/canned-response.entity';
 import { CannedResponseRepository } from '../domain/ports/canned-response.repository';
-import { CannedResponseId, TenantId, TicketId, UserId } from '../domain/ids';
+import {
+  CannedResponseId,
+  TagId,
+  TenantId,
+  TicketId,
+  UserId,
+} from '../domain/ids';
+import { Tag } from '../domain/tag/tag.entity';
+import { TagRepository } from '../domain/ports/tag.repository';
+import { TicketTagRepository } from '../domain/ports/ticket-tag.repository';
 import { AuditLogRepository } from '../domain/ports/audit-log.repository';
 import { CommentRepository } from '../domain/ports/comment.repository';
 import { MemberDirectory } from '../domain/ports/member.directory';
@@ -500,5 +509,96 @@ export const fakeCannedResponses = (): FakeCannedResponses => {
     update: guardar,
     remove: (tenantId, id) =>
       Promise.resolve(store.delete(clave(tenantId, id))),
+  };
+};
+
+export interface FakeTags extends TagRepository {
+  seed(tag: Tag): void;
+  stored(id: string): Tag | null;
+}
+
+/** Catálogo en memoria; guarda COPIAS y la clave lleva el tenant (RLS). */
+export const fakeTags = (): FakeTags => {
+  const store = new Map<string, Tag>();
+  const clave = (tenantId: string, id: string) => `${tenantId}:${id}`;
+  const copia = (t: Tag) =>
+    Tag.rehydrate({
+      id: t.id,
+      tenantId: t.tenantId,
+      name: t.name,
+      nameKey: t.nameKey,
+      color: t.color,
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+    });
+  const guardar = (t: Tag) => {
+    store.set(clave(t.tenantId, t.id), copia(t));
+    return Promise.resolve();
+  };
+
+  return {
+    seed: (t) => void guardar(t),
+    stored: (id) => {
+      for (const t of store.values()) if (t.id === id) return copia(t);
+      return null;
+    },
+    list: (tenantId) =>
+      Promise.resolve(
+        [...store.values()]
+          .filter((t) => t.tenantId === tenantId)
+          .sort((a, b) => a.nameKey.localeCompare(b.nameKey))
+          .map(copia),
+      ),
+    findById: (tenantId, id) => {
+      const t = store.get(clave(tenantId, id));
+      return Promise.resolve(t ? copia(t) : null);
+    },
+    findByIds: (tenantId, ids) =>
+      Promise.resolve(
+        ids
+          .map((id) => store.get(clave(tenantId, id)))
+          .filter((t): t is Tag => t !== undefined)
+          .map(copia),
+      ),
+    existsNameKey: (tenantId, nameKey, exceptId) =>
+      Promise.resolve(
+        [...store.values()].some(
+          (t) =>
+            t.tenantId === tenantId &&
+            t.nameKey === nameKey &&
+            t.id !== exceptId,
+        ),
+      ),
+    insert: guardar,
+    update: guardar,
+    remove: (tenantId, id) =>
+      Promise.resolve(store.delete(clave(tenantId, id))),
+  };
+};
+
+export interface FakeTicketTags extends TicketTagRepository {
+  readonly replaces: number;
+  seed(tenantId: TenantId, ticketId: TicketId, tagIds: TagId[]): void;
+}
+
+export const fakeTicketTags = (): FakeTicketTags => {
+  const store = new Map<string, TagId[]>();
+  const state = { replaces: 0 };
+  const clave = (tenantId: string, ticketId: string) =>
+    `${tenantId}:${ticketId}`;
+  return {
+    get replaces() {
+      return state.replaces;
+    },
+    seed: (tenantId, ticketId, tagIds) => {
+      store.set(clave(tenantId, ticketId), [...tagIds]);
+    },
+    tagsOf: (tenantId, ticketId) =>
+      Promise.resolve([...(store.get(clave(tenantId, ticketId)) ?? [])]),
+    replace: (tenantId, ticketId, tagIds) => {
+      store.set(clave(tenantId, ticketId), [...tagIds]);
+      state.replaces += 1;
+      return Promise.resolve();
+    },
   };
 };
