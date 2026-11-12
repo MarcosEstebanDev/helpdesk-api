@@ -243,6 +243,7 @@ export class TicketReadModel extends PrismaRepository {
               dueAt: true,
               stoppedAt: true,
               breachedAt: true,
+              pausedAt: true,
             },
           },
         },
@@ -259,7 +260,7 @@ export class TicketReadModel extends PrismaRepository {
         sla: slaTimers
           .filter((timer) => isSlaKind(timer.kind))
           .map((timer) =>
-            describeSlaTimer({ ...timer, kind: timer.kind, pausedAt: null }, now),
+            describeSlaTimer({ ...timer, kind: timer.kind }, now),
           ),
       };
     });

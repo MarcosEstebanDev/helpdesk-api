@@ -106,11 +106,15 @@ export class PrismaSlaTimerRepository
     super(prisma);
   }
 
+  /**
+   * Solo ALTA. Antes era un upsert que también usaban parar e incumplir, y dos
+   * escrituras concurrentes (el barrido y una pausa) se pisaban: la última
+   * ganaba sin mirar qué había en la fila. Los cambios van por `transition`.
+   */
   async save(timer: SlaTimer): Promise<void> {
     await this.runInTenant(timer.tenantId, async (tx) => {
-      await tx.slaTimer.upsert({
-        where: { id: timer.id },
-        create: {
+      await tx.slaTimer.create({
+        data: {
           id: timer.id,
           tenantId: timer.tenantId,
           ticketId: timer.ticketId,
@@ -119,14 +123,42 @@ export class PrismaSlaTimerRepository
           dueAt: timer.dueAt,
           stoppedAt: timer.stoppedAt,
           breachedAt: timer.breachedAt,
-        },
-        // `started_at` y `due_at` no se actualizan: el objetivo con el que un
-        // reloj nació es inmutable (ver ADR-0020).
-        update: {
-          stoppedAt: timer.stoppedAt,
-          breachedAt: timer.breachedAt,
+          pausedAt: timer.pausedAt,
         },
       });
+    });
+  }
+
+  /**
+   * `UPDATE ... WHERE` condicionado al estado en que se leyó la fila (ADR-0021,
+   * adenda del ADR-0029). `updateMany` y no `update` porque solo el primero
+   * admite condiciones fuera de la clave y devuelve cuántas filas tocó: 0
+   * significa que otra escritura llegó antes, y no es un error de la BD.
+   *
+   * `started_at` nunca se toca. `due_at` sí, pero solo porque una pausa lo
+   * corre: un cambio de POLÍTICA sigue sin mover los relojes en marcha.
+   */
+  async transition(
+    timer: SlaTimer,
+    expected: 'running' | 'paused',
+  ): Promise<boolean> {
+    return this.runInTenant(timer.tenantId, async (tx) => {
+      const { count } = await tx.slaTimer.updateMany({
+        where: {
+          id: timer.id,
+          tenantId: timer.tenantId,
+          stoppedAt: null,
+          breachedAt: null,
+          pausedAt: expected === 'running' ? null : { not: null },
+        },
+        data: {
+          dueAt: timer.dueAt,
+          stoppedAt: timer.stoppedAt,
+          breachedAt: timer.breachedAt,
+          pausedAt: timer.pausedAt,
+        },
+      });
+      return count === 1;
     });
   }
 
@@ -143,7 +175,8 @@ export class PrismaSlaTimerRepository
     });
   }
 
-  async findRunning(
+  /** Corriendo O en pausa: abierto = ni cumplido ni incumplido (ADR-0029). */
+  async findOpen(
     tenantId: TenantId,
     ticketId: TicketId,
     kind: SlaKind,
@@ -179,6 +212,7 @@ interface SlaTimerRow {
   dueAt: Date;
   stoppedAt: Date | null;
   breachedAt: Date | null;
+  pausedAt: Date | null;
 }
 
 const toSlaTimer = (row: SlaTimerRow): SlaTimer => {
@@ -195,6 +229,6 @@ const toSlaTimer = (row: SlaTimerRow): SlaTimer => {
     dueAt: row.dueAt,
     stoppedAt: row.stoppedAt,
     breachedAt: row.breachedAt,
-    pausedAt: null, // provisional: la columna llega en la migración de la Task 5
+    pausedAt: row.pausedAt,
   });
 };

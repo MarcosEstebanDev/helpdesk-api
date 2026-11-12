@@ -70,7 +70,7 @@ export class StopSlaTimer {
           } as const);
         }
 
-        const timer = await this.timers.findRunning(
+        const timer = await this.timers.findOpen(
           input.tenantId,
           input.ticketId,
           input.kind,
