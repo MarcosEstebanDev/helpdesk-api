@@ -225,6 +225,25 @@ describe('UpdateCannedResponse (ADR-0030)', () => {
   });
 });
 
+describe('UpdateCannedResponse sin cambios', () => {
+  it('no audita ni toca la fecha si título y cuerpo quedan iguales', async () => {
+    const { update, repo, auditLogs } = montar();
+    repo.seed(sembrada('Saludo'));
+
+    const r = await update.execute({
+      tenantId: TENANT,
+      actorId: ACTOR,
+      id: EXISTENTE,
+      title: '  Saludo ',
+      body: 'Hola',
+    });
+
+    expect(r.isOk()).toBe(true);
+    expect(auditLogs.entries).toHaveLength(0);
+    expect(repo.stored(EXISTENTE)?.updatedAt).toEqual(AHORA);
+  });
+});
+
 describe('DeleteCannedResponse (ADR-0030)', () => {
   it('la borra y deja en la auditoría qué se borró', async () => {
     const { remove, repo, auditLogs } = montar();
@@ -243,6 +262,28 @@ describe('DeleteCannedResponse (ADR-0030)', () => {
       title: 'Saludo',
       body: 'Hola',
     });
+  });
+
+  it('si otro la borró entre medio, no se audita dos veces', async () => {
+    const { repo, auditLogs } = montar();
+    repo.seed(sembrada('Saludo'));
+    // El otro ADMIN ganó: la fila ya no está cuando se intenta borrar.
+    const carrera = { ...repo, remove: () => Promise.resolve(false) };
+    const remove = new DeleteCannedResponse(
+      fakeTransactions().manager,
+      carrera,
+      new AuditRecorder(sequentialIds(), auditLogs),
+      fixedClock(DESPUES),
+    );
+
+    const r = await remove.execute({
+      tenantId: TENANT,
+      actorId: ACTOR,
+      id: EXISTENTE,
+    });
+
+    expect(r.isErr()).toBe(true);
+    expect(auditLogs.entries).toHaveLength(0);
   });
 
   it('una que no existe es not found y no se audita', async () => {

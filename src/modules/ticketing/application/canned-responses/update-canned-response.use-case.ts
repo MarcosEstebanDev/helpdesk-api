@@ -59,6 +59,16 @@ export class UpdateCannedResponse {
         });
         if (reescrita.isErr()) return err(reescrita.error);
 
+        // Sin cambios reales (p. ej. solo espacios en los bordes): no se
+        // escribe ni se audita. Se devuelve la de la base, con su fecha.
+        if (respuesta.title === antes.title && respuesta.body === antes.body) {
+          const original = await this.responses.findById(
+            input.tenantId,
+            input.id,
+          );
+          return ok(original ?? respuesta);
+        }
+
         if (
           await this.responses.existsTitleKey(
             input.tenantId,
