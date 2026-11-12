@@ -35,8 +35,9 @@ const porNombre = (tags: Tag[]): Tag[] =>
 /**
  * Reemplaza las etiquetas de un ticket (ADR-0031). Devuelve las resultantes.
  *
- * Si dos agentes lo hacen a la vez, gana el último (decisión del spec): no se
- * bloquea la fila del ticket. El cambio, su auditoría y el evento van en la
+ * Si dos agentes lo hacen a la vez, gana el último (decisión del spec), y la
+ * fila del ticket se BLOQUEA para que eso sea literal: el segundo espera al
+ * primero y calcula su diff sobre lo que el primero dejó. El cambio, su auditoría y el evento van en la
  * MISMA transacción (ADR-0016), y la auditoría guarda los NOMBRES para que el
  * historial se lea aunque la etiqueta se renombre o se borre después.
  */
@@ -58,7 +59,12 @@ export class SetTicketTags {
       this.transactions,
       input.tenantId,
       async () => {
-        const ticket = await this.tickets.findById(
+        // BLOQUEADO hasta el commit (revisión final). Sin esto, dos cosas:
+        // dos `PUT` a la vez chocaban en la PK de `ticket_tags` (500), y otro
+        // agente podía cerrar el ticket entre esta lectura y el `save`, que lo
+        // reescribía entero con el estado viejo y lo reabría. Con el bloqueo,
+        // quien llega segundo espera y lee lo que dejó el primero.
+        const ticket = await this.tickets.findByIdForUpdate(
           input.tenantId,
           input.ticketId,
         );

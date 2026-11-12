@@ -387,6 +387,18 @@ describe('SetTicketTags (ADR-0031)', () => {
     expect(r.error).toBeInstanceOf(TicketNotFoundError);
   });
 
+  it('lee el ticket BLOQUEADO: si otro lo cierra a la vez, no lo reabre', async () => {
+    // Revisión final: con una lectura normal, otro agente podía cerrar el
+    // ticket entre la lectura y el `save` de éste, que lo reescribía entero
+    // con el estado viejo. Bloqueando la fila, esta transacción espera y lee
+    // el estado ya cerrado.
+    const { sut, tickets } = montarSet();
+
+    await poner(sut, [BUG]);
+
+    expect(tickets.lockedReads).toBe(1);
+  });
+
   it('un ticket cerrado no se re-etiqueta', async () => {
     const { sut, ticketTags } = montarSet(true);
 

@@ -301,4 +301,31 @@ describe('Etiquetas (e2e, ADR-0031)', () => {
     const etiquetado = entradas.find((e) => e.action === 'ticket.tags_changed');
     expect(etiquetado?.metadata.added?.[0]?.name).toBe('Efímera');
   });
+
+  it('varios agentes etiquetando a la vez: ninguno da 500 y gana uno entero', async () => {
+    // Revisión final: sin bloquear la fila del ticket, dos `PUT` que comparten
+    // una etiqueta chocaban en la PK de `ticket_tags` (P2002 → 500).
+    const a = await crearEtiqueta('Carrera A');
+    const b = await crearEtiqueta('Carrera B');
+    const c = await crearEtiqueta('Carrera C');
+    const ticketId = await crearTicket('En carrera');
+    const conjuntos = [
+      [a.id, b.id],
+      [a.id, c.id],
+      [b.id, c.id],
+      [a.id, b.id, c.id],
+      [c.id, a.id],
+      [b.id, a.id],
+    ];
+
+    const respuestas = await Promise.all(
+      conjuntos.map((ids) => etiquetar(ticketId, ids)),
+    );
+
+    expect(respuestas.map((r) => r.status)).toEqual(conjuntos.map(() => 200));
+    const detalle = await conAuth('get', `/tickets/${ticketId}`, agente).expect(200);
+    const final = (detalle.body as { tags: Etiqueta[] }).tags.map((t) => t.id).sort();
+    expect(conjuntos.map((ids) => [...ids].sort())).toContainEqual(final);
+  });
 });
+

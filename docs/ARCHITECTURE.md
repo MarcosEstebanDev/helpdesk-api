@@ -1770,9 +1770,15 @@ etiqueta borrada no queda rota.
 - Migración `20261112140000_tags` (RLS en las dos tablas). Borrar una
   etiqueta la quita de sus tickets por cascada, sin un evento por ticket (sería
   una tormenta): el front invalida su caché al borrar.
-- Concurrencia: dos agentes etiquetando a la vez → gana el último; no se
-  bloquea la fila del ticket. En esa carrera el `added/removed` auditado puede
-  no coincidir exactamente con lo que vio cada uno.
+- Concurrencia: `SetTicketTags` lee el ticket con `findByIdForUpdate`
+  (`SELECT ... FOR UPDATE`). El spec decía "gana el último, sin bloquear",
+  pero la revisión final encontró dos fallos de no bloquear: dos `PUT` a la
+  vez que comparten una etiqueta chocaban en la PK de `ticket_tags` (500), y
+  como el caso de uso guarda el ticket ENTERO, etiquetar mientras otro lo
+  cerraba lo reabría en silencio. Con el bloqueo sigue ganando el último, pero
+  el segundo espera y calcula su diff sobre lo que dejó el primero. Hay un e2e
+  con seis `PUT` simultáneos. `AddComment` tiene el mismo patrón de leer y
+  guardar entero sin bloquear: anotado, no tocado en esta entrega.
 
 **Revisar si.** Llegan las reglas de automatización (etiquetar solo, tanda 3),
 o se piden etiquetas visibles para el cliente (→ una columna `public` en el

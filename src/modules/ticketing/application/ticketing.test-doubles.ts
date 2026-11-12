@@ -110,12 +110,15 @@ export const fakeTransactions = (): FakeTransactions => {
 
 export interface FakeTicketRepository extends TicketRepository {
   readonly saved: Ticket[];
+  /** Cuántas veces se leyó un ticket con `findByIdForUpdate`. */
+  readonly lockedReads: number;
   seed(ticket: Ticket): void;
 }
 
 export const fakeTicketRepository = (): FakeTicketRepository => {
   const store = new Map<string, Ticket>();
   const saved: Ticket[] = [];
+  const state = { lockedReads: 0 };
 
   return {
     saved,
@@ -131,6 +134,13 @@ export const fakeTicketRepository = (): FakeTicketRepository => {
     // producción impone RLS, y un test que lo rompa falla aquí y no en los e2e.
     findById: (tenantId: TenantId, id: TicketId) =>
       Promise.resolve(store.get(`${tenantId}:${id}`) ?? null),
+    findByIdForUpdate: (tenantId: TenantId, id: TicketId) => {
+      state.lockedReads += 1;
+      return Promise.resolve(store.get(`${tenantId}:${id}`) ?? null);
+    },
+    get lockedReads() {
+      return state.lockedReads;
+    },
   };
 };
 

@@ -83,8 +83,8 @@ Es además lo que las vistas guardadas (entrega 3) van a filtrar.
   llama a `ticket.recordTagsChanged(added, removed, now)`, que actualiza
   `updatedAt` y emite el evento; luego guarda el ticket (outbox) y audita, todo
   en la misma transacción.
-- **Concurrencia:** dos agentes guardando a la vez → **gana el último**. No se
-  bloquea la fila del ticket. Coste aceptado: en esa carrera de milisegundos el
+- **Concurrencia:** dos agentes guardando a la vez → **gana el último**.
+  (Revisado tras la revisión final: SÍ se bloquea la fila del ticket, ver ADR-0031.) Coste aceptado: en esa carrera de milisegundos el
   `added/removed` auditado puede no coincidir exactamente con lo que vio cada
   uno; el conjunto final siempre es el del último `PUT`.
 - **Historial:** muestra el nombre que la etiqueta tenía en ese momento (el de
