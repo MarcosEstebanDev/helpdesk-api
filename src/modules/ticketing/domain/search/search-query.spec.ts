@@ -1,33 +1,36 @@
 import { SEARCH_MAX_TERMS, parseSearch } from './search-query';
 
 describe('parseSearch (ADR-0032)', () => {
-  it('cada palabra es un prefijo y se unen con AND', () => {
-    expect(parseSearch('factura octubre')).toEqual({
-      tsquery: 'factura:* & octubre:*',
+  it('separa las palabras en minúsculas', () => {
+    expect(parseSearch('Factura Octubre')).toEqual({
+      terms: ['factura', 'octubre'],
       number: null,
     });
   });
 
-  it('pasa a minúsculas y deja los acentos (los quita SQL con unaccent)', () => {
-    expect(parseSearch('Facturación').tsquery).toBe('facturación:*');
+  it('deja los acentos: los quita SQL, igual que al indexar', () => {
+    expect(parseSearch('Facturación').terms).toEqual(['facturación']);
   });
 
   it('descarta la sintaxis de tsquery: nunca llega al motor', () => {
-    expect(parseSearch('a & | ! (b) :* \'c\' "d"').tsquery).toBe(
-      'a:* & b:* & c:* & d:*',
-    );
+    expect(parseSearch('a & | ! (b) :* \'c\' "d"').terms).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+    ]);
   });
 
   it.each(['', '   ', '!!! &&& ()'])(
     'sin palabras válidas no filtra (%p)',
     (raw) => {
-      expect(parseSearch(raw)).toEqual({ tsquery: null, number: null });
+      expect(parseSearch(raw)).toEqual({ terms: [], number: null });
     },
   );
 
   it('#123 y 123 buscan también por número', () => {
-    expect(parseSearch('#123')).toEqual({ tsquery: '123:*', number: 123 });
-    expect(parseSearch(' 123 ')).toEqual({ tsquery: '123:*', number: 123 });
+    expect(parseSearch('#123')).toEqual({ terms: ['123'], number: 123 });
+    expect(parseSearch(' 123 ')).toEqual({ terms: ['123'], number: 123 });
   });
 
   it('algo que no es solo un número no busca por número', () => {
@@ -40,9 +43,7 @@ describe('parseSearch (ADR-0032)', () => {
   });
 
   it(`como mucho ${SEARCH_MAX_TERMS} palabras`, () => {
-    const diez = 'a b c d e f g h i j';
-
-    expect(parseSearch(diez).tsquery?.split(' & ')).toHaveLength(
+    expect(parseSearch('a b c d e f g h i j').terms).toHaveLength(
       SEARCH_MAX_TERMS,
     );
   });

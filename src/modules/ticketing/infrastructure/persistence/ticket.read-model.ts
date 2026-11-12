@@ -282,23 +282,36 @@ export class TicketReadModel extends PrismaRepository {
     tenantId: TenantId,
     search: { text: string; viewerRole: string },
   ): Promise<string[] | undefined> {
-    const { tsquery, number } = parseSearch(search.text);
-    if (tsquery === null && number === null) return undefined;
+    const { terms, number } = parseSearch(search.text);
+    if (terms.length === 0 && number === null) return undefined;
 
     const porNumero =
       number === null ? Prisma.sql`FALSE` : Prisma.sql`t.number = ${number}`;
     const visibles = [...visibleTo(search.viewerRole)];
+    // La `tsquery` se arma en SQL: cada palabra pasa por `helpdesk_unaccent` (lo
+    // mismo que al indexar) y DESPUÉS se le quita todo lo que no sea letra o
+    // número, porque `unaccent` puede convertir una letra en sintaxis (`ʼ` →
+    // `'`, `⑴` → `(1)`). Una palabra que queda vacía se descarta; si no queda
+    // ninguna, la consulta es NULL y no coincide nada, sin error.
+    const consulta = Prisma.sql`(
+      SELECT to_tsquery('spanish', string_agg(w || ':*', ' & '))
+      FROM (
+        SELECT regexp_replace(helpdesk_unaccent(x), '[^[:alnum:]]', '', 'g') AS w
+        FROM unnest(${terms}::text[]) AS x
+      ) palabras
+      WHERE w <> ''
+    )`;
     const porTexto =
-      tsquery === null
+      terms.length === 0
         ? Prisma.sql`FALSE`
         : Prisma.sql`(
-            t.search_vector @@ to_tsquery('spanish', helpdesk_unaccent(${tsquery}))
+            t.search_vector @@ ${consulta}
             OR EXISTS (
               SELECT 1 FROM comments c
               WHERE c.ticket_id = t.id
                 AND c.tenant_id = t.tenant_id
                 AND c.visibility::text = ANY(${visibles}::text[])
-                AND c.search_vector @@ to_tsquery('spanish', helpdesk_unaccent(${tsquery}))
+                AND c.search_vector @@ ${consulta}
             )
           )`;
 

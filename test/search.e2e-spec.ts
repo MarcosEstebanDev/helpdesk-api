@@ -204,7 +204,18 @@ describe('Búsqueda (e2e, ADR-0032)', () => {
     expect(ids(await buscar(String(ticket.number)))).toContain(ticket.id);
   });
 
-  it.each(['a & | ! (b', ':*', '\'"', '!!!', '   '])(
+  it.each([
+    'a & | ! (b',
+    ':*',
+    `'"`,
+    '!!!',
+    '   ',
+    // Letras/números que `unaccent` convierte en sintaxis de tsquery (revisión final).
+    'ʼhola',
+    'ŉ',
+    '⑴',
+    'aːb',
+  ])(
     'texto con sintaxis rara no rompe (%p)',
     async (q) => {
       await buscar(q);

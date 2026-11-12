@@ -8,7 +8,10 @@
  * puede llegar desde el usuario y una búsqueda rara nunca es un 500.
  *
  * Los acentos se dejan: los quita `helpdesk_unaccent` en SQL, igual que al
- * indexar, para que la regla viva en un solo lugar.
+ * indexar, para que la regla viva en un solo lugar. Por eso esto devuelve
+ * PALABRAS y no la `tsquery` armada: algunas letras, al quitarles el acento,
+ * se convierten en sintaxis (`ʼ` → `'`, `⑴` → `(1)`), así que SQL las vuelve
+ * a filtrar después de `unaccent`, palabra por palabra (revisión final).
  */
 
 export const SEARCH_MAX_TERMS = 8;
@@ -17,8 +20,8 @@ export const SEARCH_MAX_TERMS = 8;
 const INT4_MAX = 2_147_483_647;
 
 export interface ParsedSearch {
-  /** `null` = no hay palabras válidas: el filtro no aplica. */
-  tsquery: string | null;
+  /** Palabras (cada una será un prefijo, todas obligatorias). Vacío = no filtra. */
+  terms: string[];
   /** `#123` o `123` buscan además el ticket con ese número. */
   number: number | null;
 }
@@ -34,8 +37,7 @@ export const parseSearch = (raw: string): ParsedSearch => {
   const numero = soloNumero === null ? null : Number(soloNumero[1]);
 
   return {
-    tsquery:
-      palabras.length === 0 ? null : palabras.map((p) => `${p}:*`).join(' & '),
+    terms: palabras,
     number: numero !== null && numero <= INT4_MAX ? numero : null,
   };
 };
