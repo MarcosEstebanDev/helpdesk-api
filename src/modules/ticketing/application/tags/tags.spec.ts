@@ -19,6 +19,20 @@ import { CreateTag } from './create-tag.use-case';
 import { DeleteTag } from './delete-tag.use-case';
 import { ListTags } from './list-tags.use-case';
 import { UpdateTag } from './update-tag.use-case';
+import { SetTicketTags } from './set-ticket-tags.use-case';
+import { Ticket } from '../../domain/entities/ticket.entity';
+import {
+  TicketClosedError,
+  TicketNotFoundError,
+  TooManyTagsError,
+} from '../../domain/errors';
+import { TicketId } from '../../domain/ids';
+import { EventRecorder } from '../event-recorder';
+import {
+  fakeOutbox,
+  fakeTicketRepository,
+  fakeTicketTags,
+} from '../ticketing.test-doubles';
 
 const AHORA = new Date('2026-11-12T10:00:00.000Z');
 const DESPUES = new Date('2026-11-12T11:00:00.000Z');
@@ -251,5 +265,136 @@ describe('ListTags (ADR-0031)', () => {
     const todas = await list.execute({ tenantId: TENANT });
 
     expect(todas.map((t) => t.name)).toEqual(['Bug', 'vip']);
+  });
+});
+
+describe('SetTicketTags (ADR-0031)', () => {
+  const TICKET = TicketId('44444444-4444-4444-4444-444444444444');
+  const OTRO_TICKET = TicketId('55555555-5555-5555-5555-555555555555');
+
+  const nuevoTicket = (id = TICKET, cerrado = false): Ticket => {
+    const r = Ticket.open({
+      id,
+      tenantId: TENANT,
+      number: 7,
+      subject: 'No anda',
+      description: 'Error.',
+      priority: 'NORMAL',
+      requesterId: ACTOR,
+      now: AHORA,
+    });
+    if (r.isErr()) throw new Error('ticket');
+    if (cerrado) {
+      r.value.changeStatus('RESOLVED', AHORA);
+      r.value.changeStatus('CLOSED', AHORA);
+    }
+    r.value.pullDomainEvents();
+    return r.value;
+  };
+
+  const montarSet = (cerrado = false) => {
+    const tags = fakeTags();
+    tags.seed(sembrada(BUG, 'Bug'));
+    tags.seed(sembrada(VIP, 'VIP'));
+    const tickets = fakeTicketRepository();
+    tickets.seed(nuevoTicket(TICKET, cerrado));
+    const ticketTags = fakeTicketTags();
+    const auditLogs = fakeAuditLogRepository();
+    const outbox = fakeOutbox();
+    const ids = sequentialIds();
+    const sut = new SetTicketTags(
+      fakeTransactions().manager,
+      tickets,
+      tags,
+      ticketTags,
+      new AuditRecorder(ids, auditLogs),
+      new EventRecorder(ids, outbox),
+      fixedClock(DESPUES),
+    );
+    return { sut, ticketTags, auditLogs, outbox, tickets };
+  };
+
+  const poner = (sut: SetTicketTags, tagIds: TagId[], ticketId = TICKET) =>
+    sut.execute({ tenantId: TENANT, actorId: ACTOR, ticketId, tagIds });
+
+  it('reemplaza el conjunto, audita con nombres y emite un evento', async () => {
+    const { sut, ticketTags, auditLogs, outbox } = montarSet();
+    ticketTags.seed(TENANT, TICKET, [VIP]);
+
+    const r = await poner(sut, [BUG]);
+
+    expect(r.isOk()).toBe(true);
+    if (r.isErr()) return;
+    expect(r.value.map((t) => t.name)).toEqual(['Bug']);
+    expect(await ticketTags.tagsOf(TENANT, TICKET)).toEqual([BUG]);
+    expect(auditLogs.entries).toHaveLength(1);
+    expect(auditLogs.entries[0].action).toBe('ticket.tags_changed');
+    expect(auditLogs.entries[0].entityType).toBe('ticket');
+    expect(auditLogs.entries[0].metadata).toEqual({
+      added: [{ id: BUG, name: 'Bug' }],
+      removed: [{ id: VIP, name: 'VIP' }],
+    });
+    expect(outbox.records.map((e) => e.eventName)).toEqual([
+      'ticket.tags_changed',
+    ]);
+  });
+
+  it('sin cambios no audita ni emite', async () => {
+    const { sut, ticketTags, auditLogs, outbox } = montarSet();
+    ticketTags.seed(TENANT, TICKET, [BUG]);
+
+    const r = await poner(sut, [BUG, BUG]);
+
+    expect(r.isOk()).toBe(true);
+    expect(auditLogs.entries).toHaveLength(0);
+    expect(outbox.records).toHaveLength(0);
+    expect(ticketTags.replaces).toBe(0);
+  });
+
+  it('más de 10 no toca nada', async () => {
+    const { sut, ticketTags } = montarSet();
+    const once = Array.from({ length: 11 }, (_, i) =>
+      TagId(`${String(i).padStart(8, '0')}-0000-0000-0000-000000000000`),
+    );
+
+    const r = await poner(sut, once);
+
+    expect(r.isErr()).toBe(true);
+    if (r.isOk()) return;
+    expect(r.error).toBeInstanceOf(TooManyTagsError);
+    expect(ticketTags.replaces).toBe(0);
+  });
+
+  it('una etiqueta que no existe (u otra organización) no toca nada', async () => {
+    const { sut, ticketTags, auditLogs } = montarSet();
+
+    const r = await poner(sut, [BUG, NO_EXISTE]);
+
+    expect(r.isErr()).toBe(true);
+    if (r.isOk()) return;
+    expect(r.error).toBeInstanceOf(TagNotFoundError);
+    expect(ticketTags.replaces).toBe(0);
+    expect(auditLogs.entries).toHaveLength(0);
+  });
+
+  it('un ticket que no existe es not found', async () => {
+    const { sut } = montarSet();
+
+    const r = await poner(sut, [BUG], OTRO_TICKET);
+
+    expect(r.isErr()).toBe(true);
+    if (r.isOk()) return;
+    expect(r.error).toBeInstanceOf(TicketNotFoundError);
+  });
+
+  it('un ticket cerrado no se re-etiqueta', async () => {
+    const { sut, ticketTags } = montarSet(true);
+
+    const r = await poner(sut, [BUG]);
+
+    expect(r.isErr()).toBe(true);
+    if (r.isOk()) return;
+    expect(r.error).toBeInstanceOf(TicketClosedError);
+    expect(ticketTags.replaces).toBe(0);
   });
 });
