@@ -47,7 +47,11 @@ export class DeleteCannedResponse {
         );
         if (respuesta === null) return err(new CannedResponseNotFoundError());
 
-        await this.responses.remove(input.tenantId, input.id);
+        // Se mira el resultado: si otro ADMIN la borró entre medio, no se
+        // escribe una segunda entrada de auditoría por el mismo borrado.
+        if (!(await this.responses.remove(input.tenantId, input.id))) {
+          return err(new CannedResponseNotFoundError());
+        }
         await this.audit.record({
           tenantId: input.tenantId,
           actorId: input.actorId,

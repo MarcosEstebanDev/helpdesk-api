@@ -95,6 +95,17 @@ const ejecutar = (
   });
 
 describe('AutoAssignTicket', () => {
+  it('lee el ticket bloqueado', async () => {
+    // Lee y vuelve a guardar el ticket ENTERO: sin bloquear la fila, un cambio
+    // concurrente (p. ej. otro agente que lo cierra) se pisaría con el estado
+    // viejo. Mismo hallazgo que en SetTicketTags (ADR-0031).
+    const { sut, tickets } = buildSut({ semilla: nuevoTicket({ numero: 1 }) });
+
+    await ejecutar(sut, { ticketNumber: 1 });
+
+    expect(tickets.lockedReads).toBe(1);
+  });
+
   describe('reparto round-robin', () => {
     it('reparte por el número del ticket, en rotación', async () => {
       // #1 -> primer agente, #2 -> segundo, #3 -> tercero, #4 -> vuelta a empezar.

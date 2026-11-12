@@ -1700,6 +1700,11 @@ enterarse.
 - La sesión del web vuelve a leer el email de `/auth/me` al restaurarse: sin él,
   `{{agente.email}}` quedaba sin rellenar tras cada recarga.
 
+- `created_by` NO tiene FK a `users`, a propósito: es un dato de autoría,
+  como `audit_logs.actor_id`, y si mañana se borra un usuario la plantilla
+  tiene que seguir existiendo y diciendo quién la creó. Una FK obligaría a
+  elegir entre borrar la plantilla en cascada o dejar la columna en `NULL`.
+
 **Revisar si.** Se piden métricas de uso (→ id opcional en el comentario), o
 llegan las automatizaciones (→ una "macro" sería una regla que además inserta
 una plantilla, no una plantilla con efectos).

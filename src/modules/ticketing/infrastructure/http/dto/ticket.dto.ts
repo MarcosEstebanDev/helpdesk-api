@@ -16,6 +16,7 @@ import { COMMENT_VISIBILITIES } from '../../../domain/comment-visibility';
 import type { CommentVisibility } from '../../../domain/comment-visibility';
 import { SLA_KINDS } from '../../../domain/sla/sla-timer.entity';
 import { TagDto } from './tag.dto';
+import { LowercaseIds } from './transforms';
 import {
   TRIAGE_CATEGORIES,
   TRIAGE_LANGUAGES,
@@ -153,10 +154,8 @@ export class ListTicketsQueryDto {
       'Solo AGENT o superior: tickets con AL MENOS UNA de estas etiquetas. Repetible (`?tagId=a&tagId=b`). Ids que no existen no dan error: simplemente no coinciden.',
   })
   @IsOptional()
-  // Un solo `?tagId=x` llega como string; varios, como array.
-  @Transform(({ value }: { value: unknown }) =>
-    typeof value === 'string' ? [value] : value,
-  )
+  // Un solo `?tagId=x` llega como string; varios, como array. Y en minúsculas.
+  @LowercaseIds()
   @ArrayMaxSize(10)
   @IsUUID('all', { each: true })
   tagId?: string[];

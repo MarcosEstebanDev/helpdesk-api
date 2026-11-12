@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, MaxLength } from 'class-validator';
+import { Trim } from './transforms';
 import {
   CANNED_BODY_MAX,
   CANNED_TITLE_MAX,
@@ -15,6 +16,7 @@ import {
 export class CannedResponseInputDto {
   @ApiProperty({ maxLength: CANNED_TITLE_MAX, example: 'Saludo inicial' })
   @IsString()
+  @Trim()
   @MaxLength(CANNED_TITLE_MAX)
   title!: string;
 
@@ -25,6 +27,7 @@ export class CannedResponseInputDto {
     example: 'Hola! Ya estamos revisando el ticket {{ticket.numero}}.',
   })
   @IsString()
+  @Trim()
   @MaxLength(CANNED_BODY_MAX)
   body!: string;
 }

@@ -11,7 +11,14 @@ import {
   isStaff,
   visibleTo,
 } from '../../domain/comment-visibility';
-import { TagColor } from '../../domain/tag/tag.entity';
+import {
+  FilaDeEtiqueta,
+  TAG_SELECT,
+  TagView,
+  aVistasDeEtiquetas,
+} from './tag-view';
+
+export type { TagView } from './tag-view';
 import { TenantId, TicketId } from '../../domain/ids';
 import {
   SlaTimerView,
@@ -55,35 +62,11 @@ export interface TicketTriageSummary {
  * Fila de la bandeja. `aiTriage` solo EXISTE para AGENT o superior: para un
  * VIEWER la clave ni aparece (no es `null`, que significaría "sin sugerencia").
  */
-/** Etiqueta tal como se muestra (ADR-0031). */
-export interface TagView {
-  id: string;
-  name: string;
-  color: TagColor;
-}
-
 export interface TicketListItem extends TicketSummary {
   aiTriage?: TicketTriageSummary | null;
   /** Solo para el equipo: para un VIEWER la clave NO existe (ADR-0031). */
   tags?: TagView[];
 }
-
-/** Lo que Prisma trae de `ticket_tags` → vista ordenada por nombre. */
-const aVistas = (
-  filas: {
-    tag: { id: string; name: string; nameKey: string; color: string };
-  }[],
-): TagView[] =>
-  filas
-    .map((f) => f.tag)
-    .sort((a, b) => a.nameKey.localeCompare(b.nameKey))
-    .map(({ id, name, color }) => ({ id, name, color: color as TagColor }));
-
-const TAG_SELECT = {
-  select: {
-    tag: { select: { id: true, name: true, nameKey: true, color: true } },
-  },
-} as const;
 
 /**
  * Para cada prioridad, las que son MÁS urgentes. Es la traducción a Prisma de
@@ -246,12 +229,12 @@ export class TicketReadModel extends PrismaRepository {
       const items: TicketListItem[] = rows.map((row) => {
         const { triage, ...resto } = row;
         const { tags, ...ticket } = resto as typeof resto & {
-          tags?: Parameters<typeof aVistas>[0];
+          tags?: FilaDeEtiqueta[];
         };
         return {
           ...ticket,
           ...(options.withTriage === true ? { aiTriage: triage } : {}),
-          ...(tags === undefined ? {} : { tags: aVistas(tags) }),
+          ...(tags === undefined ? {} : { tags: aVistasDeEtiquetas(tags) }),
         };
       });
 
@@ -307,12 +290,12 @@ export class TicketReadModel extends PrismaRepository {
       const now = this.clock.now();
       const { slaTimers, ...resto } = row;
       const { tags, ...ticket } = resto as typeof resto & {
-        tags?: Parameters<typeof aVistas>[0];
+        tags?: FilaDeEtiqueta[];
       };
 
       return {
         ...ticket,
-        ...(tags === undefined ? {} : { tags: aVistas(tags) }),
+        ...(tags === undefined ? {} : { tags: aVistasDeEtiquetas(tags) }),
         // La regla de qué significa cada combinación de fechas es del dominio y
         // se aplica aquí, no se reescribe: ver `describeSlaTimer`.
         sla: slaTimers
