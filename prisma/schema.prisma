@@ -38,18 +38,19 @@ model Organization {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  users         User[]
-  memberships   Membership[]
-  refreshTokens RefreshToken[]
-  tickets       Ticket[]
-  comments      Comment[]
-  auditLogs     AuditLog[]
-  ticketCounter TicketCounter?
-  outbox        OutboxMessage[]
-  processed     ProcessedMessage[]
-  slaPolicies   SlaPolicy[]
-  slaTimers     SlaTimer[]
-  ticketTriages TicketTriage[]
+  users           User[]
+  memberships     Membership[]
+  refreshTokens   RefreshToken[]
+  tickets         Ticket[]
+  comments        Comment[]
+  auditLogs       AuditLog[]
+  ticketCounter   TicketCounter?
+  outbox          OutboxMessage[]
+  processed       ProcessedMessage[]
+  slaPolicies     SlaPolicy[]
+  slaTimers       SlaTimer[]
+  ticketTriages   TicketTriage[]
+  cannedResponses CannedResponse[]
 
   @@map("organizations")
 }
@@ -409,4 +410,25 @@ model TicketTriage {
   // Métricas por categoría dentro del tenant.
   @@index([tenantId, category])
   @@map("ticket_triages")
+}
+
+/// Respuesta predefinida de la organización (ADR-0030). Solo texto: insertarla
+/// no cambia nada del ticket. `title_key` es el título recortado y en
+/// minúsculas, para que la unicidad no distinga mayúsculas sin un índice de
+/// expresión (que Prisma no modela y daría drift).
+model CannedResponse {
+  id        String   @id @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  title     String
+  titleKey  String   @map("title_key")
+  body      String
+  createdBy String   @map("created_by") @db.Uuid
+  createdAt DateTime @map("created_at")
+  updatedAt DateTime @map("updated_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Unicidad del título por tenant; su btree además sirve el listado ordenado.
+  @@unique([tenantId, titleKey])
+  @@map("canned_responses")
 }
