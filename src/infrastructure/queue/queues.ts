@@ -48,6 +48,8 @@ export const EVENT_ROUTING: Readonly<Record<string, readonly string[]>> = {
   'ticket.status_changed': [SLA_QUEUE, REALTIME_QUEUE],
   'ticket.assigned': [REALTIME_QUEUE],
   'ticket.unassigned': [REALTIME_QUEUE],
+  // Etiquetas (ADR-0031): solo el aviso en vivo a la sala del equipo.
+  'ticket.tags_changed': [REALTIME_QUEUE],
   // Cierra el cabo suelto de la fase 6: `sla.breached` ya tiene consumidor.
   'sla.breached': [REALTIME_QUEUE],
 };

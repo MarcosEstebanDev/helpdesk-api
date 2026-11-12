@@ -19,6 +19,10 @@ export const AUDIT_ACTIONS = [
   'canned_response.created',
   'canned_response.updated',
   'canned_response.deleted',
+  'ticket.tags_changed',
+  'tag.created',
+  'tag.updated',
+  'tag.deleted',
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

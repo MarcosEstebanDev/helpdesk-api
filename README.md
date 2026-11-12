@@ -387,6 +387,11 @@ The full contract, with schemas, is at `/docs`.
 | `POST` | `/canned-responses` | ADMIN | Unknown `{{variables}}` or stray braces are a 400 |
 | `PUT` | `/canned-responses/:id` | ADMIN | Replaces title and body |
 | `DELETE` | `/canned-responses/:id` | ADMIN | Hard delete, audited with its content |
+| `GET` | `/tags` | AGENT | Tag catalog. Internal: never shown to VIEWER |
+| `POST` | `/tags` | AGENT | Agents create tags on the fly |
+| `PATCH` | `/tags/:id` | ADMIN | Rename / recolor (8-color palette) |
+| `DELETE` | `/tags/:id` | ADMIN | Removes it from every ticket |
+| `PUT` | `/tickets/:id/tags` | AGENT | Replaces the ticket's tags (max 10); `GET /tickets?tagId=` filters by any of them |
 | `GET` | `/health/live` | — | No dependencies, on purpose |
 | `GET` | `/health/ready` | — | Postgres + Redis, via the app's own connections |
 

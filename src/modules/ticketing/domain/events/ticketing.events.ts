@@ -168,6 +168,24 @@ export class TicketTriaged implements IntegrationEvent {
   ) {}
 }
 
+/**
+ * Cambiaron las etiquetas del ticket (ADR-0031). Solo ids: los nombres pueden
+ * cambiar y el único consumidor (realtime, sala del equipo) solo necesita saber
+ * que hay que refrescar.
+ */
+export class TicketTagsChanged implements IntegrationEvent {
+  readonly eventName = 'ticket.tags_changed';
+  readonly aggregateType = AGGREGATE_TYPE;
+  readonly version = 1;
+
+  constructor(
+    readonly aggregateId: string,
+    readonly tenantId: string,
+    readonly occurredAt: Date,
+    readonly payload: { added: string[]; removed: string[] },
+  ) {}
+}
+
 export type TicketingEvent =
   | TicketCreated
   | TicketAssigned
@@ -175,4 +193,5 @@ export type TicketingEvent =
   | TicketStatusChanged
   | CommentAdded
   | SlaBreached
-  | TicketTriaged;
+  | TicketTriaged
+  | TicketTagsChanged;

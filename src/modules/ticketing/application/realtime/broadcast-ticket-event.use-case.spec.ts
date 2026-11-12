@@ -108,6 +108,29 @@ describe('BroadcastTicketEvent', () => {
       });
     });
 
+    it('las etiquetas solo las ve el equipo (ADR-0031)', async () => {
+      const { sut, realtime } = montar();
+
+      await sut.execute(
+        evento('ticket.tags_changed', { added: ['t1'], removed: ['t2'] }),
+      );
+
+      expect(realtime.emisiones).toHaveLength(1);
+      expect(realtime.emisiones[0].audience).toEqual({
+        scope: 'staff',
+        tenantId: TENANT,
+      });
+      expect(realtime.emisiones[0].message).toEqual({
+        event: 'ticket.tags_changed',
+        payload: {
+          ticketId: TICKET_ID,
+          occurredAt: OCURRIO.toISOString(),
+          added: ['t1'],
+          removed: ['t2'],
+        },
+      });
+    });
+
     it('a quién le toca un ticket solo lo ve el equipo', async () => {
       const { sut, realtime } = montar();
 

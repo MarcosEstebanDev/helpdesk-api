@@ -38,8 +38,15 @@ import { PrismaOrganizationRepository } from './modules/iam/infrastructure/persi
 import { AddComment } from './modules/ticketing/application/add-comment.use-case';
 import { ChangeTicketStatus } from './modules/ticketing/application/change-ticket-status.use-case';
 import { CreateCannedResponse } from './modules/ticketing/application/canned-responses/create-canned-response.use-case';
+import { CreateTag } from './modules/ticketing/application/tags/create-tag.use-case';
+import { SetTicketTags } from './modules/ticketing/application/tags/set-ticket-tags.use-case';
 import { CreateTicket } from './modules/ticketing/application/create-ticket.use-case';
-import { TenantId, TicketId, UserId } from './modules/ticketing/domain/ids';
+import {
+  TagId,
+  TenantId,
+  TicketId,
+  UserId,
+} from './modules/ticketing/domain/ids';
 import type { TicketPriority } from './modules/ticketing/domain/ticket-status';
 
 const ORGANIZATION_NAME = 'Acme Support';
@@ -53,6 +60,13 @@ const AGENT_EMAIL = 'agent@acme.test';
 const VIEWER_EMAIL = 'viewer@acme.test';
 
 /** Respuestas predefinidas de demo (ADR-0030). Usan las variables a propósito. */
+/** Etiquetas de demo (ADR-0031). */
+const TAGS: { name: string; color: string }[] = [
+  { name: 'bug', color: 'red' },
+  { name: 'facturación', color: 'green' },
+  { name: 'vip', color: 'purple' },
+];
+
 const CANNED_RESPONSES: { title: string; body: string }[] = [
   {
     title: 'Saludo inicial',
@@ -77,6 +91,8 @@ interface SeedTicket {
   comments?: { staff: boolean; internal?: boolean; body: string }[];
   /** Estado final; se alcanza pasando por las transiciones legales. */
   moveTo?: ('IN_PROGRESS' | 'WAITING_ON_CUSTOMER' | 'RESOLVED' | 'CLOSED')[];
+  /** Nombres de etiquetas (ADR-0031); se aplican antes de moverlo de estado. */
+  tags?: string[];
 }
 
 /**
@@ -87,6 +103,7 @@ interface SeedTicket {
 const TICKETS: SeedTicket[] = [
   {
     subject: 'No puedo iniciar sesión desde la app móvil',
+    tags: ['bug', 'vip'],
     description:
       'Desde la actualización de ayer, la app se queda en la pantalla de carga después de meter la contraseña. En el navegador entro sin problema.',
     priority: 'URGENT',
@@ -106,6 +123,7 @@ const TICKETS: SeedTicket[] = [
   },
   {
     subject: 'La exportación a CSV se corta en 1000 filas',
+    tags: ['bug'],
     description:
       'Al exportar el informe mensual solo bajan las primeras 1000 filas. El informe tiene 4300.',
     priority: 'HIGH',
@@ -123,6 +141,7 @@ const TICKETS: SeedTicket[] = [
     // `ticket.created` (StartSlaTimers mira el estado actual del ticket). Si el
     // cliente comenta, vuelve solo a En curso.
     subject: 'El PDF de la factura de octubre sale en blanco',
+    tags: ['facturación', 'bug'],
     description:
       'Descargo la factura desde el panel y el PDF abre con todas las páginas vacías.',
     priority: 'HIGH',
@@ -136,6 +155,7 @@ const TICKETS: SeedTicket[] = [
   },
   {
     subject: 'Pedido de acceso al panel de facturación',
+    tags: ['facturación'],
     description:
       'Necesito permisos de lectura sobre facturación para cerrar el trimestre.',
     priority: 'NORMAL',
@@ -253,6 +273,23 @@ async function main(): Promise<void> {
     const createTicket = app.get(CreateTicket);
     const addComment = app.get(AddComment);
     const changeStatus = app.get(ChangeTicketStatus);
+    const setTicketTags = app.get(SetTicketTags);
+
+    // Las etiquetas antes que los tickets: se aplican por nombre.
+    const createTag = app.get(CreateTag);
+    const tagIdPorNombre = new Map<string, TagId>();
+    for (const tag of TAGS) {
+      const result = await createTag.execute({
+        tenantId,
+        actorId: adminId,
+        name: tag.name,
+        color: tag.color,
+      });
+      if (result.isErr()) {
+        throw new Error(`No se pudo crear la etiqueta: ${result.error.code}`);
+      }
+      tagIdPorNombre.set(tag.name, result.value.id);
+    }
 
     for (const spec of TICKETS) {
       // Los abre el VIEWER: es quien hace de solicitante en el modelo de roles.
@@ -281,6 +318,23 @@ async function main(): Promise<void> {
         });
         if (result.isErr()) {
           throw new Error(`No se pudo comentar: ${result.error.code}`);
+        }
+      }
+
+      if (spec.tags !== undefined) {
+        const result = await setTicketTags.execute({
+          tenantId,
+          actorId: adminId,
+          ticketId,
+          tagIds: spec.tags.map((nombre) => {
+            const id = tagIdPorNombre.get(nombre);
+            if (id === undefined)
+              throw new Error(`Etiqueta de demo desconocida: ${nombre}`);
+            return id;
+          }),
+        });
+        if (result.isErr()) {
+          throw new Error(`No se pudo etiquetar: ${result.error.code}`);
         }
       }
 
@@ -316,7 +370,7 @@ async function main(): Promise<void> {
         '',
         `Organización sembrada: ${ORGANIZATION_NAME} (slug: ${ORGANIZATION_SLUG})`,
         `  ${TICKETS.length} tickets con comentarios e historial.`,
-        `  ${CANNED_RESPONSES.length} respuestas predefinidas.`,
+        `  ${CANNED_RESPONSES.length} respuestas predefinidas y ${TAGS.length} etiquetas.`,
         '',
         'Entrar con cualquiera de estos (el slug hace falta para el login):',
         `  ADMIN   ${ADMIN_EMAIL}`,

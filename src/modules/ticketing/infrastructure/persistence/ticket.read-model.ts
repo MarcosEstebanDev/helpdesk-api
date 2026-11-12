@@ -6,7 +6,12 @@ import { CLOCK } from '../../../../shared-kernel';
 import type { Clock } from '../../../../shared-kernel';
 import { PrismaRepository } from '../../../../infrastructure/prisma/prisma.repository';
 import { PrismaService } from '../../../../infrastructure/prisma/prisma.service';
-import { CommentVisibility, visibleTo } from '../../domain/comment-visibility';
+import {
+  CommentVisibility,
+  isStaff,
+  visibleTo,
+} from '../../domain/comment-visibility';
+import { TagColor } from '../../domain/tag/tag.entity';
 import { TenantId, TicketId } from '../../domain/ids';
 import {
   SlaTimerView,
@@ -50,9 +55,35 @@ export interface TicketTriageSummary {
  * Fila de la bandeja. `aiTriage` solo EXISTE para AGENT o superior: para un
  * VIEWER la clave ni aparece (no es `null`, que significaría "sin sugerencia").
  */
+/** Etiqueta tal como se muestra (ADR-0031). */
+export interface TagView {
+  id: string;
+  name: string;
+  color: TagColor;
+}
+
 export interface TicketListItem extends TicketSummary {
   aiTriage?: TicketTriageSummary | null;
+  /** Solo para el equipo: para un VIEWER la clave NO existe (ADR-0031). */
+  tags?: TagView[];
 }
+
+/** Lo que Prisma trae de `ticket_tags` → vista ordenada por nombre. */
+const aVistas = (
+  filas: {
+    tag: { id: string; name: string; nameKey: string; color: string };
+  }[],
+): TagView[] =>
+  filas
+    .map((f) => f.tag)
+    .sort((a, b) => a.nameKey.localeCompare(b.nameKey))
+    .map(({ id, name, color }) => ({ id, name, color: color as TagColor }));
+
+const TAG_SELECT = {
+  select: {
+    tag: { select: { id: true, name: true, nameKey: true, color: true } },
+  },
+} as const;
 
 /**
  * Para cada prioridad, las que son MÁS urgentes. Es la traducción a Prisma de
@@ -90,6 +121,8 @@ export interface TicketDetail extends TicketSummary {
    * miente diciendo que cumplen, simplemente no hay relojes que enseñar.
    */
   sla: SlaTimerView[];
+  /** Solo para el equipo: para un VIEWER la clave NO existe (ADR-0031). */
+  tags?: TagView[];
 }
 
 export interface AuditEntryView {
@@ -149,6 +182,10 @@ export class TicketReadModel extends PrismaRepository {
       withTriage?: boolean;
       /** Solo tickets donde la IA sugiere más urgencia que la actual. */
       aiSuggestsHigher?: boolean;
+      /** Incluir las etiquetas de cada fila (solo AGENT o superior). */
+      withTags?: boolean;
+      /** Tickets con AL MENOS UNA de estas etiquetas (ADR-0031). */
+      tagIds?: string[];
       limit: number;
       cursor?: string;
     },
@@ -176,6 +213,12 @@ export class TicketReadModel extends PrismaRepository {
                 })),
               }
             : {}),
+          // `some` y no un JOIN a mano: un ticket con dos de las etiquetas
+          // pedidas sale UNA vez. Ids que no existen simplemente no coinciden
+          // (una vista guardada con una etiqueta borrada no se rompe).
+          ...(options.tagIds === undefined || options.tagIds.length === 0
+            ? {}
+            : { tags: { some: { tagId: { in: options.tagIds } } } }),
         },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         // `skip: 1` porque el cursor es el ÚLTIMO elemento ya entregado.
@@ -196,12 +239,21 @@ export class TicketReadModel extends PrismaRepository {
           // Una relación 1:1 en `select`: Prisma la resuelve con UNA consulta
           // `IN (...)` para toda la página, no una por fila.
           triage: { select: { category: true, suggestedPriority: true } },
+          ...(options.withTags === true ? { tags: TAG_SELECT } : {}),
         },
       });
 
-      const items: TicketListItem[] = rows.map(({ triage, ...ticket }) =>
-        options.withTriage === true ? { ...ticket, aiTriage: triage } : ticket,
-      );
+      const items: TicketListItem[] = rows.map((row) => {
+        const { triage, ...resto } = row;
+        const { tags, ...ticket } = resto as typeof resto & {
+          tags?: Parameters<typeof aVistas>[0];
+        };
+        return {
+          ...ticket,
+          ...(options.withTriage === true ? { aiTriage: triage } : {}),
+          ...(tags === undefined ? {} : { tags: aVistas(tags) }),
+        };
+      });
 
       return {
         items,
@@ -246,15 +298,21 @@ export class TicketReadModel extends PrismaRepository {
               pausedAt: true,
             },
           },
+          // Las etiquetas son clasificación INTERNA: al cliente ni se le leen.
+          ...(isStaff(viewerRole) ? { tags: TAG_SELECT } : {}),
         },
       });
       if (row === null) return null;
 
       const now = this.clock.now();
-      const { slaTimers, ...ticket } = row;
+      const { slaTimers, ...resto } = row;
+      const { tags, ...ticket } = resto as typeof resto & {
+        tags?: Parameters<typeof aVistas>[0];
+      };
 
       return {
         ...ticket,
+        ...(tags === undefined ? {} : { tags: aVistas(tags) }),
         // La regla de qué significa cada combinación de fechas es del dominio y
         // se aplica aquí, no se reescribe: ver `describeSlaTimer`.
         sla: slaTimers

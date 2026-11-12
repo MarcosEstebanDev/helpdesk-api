@@ -11,6 +11,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -29,7 +30,10 @@ import { AddComment } from '../../application/add-comment.use-case';
 import { AssignTicket } from '../../application/assign-ticket.use-case';
 import { ChangeTicketStatus } from '../../application/change-ticket-status.use-case';
 import { CreateTicket } from '../../application/create-ticket.use-case';
-import { TenantId, TicketId, UserId } from '../../domain/ids';
+import { SetTicketTags } from '../../application/tags/set-ticket-tags.use-case';
+import { TagId, TenantId, TicketId, UserId } from '../../domain/ids';
+import { SetTicketTagsDto, TicketTagsDto } from './dto/tag.dto';
+import { toTagDto } from './tag.controller';
 import {
   AuditEntryDto,
   AddCommentDto,
@@ -72,6 +76,7 @@ export class TicketController {
     private readonly assignTicket: AssignTicket,
     private readonly changeStatus: ChangeTicketStatus,
     private readonly addComment: AddComment,
+    private readonly setTags: SetTicketTags,
     // El lado de lectura se inyecta directo (CQRS-lite, ADR-0008): no pasa por
     // un caso de uso porque no hay ninguna decisión de negocio que tomar.
     private readonly tickets: TicketReadModel,
@@ -115,12 +120,20 @@ export class TicketController {
         'Filtrar por la sugerencia de la IA requiere rol AGENT o superior.',
       );
     }
+    // Las etiquetas son clasificación interna (ADR-0031): mismo criterio.
+    if (query.tagId !== undefined && !esEquipo) {
+      throw new ForbiddenException(
+        'Filtrar por etiquetas requiere rol AGENT o superior.',
+      );
+    }
     return this.tickets.list(TenantId(user.tenantId), {
       status: query.status,
       assigneeId: query.assigneeId,
       requesterId: query.requesterId,
       withTriage: esEquipo,
       aiSuggestsHigher: query.aiSuggestsHigher,
+      withTags: esEquipo,
+      tagIds: query.tagId,
       limit: query.limit ?? DEFAULT_PAGE_SIZE,
       cursor: query.cursor,
     });
@@ -207,6 +220,26 @@ export class TicketController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<TicketSummaryDto> {
     return this.applyAssignment(user, id, null);
+  }
+
+  @Put(':id/tags')
+  @MinRole('AGENT')
+  @ApiOperation({ summary: 'Reemplaza las etiquetas del ticket (ADR-0031)' })
+  @ApiResponse({ status: 200, type: TicketTagsDto })
+  @ApiResponse({ status: 409, description: 'El ticket está cerrado' })
+  async putTags(
+    @CurrentUser() user: TenantContext,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SetTicketTagsDto,
+  ): Promise<TicketTagsDto> {
+    const result = await this.setTags.execute({
+      tenantId: TenantId(user.tenantId),
+      actorId: UserId(user.userId),
+      ticketId: TicketId(id),
+      tagIds: dto.tagIds.map(TagId),
+    });
+    if (result.isErr()) throw toHttpException(result.error);
+    return { tags: result.value.map(toTagDto) };
   }
 
   @Patch(':id/status')

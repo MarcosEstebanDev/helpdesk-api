@@ -140,6 +140,35 @@ export class DuplicateCannedResponseTitleError extends DomainError {
   }
 }
 
+/** Nombre o color de etiqueta inválido (ADR-0031). El mensaje dice cuál. */
+export class InvalidTagError extends DomainError {
+  readonly code = 'ticketing.invalid_tag';
+  constructor(detail: string) {
+    super(detail);
+  }
+}
+
+export class TagNotFoundError extends DomainError {
+  readonly code = 'ticketing.tag_not_found';
+  constructor() {
+    super('La etiqueta no existe.');
+  }
+}
+
+export class DuplicateTagNameError extends DomainError {
+  readonly code = 'ticketing.duplicate_tag_name';
+  constructor() {
+    super('Ya hay una etiqueta con ese nombre.');
+  }
+}
+
+export class TooManyTagsError extends DomainError {
+  readonly code = 'ticketing.too_many_tags';
+  constructor() {
+    super('Un ticket puede tener como mucho 10 etiquetas.');
+  }
+}
+
 export type TicketingError =
   | InvalidTicketSubjectError
   | InvalidTicketDescriptionError
@@ -154,4 +183,8 @@ export type TicketingError =
   | TriageRejectedError
   | InvalidCannedResponseError
   | CannedResponseNotFoundError
-  | DuplicateCannedResponseTitleError;
+  | DuplicateCannedResponseTitleError
+  | InvalidTagError
+  | TagNotFoundError
+  | DuplicateTagNameError
+  | TooManyTagsError;
