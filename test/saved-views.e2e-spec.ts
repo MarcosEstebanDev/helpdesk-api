@@ -197,6 +197,10 @@ describe('Vistas guardadas (e2e, ADR-0033)', () => {
       { version: 1, priority: 'HIGH' },
       { version: 1, assignee: beto.userId },
       { version: 2 },
+      {
+        version: 1,
+        tagIds: Array.from({ length: 11 }, () => randomUUID()),
+      },
     ]) {
       const res = await crear(agente, `Rota ${run}`, filters).expect(400);
       expect((res.body as { code: string }).code).toBe(
@@ -231,6 +235,8 @@ describe('Vistas guardadas (e2e, ADR-0033)', () => {
       .send({ name: 'Cambiada', filters: { version: 1 } })
       .expect(403);
     await conAuth('delete', `/views/${id}`, agente).expect(403);
+    // Los 403 no cambiaron nada.
+    expect(await nombres(agente)).toContain('Cola común');
 
     await conAuth('put', `/views/${id}`, admin)
       .send({
