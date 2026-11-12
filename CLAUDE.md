@@ -179,6 +179,28 @@ salen del propio código, y las decisiones que están esperando tu OK.
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
+## PENDIENTE (al retomar, 2026-11-12)
+
+Todo lo de hoy está en `dev` y pusheado (nada en `main`): esperando al
+cliente (0029), respuestas predefinidas (0030), etiquetas (0031) y la rama
+de menores. Sigue, en este orden:
+
+1. **Búsqueda (ADR-0032), entrega 2 de 3.** Decisiones ya aprobadas: FTS de
+   Postgres en español, sin acentos y con prefijos, índice GIN; asunto +
+   descripción + comentarios (notas internas SOLO para el equipo); `#123` o
+   `123` busca por número; `?q=` es un filtro más, sin cambiar el orden por
+   fecha ni el cursor. Ojo con Prisma y las columnas `tsvector` / índices de
+   expresión (drift en `migrate diff`).
+2. **Vistas guardadas (ADR-0033), entrega 3.** JSON de filtros validado y
+   versionado; personales + compartidas (solo ADMIN crea compartidas);
+   "asignados a mí" se guarda como "yo"; etiquetas = "al menos una"; en la
+   barra lateral, sin contador.
+3. **Horario laboral** (diseño propio; el hueco es `SlaCalendar`).
+4. Clasificador de intención con IA (ROADMAP §2).
+
+Proponer el spec de la entrega 2 y esperar OK antes de codear. Rama nueva
+desde `dev`.
+
 ## Estado actual (2026-11-12) — Tanda 1: etiquetas (ADR-0031)
 
 Rama `feat/etiquetas-busqueda-vistas` (sale de `dev` con ADR-0030 ya
