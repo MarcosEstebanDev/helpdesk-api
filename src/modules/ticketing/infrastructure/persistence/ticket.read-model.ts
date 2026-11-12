@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { CLOCK } from '../../../../shared-kernel';
 // `import type` obligado: `Clock` se usa en una propiedad DECORADA y con
 // `emitDecoratorMetadata` + `isolatedModules` el compilador necesita saber que
@@ -26,6 +27,14 @@ import {
   isSlaKind,
 } from '../../domain/sla/sla-timer.entity';
 import { TicketPriority, TicketStatus } from '../../domain/ticket-status';
+import { parseSearch } from '../../domain/search/search-query';
+
+/**
+ * Tope de coincidencias de una búsqueda (ADR-0032): las más recientes. Para
+ * encontrar un ticket concreto alcanza de sobra, y evita mandar a Prisma una
+ * lista de ids sin límite.
+ */
+export const SEARCH_MATCH_LIMIT = 1000;
 
 /**
  * Lado de LECTURA del contexto Ticketing (CQRS-lite, ADR-0008).
@@ -169,6 +178,8 @@ export class TicketReadModel extends PrismaRepository {
       withTags?: boolean;
       /** Tickets con AL MENOS UNA de estas etiquetas (ADR-0031). */
       tagIds?: string[];
+      /** Texto libre (ADR-0032). El rol decide si las notas internas cuentan. */
+      search?: { text: string; viewerRole: string };
       limit: number;
       cursor?: string;
     },
@@ -176,6 +187,16 @@ export class TicketReadModel extends PrismaRepository {
     const take = Math.min(Math.max(options.limit, 1), TICKETS_PAGE_SIZE_MAX);
 
     return this.runInTenant(tenantId, async (tx) => {
+      // Prisma no admite `@@` en `where`: los ids que coinciden salen de SQL y
+      // entran al `findMany` de siempre, junto con los demás filtros y el cursor.
+      const coincidencias =
+        options.search === undefined
+          ? undefined
+          : await this.idsQueCoinciden(tx, tenantId, options.search, options);
+      if (coincidencias !== undefined && coincidencias.length === 0) {
+        return { items: [], nextCursor: null };
+      }
+
       const rows = await tx.ticket.findMany({
         where: {
           tenantId,
@@ -202,6 +223,7 @@ export class TicketReadModel extends PrismaRepository {
           ...(options.tagIds === undefined || options.tagIds.length === 0
             ? {}
             : { tags: { some: { tagId: { in: options.tagIds } } } }),
+          ...(coincidencias === undefined ? {} : { id: { in: coincidencias } }),
         },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         // `skip: 1` porque el cursor es el ÚLTIMO elemento ya entregado.
@@ -245,6 +267,96 @@ export class TicketReadModel extends PrismaRepository {
           rows.length === take ? (rows[rows.length - 1]?.id ?? null) : null,
       };
     });
+  }
+
+  /**
+   * Ids de los tickets que coinciden con la búsqueda (ADR-0032), los más
+   * recientes primero. `undefined` si el texto no tiene nada que buscar (el
+   * filtro no aplica); `[]` si busca y no encuentra.
+   *
+   * Un comentario cuenta solo si el rol puede verlo (`visibleTo`): un cliente
+   * no encuentra un ticket por una palabra que solo está en una nota interna.
+   */
+  private async idsQueCoinciden(
+    tx: Prisma.TransactionClient,
+    tenantId: TenantId,
+    search: { text: string; viewerRole: string },
+    filtros: {
+      status?: TicketStatus;
+      assigneeId?: string;
+      requesterId?: string;
+      tagIds?: string[];
+    },
+  ): Promise<string[] | undefined> {
+    const { terms, number } = parseSearch(search.text);
+    if (terms.length === 0 && number === null) return undefined;
+
+    const porNumero =
+      number === null ? Prisma.sql`FALSE` : Prisma.sql`t.number = ${number}`;
+    const visibles = [...visibleTo(search.viewerRole)];
+    // La `tsquery` se arma en SQL: cada palabra pasa por `helpdesk_unaccent` (lo
+    // mismo que al indexar) y DESPUÉS se le quita todo lo que no sea letra o
+    // número, porque `unaccent` puede convertir una letra en sintaxis (`ʼ` →
+    // `'`, `⑴` → `(1)`). Una palabra que queda vacía se descarta; si no queda
+    // ninguna, la consulta es NULL y no coincide nada, sin error.
+    const consulta = Prisma.sql`(
+      SELECT to_tsquery('spanish', string_agg(w || ':*', ' & '))
+      FROM (
+        SELECT regexp_replace(helpdesk_unaccent(x), '[^[:alnum:]]', '', 'g') AS w
+        FROM unnest(${terms}::text[]) AS x
+      ) palabras
+      WHERE w <> ''
+    )`;
+    const porTexto =
+      terms.length === 0
+        ? Prisma.sql`FALSE`
+        : Prisma.sql`(
+            t.search_vector @@ ${consulta}
+            OR EXISTS (
+              SELECT 1 FROM comments c
+              WHERE c.ticket_id = t.id
+                AND c.tenant_id = t.tenant_id
+                AND c.visibility::text = ANY(${visibles}::text[])
+                AND c.search_vector @@ ${consulta}
+            )
+          )`;
+
+    // Los filtros simples van ACÁ, antes del tope: si se aplicaran después, las
+    // 1000 coincidencias más recientes podrían no incluir ninguna que pase el
+    // filtro, y la página saldría vacía habiendo resultados (revisión final).
+    // `aiSuggestsHigher` queda en Prisma: ver la consecuencia en el ADR-0032.
+    const condiciones: Prisma.Sql[] = [];
+    if (filtros.status !== undefined) {
+      condiciones.push(Prisma.sql`t.status = ${filtros.status}::ticket_status`);
+    }
+    if (filtros.assigneeId !== undefined) {
+      condiciones.push(Prisma.sql`t.assignee_id = ${filtros.assigneeId}::uuid`);
+    }
+    if (filtros.requesterId !== undefined) {
+      condiciones.push(
+        Prisma.sql`t.requester_id = ${filtros.requesterId}::uuid`,
+      );
+    }
+    if (filtros.tagIds !== undefined && filtros.tagIds.length > 0) {
+      condiciones.push(Prisma.sql`EXISTS (
+        SELECT 1 FROM ticket_tags tt
+        WHERE tt.ticket_id = t.id AND tt.tenant_id = t.tenant_id
+          AND tt.tag_id = ANY(${filtros.tagIds}::uuid[])
+      )`);
+    }
+    const otrosFiltros =
+      condiciones.length === 0
+        ? Prisma.sql`TRUE`
+        : Prisma.join(condiciones, ' AND ');
+
+    const filas = await tx.$queryRaw<{ id: string }[]>`
+      SELECT t.id FROM tickets t
+      WHERE t.tenant_id = ${tenantId}::uuid
+        AND (${porNumero} OR ${porTexto})
+        AND ${otrosFiltros}
+      ORDER BY t.created_at DESC, t.id DESC
+      LIMIT ${SEARCH_MATCH_LIMIT}`;
+    return filas.map((f) => f.id);
   }
 
   /**

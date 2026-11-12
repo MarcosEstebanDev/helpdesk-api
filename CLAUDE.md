@@ -185,12 +185,11 @@ Todo lo de hoy está en `dev` y pusheado (nada en `main`): esperando al
 cliente (0029), respuestas predefinidas (0030), etiquetas (0031) y la rama
 de menores. Sigue, en este orden:
 
-1. **Búsqueda (ADR-0032), entrega 2 de 3.** Decisiones ya aprobadas: FTS de
-   Postgres en español, sin acentos y con prefijos, índice GIN; asunto +
-   descripción + comentarios (notas internas SOLO para el equipo); `#123` o
-   `123` busca por número; `?q=` es un filtro más, sin cambiar el orden por
-   fecha ni el cursor. Ojo con Prisma y las columnas `tsvector` / índices de
-   expresión (drift en `migrate diff`).
+1. ~~Búsqueda (ADR-0032)~~ — HECHA en `feat/busqueda` (2026-11-13): columnas
+   `search_vector` generadas + GIN, `helpdesk_unaccent`, `parseSearch` en el
+   dominio, tope de 1000 coincidencias. **Gotcha:** una columna generada va en
+   Prisma como `Unsupported("tsvector")?` con `@default(dbgenerated("…"))` y
+   la expresión EXACTA de `prisma db pull`; sin eso, drift permanente.
 2. **Vistas guardadas (ADR-0033), entrega 3.** JSON de filtros validado y
    versionado; personales + compartidas (solo ADMIN crea compartidas);
    "asignados a mí" se guarda como "yo"; etiquetas = "al menos una"; en la

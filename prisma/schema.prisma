@@ -174,11 +174,15 @@ model Ticket {
   // El número es único DENTRO del tenant, nunca global.
   tags TicketTag[]
 
+  /// Búsqueda (ADR-0032): columna GENERADA por Postgres; Prisma no la escribe.
+  searchVector Unsupported("tsvector")? @default(dbgenerated("(setweight(to_tsvector('spanish'::regconfig, helpdesk_unaccent(COALESCE(subject, ''::text))), 'A'::\"char\") || setweight(to_tsvector('spanish'::regconfig, helpdesk_unaccent(COALESCE(description, ''::text))), 'B'::\"char\"))")) @map("search_vector")
+
   @@unique([tenantId, number])
   // Listado por defecto: filtrar por estado dentro del tenant, más reciente primero.
   @@index([tenantId, status, createdAt])
   // "Mis tickets": bandeja de un agente.
   @@index([tenantId, assigneeId, status])
+  @@index([searchVector], type: Gin)
   @@map("tickets")
 }
 
@@ -207,7 +211,11 @@ model Comment {
   ticket       Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   author       User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
 
+  /// Búsqueda (ADR-0032): columna GENERADA por Postgres; Prisma no la escribe.
+  searchVector Unsupported("tsvector")? @default(dbgenerated("to_tsvector('spanish'::regconfig, helpdesk_unaccent(COALESCE(body, ''::text)))")) @map("search_vector")
+
   @@index([tenantId, ticketId, createdAt])
+  @@index([searchVector], type: Gin)
   @@map("comments")
 }
 

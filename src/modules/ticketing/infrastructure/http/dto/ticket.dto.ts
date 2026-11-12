@@ -10,6 +10,7 @@ import {
   IsUUID,
   Length,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 import { COMMENT_VISIBILITIES } from '../../../domain/comment-visibility';
@@ -159,6 +160,16 @@ export class ListTicketsQueryDto {
   @ArrayMaxSize(10)
   @IsUUID('all', { each: true })
   tagId?: string[];
+
+  @ApiPropertyOptional({
+    maxLength: 200,
+    description:
+      'Texto libre (ADR-0032): asunto, descripción y comentarios (las notas internas solo cuentan para el equipo). `#123` o `123` busca además por número. Cada palabra es un prefijo y todas deben aparecer; sin distinguir acentos.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  q?: string;
 }
 
 // --------------------------------------------------------------- respuestas

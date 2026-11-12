@@ -373,7 +373,7 @@ The full contract, with schemas, is at `/docs`.
 | `GET` | `/auth/me` | any | Current session; `email` is read from the database, `role` comes from the token |
 | `GET` | `/members` | AGENT | Directory of the caller's organization. Not VIEWER, on purpose |
 | `POST` | `/tickets` | VIEWER | |
-| `GET` | `/tickets` | VIEWER | Cursor-paginated; filters by `status`, `assigneeId`, `requesterId` |
+| `GET` | `/tickets` | VIEWER | Cursor-paginated; filters by `status`, `assigneeId`, `requesterId`, `tagId` (staff) and `q` — full-text search over subject, description and comments (internal notes only count for staff), accent-insensitive, prefix per word; `#123` matches the number |
 | `GET` | `/tickets/:id` | VIEWER | Includes live SLA clocks. A VIEWER never receives internal notes |
 | `GET` | `/tickets/:id/history` | AGENT | Audit trail |
 | `POST` | `/tickets/:id/comments` | VIEWER | `visibility: INTERNAL` (team-only note, does not count as the SLA response) needs AGENT |
