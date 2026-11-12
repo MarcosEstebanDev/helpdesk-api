@@ -51,6 +51,8 @@ model Organization {
   slaTimers       SlaTimer[]
   ticketTriages   TicketTriage[]
   cannedResponses CannedResponse[]
+  tags            Tag[]
+  ticketTags      TicketTag[]
 
   @@map("organizations")
 }
@@ -170,6 +172,8 @@ model Ticket {
   triage       TicketTriage?
 
   // El número es único DENTRO del tenant, nunca global.
+  tags TicketTag[]
+
   @@unique([tenantId, number])
   // Listado por defecto: filtrar por estado dentro del tenant, más reciente primero.
   @@index([tenantId, status, createdAt])
@@ -431,4 +435,39 @@ model CannedResponse {
   // Unicidad del título por tenant; su btree además sirve el listado ordenado.
   @@unique([tenantId, titleKey])
   @@map("canned_responses")
+}
+
+/// Etiqueta del catálogo de la organización (ADR-0031). `name_key` = nombre
+/// recortado y en minúsculas, para la unicidad sin índice de expresión.
+model Tag {
+  id        String   @id @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  name      String
+  nameKey   String   @map("name_key")
+  color     String
+  createdAt DateTime @map("created_at")
+  updatedAt DateTime @map("updated_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tickets      TicketTag[]
+
+  @@unique([tenantId, nameKey])
+  @@map("tags")
+}
+
+/// Qué etiquetas tiene cada ticket (ADR-0031). Lleva `tenant_id` propio para
+/// que la policy de RLS sea la misma que en el resto del esquema.
+model TicketTag {
+  ticketId String @map("ticket_id") @db.Uuid
+  tagId    String @map("tag_id") @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ticket       Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  tag          Tag          @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([ticketId, tagId])
+  // El filtro de la bandeja va de la etiqueta a sus tickets.
+  @@index([tenantId, tagId])
+  @@map("ticket_tags")
 }
