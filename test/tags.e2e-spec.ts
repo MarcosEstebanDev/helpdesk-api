@@ -323,9 +323,12 @@ describe('Etiquetas (e2e, ADR-0031)', () => {
     );
 
     expect(respuestas.map((r) => r.status)).toEqual(conjuntos.map(() => 200));
-    const detalle = await conAuth('get', `/tickets/${ticketId}`, agente).expect(200);
-    const final = (detalle.body as { tags: Etiqueta[] }).tags.map((t) => t.id).sort();
+    const detalle = await conAuth('get', `/tickets/${ticketId}`, agente).expect(
+      200,
+    );
+    const final = (detalle.body as { tags: Etiqueta[] }).tags
+      .map((t) => t.id)
+      .sort();
     expect(conjuntos.map((ids) => [...ids].sort())).toContainEqual(final);
   });
 });
-
