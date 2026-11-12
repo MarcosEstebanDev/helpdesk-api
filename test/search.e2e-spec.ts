@@ -215,12 +215,9 @@ describe('Búsqueda (e2e, ADR-0032)', () => {
     'ŉ',
     '⑴',
     'aːb',
-  ])(
-    'texto con sintaxis rara no rompe (%p)',
-    async (q) => {
-      await buscar(q);
-    },
-  );
+  ])('texto con sintaxis rara no rompe (%p)', async (q) => {
+    await buscar(q);
+  });
 
   it('se combina con otros filtros y con la paginación por cursor', async () => {
     const clave = palabra('combinado');
@@ -309,4 +306,3 @@ describe('Búsqueda (e2e, ADR-0032)', () => {
     );
   });
 });
-
