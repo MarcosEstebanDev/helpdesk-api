@@ -33,6 +33,7 @@ import { CreateTicket } from '../../application/create-ticket.use-case';
 import { SetTicketTags } from '../../application/tags/set-ticket-tags.use-case';
 import { TagId, TenantId, TicketId, UserId } from '../../domain/ids';
 import { SetTicketTagsDto, TicketTagsDto } from './dto/tag.dto';
+import { carreraComoErrorDeEtiqueta } from './prisma-races';
 import { toTagDto } from './tag.controller';
 import {
   AuditEntryDto,
@@ -232,12 +233,20 @@ export class TicketController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: SetTicketTagsDto,
   ): Promise<TicketTagsDto> {
-    const result = await this.setTags.execute({
-      tenantId: TenantId(user.tenantId),
-      actorId: UserId(user.userId),
-      ticketId: TicketId(id),
-      tagIds: dto.tagIds.map(TagId),
-    });
+    let result: Awaited<ReturnType<SetTicketTags['execute']>>;
+    try {
+      result = await this.setTags.execute({
+        tenantId: TenantId(user.tenantId),
+        actorId: UserId(user.userId),
+        ticketId: TicketId(id),
+        tagIds: dto.tagIds.map(TagId),
+      });
+    } catch (e) {
+      // Un ADMIN borró una de las etiquetas en el mismo milisegundo (P2003).
+      const carrera = carreraComoErrorDeEtiqueta(e);
+      if (carrera !== null) throw toHttpException(carrera);
+      throw e;
+    }
     if (result.isErr()) throw toHttpException(result.error);
     return { tags: result.value.map(toTagDto) };
   }

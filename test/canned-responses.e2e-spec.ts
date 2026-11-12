@@ -204,4 +204,12 @@ describe('Respuestas predefinidas (e2e, ADR-0030)', () => {
       .expect(404);
     await conAuth('delete', `/canned-responses/${id}`, otra.token).expect(404);
   });
+
+  it('un título que solo pasa de 80 por los espacios de los bordes se acepta', async () => {
+    const titulo = 't'.repeat(80);
+
+    const res = await crear(acme.token, `  ${titulo}  `, 'Hola').expect(201);
+
+    expect((res.body as Plantilla).title).toBe(titulo);
+  });
 });

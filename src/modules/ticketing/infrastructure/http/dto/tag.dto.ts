@@ -8,6 +8,7 @@ import {
   IsUUID,
   MaxLength,
 } from 'class-validator';
+import { LowercaseIds, Trim } from './transforms';
 import {
   MAX_TAGS_PER_TICKET,
   TAG_COLORS,
@@ -22,6 +23,7 @@ import {
 export class CreateTagDto {
   @ApiProperty({ maxLength: TAG_NAME_MAX, example: 'Facturación' })
   @IsString()
+  @Trim()
   @MaxLength(TAG_NAME_MAX)
   name!: string;
 
@@ -35,6 +37,7 @@ export class UpdateTagDto {
   @ApiPropertyOptional({ maxLength: TAG_NAME_MAX })
   @IsOptional()
   @IsString()
+  @Trim()
   @MaxLength(TAG_NAME_MAX)
   name?: string;
 
@@ -51,8 +54,11 @@ export class SetTicketTagsDto {
     maxItems: MAX_TAGS_PER_TICKET,
     description: 'Reemplaza el conjunto entero. Duplicados se ignoran.',
   })
+  @LowercaseIds()
   @IsArray()
-  @ArrayMaxSize(MAX_TAGS_PER_TICKET)
+  // El máximo REAL (10) es del dominio y cuenta después de quitar repetidos:
+  // 11 copias del mismo id son una etiqueta. Esto solo corta un abuso.
+  @ArrayMaxSize(100)
   @IsUUID('all', { each: true })
   tagIds!: string[];
 }

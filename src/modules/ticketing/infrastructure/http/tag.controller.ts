@@ -17,7 +17,6 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { Prisma } from '@prisma/client';
 import type { TenantContext } from '../../../../infrastructure/tenant/tenant-context';
 import { Result } from '../../../../shared-kernel';
 import { CurrentUser } from '../../../iam/infrastructure/auth/current-user.decorator';
@@ -27,10 +26,11 @@ import { CreateTag } from '../../application/tags/create-tag.use-case';
 import { DeleteTag } from '../../application/tags/delete-tag.use-case';
 import { ListTags } from '../../application/tags/list-tags.use-case';
 import { UpdateTag } from '../../application/tags/update-tag.use-case';
-import { DuplicateTagNameError, TicketingError } from '../../domain/errors';
+import { TicketingError } from '../../domain/errors';
 import { TagId, TenantId, UserId } from '../../domain/ids';
 import { Tag } from '../../domain/tag/tag.entity';
 import { CreateTagDto, TagDto, TagListDto, UpdateTagDto } from './dto/tag.dto';
+import { carreraComoErrorDeEtiqueta } from './prisma-races';
 import { toHttpException } from './ticketing-http.mapper';
 
 export const toTagDto = (t: Tag): TagDto => ({
@@ -141,12 +141,8 @@ async function conflictoComoDuplicado<T>(
   try {
     return await fn();
   } catch (e) {
-    if (
-      e instanceof Prisma.PrismaClientKnownRequestError &&
-      e.code === 'P2002'
-    ) {
-      throw toHttpException(new DuplicateTagNameError());
-    }
+    const carrera = carreraComoErrorDeEtiqueta(e);
+    if (carrera !== null) throw toHttpException(carrera);
     throw e;
   }
 }

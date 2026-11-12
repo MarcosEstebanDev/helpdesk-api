@@ -331,4 +331,45 @@ describe('Etiquetas (e2e, ADR-0031)', () => {
       .sort();
     expect(conjuntos.map((ids) => [...ids].sort())).toContainEqual(final);
   });
+
+  describe('bordes (menores de la revisión)', () => {
+    it('11 copias del mismo id son UNA etiqueta: 200, no 400', async () => {
+      const etiqueta = await crearEtiqueta('Repetida');
+      const ticketId = await crearTicket('Con repetidas');
+
+      const res = await etiquetar(
+        ticketId,
+        Array.from({ length: 11 }, () => etiqueta.id),
+      ).expect(200);
+
+      expect((res.body as { tags: Etiqueta[] }).tags).toHaveLength(1);
+    });
+
+    it('un nombre que solo pasa de 40 por los espacios de los bordes se acepta', async () => {
+      const nombre = 'n'.repeat(40);
+
+      const res = await conAuth('post', '/tags', agente)
+        .send({ name: `   ${nombre}   ` })
+        .expect(201);
+
+      expect((res.body as Etiqueta).name).toBe(nombre);
+    });
+
+    it('un id en mayúsculas es la misma etiqueta', async () => {
+      const etiqueta = await crearEtiqueta('Mayúsculas');
+      const ticketId = await crearTicket('Id en mayúsculas');
+
+      await etiquetar(ticketId, [etiqueta.id.toUpperCase()]).expect(200);
+
+      const res = await conAuth(
+        'get',
+        `/tickets?tagId=${etiqueta.id.toUpperCase()}`,
+        agente,
+      ).expect(200);
+      const ids = (res.body as { items: { id: string }[] }).items.map(
+        (t) => t.id,
+      );
+      expect(ids).toContain(ticketId);
+    });
+  });
 });
