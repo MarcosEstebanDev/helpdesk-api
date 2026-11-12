@@ -19,6 +19,7 @@ import { AssignTicket } from './application/assign-ticket.use-case';
 import { AutoAssignTicket } from './application/auto-assign-ticket.use-case';
 import { AuditRecorder } from './application/audit-recorder';
 import { ChangeTicketStatus } from './application/change-ticket-status.use-case';
+import { SlaPauseCoordinator } from './application/sla/sla-pause-coordinator';
 import { EventRecorder } from './application/event-recorder';
 import { BroadcastTicketEvent } from './application/realtime/broadcast-ticket-event.use-case';
 import { GetSlaPolicy } from './application/sla/get-sla-policy.use-case';
@@ -232,6 +233,13 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
         ),
     },
     {
+      // Pausa del SLA síncrona, en la transacción del cambio (ADR-0029).
+      provide: SlaPauseCoordinator,
+      inject: [SLA_TIMER_REPOSITORY],
+      useFactory: (timers: SlaTimerRepository): SlaPauseCoordinator =>
+        new SlaPauseCoordinator(timers),
+    },
+    {
       provide: ChangeTicketStatus,
       inject: [
         TRANSACTION_MANAGER,
@@ -239,6 +247,7 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
         AuditRecorder,
         EventRecorder,
         CLOCK,
+        SlaPauseCoordinator,
       ],
       useFactory: (
         transactions: TransactionManager,
@@ -246,8 +255,16 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
         audit: AuditRecorder,
         events: EventRecorder,
         clock: Clock,
+        slaPause: SlaPauseCoordinator,
       ): ChangeTicketStatus =>
-        new ChangeTicketStatus(transactions, tickets, audit, events, clock),
+        new ChangeTicketStatus(
+          transactions,
+          tickets,
+          audit,
+          events,
+          clock,
+          slaPause,
+        ),
     },
     {
       provide: StartSlaTimers,
@@ -390,6 +407,7 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
         EventRecorder,
         ID_GENERATOR,
         CLOCK,
+        SlaPauseCoordinator,
       ],
       useFactory: (
         transactions: TransactionManager,
@@ -399,6 +417,7 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
         events: EventRecorder,
         ids: IdGenerator,
         clock: Clock,
+        slaPause: SlaPauseCoordinator,
       ): AddComment =>
         new AddComment(
           transactions,
@@ -408,6 +427,7 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
           events,
           ids,
           clock,
+          slaPause,
         ),
     },
   ],
