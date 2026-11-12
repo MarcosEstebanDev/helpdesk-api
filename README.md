@@ -248,6 +248,24 @@ organisation*. That is why `comment.added` is versioned at v2 and carries
 `authorRole`, taken from the verified JWT and never from the request body.
 Without it, a customer sending a follow-up would stop their own response clock.
 
+### Waiting on the customer pauses the SLA — inside the same transaction
+
+When an agent asks the requester for something, the ticket moves to
+`WAITING_ON_CUSTOMER` and the resolution clock **pauses**; when the customer
+replies with a public comment, the aggregate itself moves the ticket back to
+`IN_PROGRESS` and the clock resumes, with `due_at` shifted by exactly the time
+spent waiting. The sweeper ignores paused clocks.
+
+This is the one place where a clock is *not* moved by the outbox consumer.
+Starting and stopping a clock tolerate delay; pausing does not, because the
+sweeper uses it to decide an irreversible breach. Done asynchronously, a
+wait → resume → wait sequence processed late counted worked time as paused, and
+a late pause could arrive after the breach was already recorded. So pause and
+resume run inside the status change's own transaction, and every clock
+transition is a conditional `UPDATE ... WHERE` that reports whether it won.
+
+→ [ADR-0029](docs/ARCHITECTURE.md#adr-0029--pausa-del-sla-reloj-pausable-vencimiento-corrido-y-pausa-en-la-transacción-del-cambio)
+
 → [ADR-0020](docs/ARCHITECTURE.md#adr-0020--modelo-de-sla-dos-relojes-política-por-tenant-y-calendario-enchufable),
 [ADR-0021](docs/ARCHITECTURE.md#adr-0021--temporizadores-durables-en-base-de-datos-y-barrido-no-jobs-retardados)
 
@@ -448,7 +466,11 @@ Being explicit about the edges is part of the point.
 - **Rate limiting is in-memory**, so it is per-instance. Fine for one node,
   wrong behind a load balancer; it needs the Redis store before scaling out.
 - **SLA calendars are 24/7 only.** `SlaCalendar` is the interface where business
-  hours would go.
+  hours would go; pausing already measures the remaining margin through it
+  (`workingMinutesBetween`), so business hours will not change the pause.
+- **No auto-solve for tickets waiting on the customer.** A ticket in
+  `WAITING_ON_CUSTOMER` stays there until someone replies or resolves it;
+  closing it after N days of silence belongs with automation rules.
 - **`sla_timers` is never purged.** It grows with every ticket.
 
 ---
