@@ -41,6 +41,7 @@ lo que costaría revertirla.
 - [ADR-0029](#adr-0029--pausa-del-sla-reloj-pausable-vencimiento-corrido-y-pausa-en-la-transacción-del-cambio) — Pausa del SLA: reloj pausable, vencimiento corrido y pausa en la transacción del cambio
 - [ADR-0030](#adr-0030--respuestas-predefinidas-solo-texto-variables-cerradas-y-relleno-en-el-cliente) — Respuestas predefinidas: solo texto, variables cerradas y relleno en el cliente
 - [ADR-0031](#adr-0031--etiquetas-catálogo-por-organización-clasificación-interna-y-fuera-del-agregado) — Etiquetas: catálogo por organización, clasificación interna y fuera del agregado
+- [ADR-0032](#adr-0032--búsqueda-texto-completo-de-postgres-con-columnas-generadas) — Búsqueda: texto completo de Postgres con columnas generadas
 
 **Trabajo asíncrono** — Cómo un cambio se convierte en efectos, sin perder eventos.
 
@@ -1788,3 +1789,79 @@ etiqueta borrada no queda rota.
 **Revisar si.** Llegan las reglas de automatización (etiquetar solo, tanda 3),
 o se piden etiquetas visibles para el cliente (→ una columna `public` en el
 catálogo, no una regla en el front).
+
+---
+
+## ADR-0032 — Búsqueda: texto completo de Postgres con columnas generadas
+
+**Estado:** aceptado (2026-11-13). Entrega 2 de 3 de "etiquetas + búsqueda +
+vistas guardadas". Diseño en `docs/superpowers/specs/2026-11-13-busqueda-design.md`.
+
+### Contexto
+
+La bandeja filtraba por campos, pero no por lo que uno recuerda de un ticket:
+"el del PDF en blanco". Y eso suele estar en la conversación, no solo en el
+asunto.
+
+### Decisión 1 — Postgres, no un motor aparte
+
+Búsqueda de texto completo de Postgres en español, con índice GIN.
+Elasticsearch o Meilisearch serían otro servicio que levantar y pagar, y
+copiar los tickets fuera de la base los saca de la protección de RLS
+(ADR-0003): habría que reimplementar el aislamiento por tenant en el índice.
+Para este volumen, Postgres alcanza de sobra.
+
+### Decisión 2 — Columnas GENERADAS, no triggers ni código de la app
+
+`tickets.search_vector` (asunto con peso A, descripción con peso B) y
+`comments.search_vector` son `GENERATED ALWAYS AS … STORED`: Postgres las
+recalcula en cada escritura. No hay un trigger que mantener ni un caso de uso
+que pueda olvidarse de actualizarlas, y los tickets existentes quedaron
+indexados al aplicar la migración.
+
+### Decisión 3 — Sin acentos, con una función inmutable propia
+
+`unaccent()` es STABLE (depende del diccionario configurado) y una columna
+generada exige IMMUTABLE. `helpdesk_unaccent(text)` fija diccionario y
+esquema, que es lo que la hace segura de marcar como inmutable. La misma
+función se aplica al indexar y al consultar, así "facturacion" encuentra
+"facturación". `CREATE EXTENSION unaccent` no necesita superusuario
+(extensión "trusted" desde PG13): sirve igual en Neon (ADR-0026).
+
+### Decisión 4 — Prisma sin drift
+
+Prisma no modela columnas generadas. Van en el schema como
+`Unsupported("tsvector")?` con `@default(dbgenerated("<expresión>"))` — la
+expresión EXACTA que devuelve Postgres, sacada con `prisma db pull` — y
+`@@index([searchVector], type: Gin)`. Sin el `dbgenerated`, `migrate diff`
+pedía `DROP DEFAULT` para siempre. Se verificó con una base descartable antes
+de diseñar el resto.
+
+### Decisión 5 — El texto del usuario nunca es sintaxis
+
+`parseSearch` (dominio) reduce el texto a palabras de letras y números
+Unicode (máx. 8), cada una como prefijo, unidas con AND. `&`, `|`, `!`, `:*` o
+paréntesis se descartan: una búsqueda rara nunca es un 500 ni una consulta
+distinta de la que el usuario cree estar haciendo. `#123` o `123` buscan
+además por número.
+
+### Decisión 6 — Las notas internas solo cuentan para el equipo
+
+Un comentario coincide solo si su visibilidad está en `visibleTo(rol)`
+(ADR-0028). Sin esto, un cliente podría adivinar el contenido de una nota
+interna probando palabras y viendo si su ticket aparece.
+
+### Decisión 7 — Un filtro más, con un tope de 1000 coincidencias
+
+`?q=` se combina con los demás filtros y conserva el orden por fecha y el
+cursor. Prisma no admite `@@` en `where`, así que una consulta SQL devuelve
+los ids que coinciden — las **1000 más recientes** — y el `findMany` de
+siempre los usa como `id IN (…)`. **Coste aceptado:** una búsqueda que
+coincide con más de 1000 tickets solo muestra los 1000 más recientes. La
+alternativa (toda la página en SQL a mano) duplicaría cada filtro existente y
+su mantenimiento.
+
+**Revisar si.** Hace falta ordenar por relevancia, buscar con errores de
+tipeo (`pg_trgm`), o un tenant supera el volumen en el que 1000 coincidencias
+dejan de ser "las que importan" → entonces la página entera en SQL, o un
+motor dedicado con el aislamiento resuelto.
