@@ -110,6 +110,25 @@ del propio formulario). Así se cumple el anti-objetivo sin bloquear al agente.
 - Sin evento de integración ni realtime: cambiar una plantilla no le interesa a
   ningún consumidor. El front invalida su query al guardar.
 - Seed: 3 plantillas de demo en `acme-support` (solo si la org se crea).
+- **Insertar con texto ya escrito:** la plantilla rellenada se inserta en la
+  POSICIÓN DEL CURSOR del editor; nunca reemplaza lo escrito. El cursor queda al
+  final de lo insertado.
+- **Validación estricta de llaves:** el cuerpo es válido solo si, tras quitar
+  todas las variables conocidas (`\{\{\s*(ticket\.numero|ticket\.asunto|cliente\.email|agente\.email)\s*\}\}`,
+  sensible a mayúsculas), no queda ningún `{{` ni `}}`. Así una llave sin cerrar,
+  `{{}}`, `{{{x}}}` o `{{Ticket.Numero}}` son 400. El mensaje nombra el primer
+  fragmento problemático. El front usa la MISMA regla (escrita dos veces, una por
+  repo — ADR-0001 — con tests en ambos) para detectar "quedó una variable".
+- **Reemplazo en una sola pasada:** un asunto que contenga `{{...}}` no se
+  vuelve a interpretar.
+- **La confirmación por variable sin rellenar solo aplica a "Responder al
+  cliente"**; en una nota interna no se pide (nunca llega al cliente). Si el
+  agente edita el texto después de confirmar, la confirmación se pierde.
+- **Email del agente tras recargar:** `session.tsx` deja `email: ''` al restaurar
+  la sesión por refresh, con un comentario ya falso (`/auth/me` devuelve `email`
+  desde el ADR-0025). Se arregla en este trabajo leyendo `me.email`; y un valor
+  vacío cuenta como "falta" (la variable queda literal).
+- Errores de Prisma P2002 (título duplicado) → 409 en el borde HTTP.
 
 ## Restricciones
 
