@@ -21,7 +21,9 @@ import { TicketTriage } from '../domain/triage/ticket-triage.entity';
 import { AuditLog } from '../domain/entities/audit-log.entity';
 import { Comment } from '../domain/entities/comment.entity';
 import { Ticket } from '../domain/entities/ticket.entity';
-import { TenantId, TicketId, UserId } from '../domain/ids';
+import { CannedResponse } from '../domain/canned-response/canned-response.entity';
+import { CannedResponseRepository } from '../domain/ports/canned-response.repository';
+import { CannedResponseId, TenantId, TicketId, UserId } from '../domain/ids';
 import { AuditLogRepository } from '../domain/ports/audit-log.repository';
 import { CommentRepository } from '../domain/ports/comment.repository';
 import { MemberDirectory } from '../domain/ports/member.directory';
@@ -435,5 +437,68 @@ export const fakeRealtimePublisher = (): FakeRealtimePublisher => {
       emisiones.push({ audience, message });
       return Promise.resolve();
     },
+  };
+};
+
+export interface FakeCannedResponses extends CannedResponseRepository {
+  seed(response: CannedResponse): void;
+  /** Lo guardado ahora para ese id, como lo vería una lectura nueva. */
+  stored(id: string): CannedResponse | null;
+}
+
+/**
+ * Guarda COPIAS, como `fakeSlaTimers`: si devolviera la misma instancia, una
+ * reescritura que el caso de uso descarta quedaría "guardada" igual.
+ * La clave lleva el tenant para reproducir el aislamiento de RLS.
+ */
+export const fakeCannedResponses = (): FakeCannedResponses => {
+  const store = new Map<string, CannedResponse>();
+  const clave = (tenantId: string, id: string) => `${tenantId}:${id}`;
+  const copia = (r: CannedResponse) =>
+    CannedResponse.rehydrate({
+      id: r.id,
+      tenantId: r.tenantId,
+      title: r.title,
+      titleKey: r.titleKey,
+      body: r.body,
+      createdBy: r.createdBy,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    });
+  const guardar = (r: CannedResponse) => {
+    store.set(clave(r.tenantId, r.id), copia(r));
+    return Promise.resolve();
+  };
+
+  return {
+    seed: (r) => void guardar(r),
+    stored: (id) => {
+      for (const r of store.values()) if (r.id === id) return copia(r);
+      return null;
+    },
+    list: (tenantId: TenantId) =>
+      Promise.resolve(
+        [...store.values()]
+          .filter((r) => r.tenantId === tenantId)
+          .sort((a, b) => a.titleKey.localeCompare(b.titleKey))
+          .map(copia),
+      ),
+    findById: (tenantId: TenantId, id: CannedResponseId) => {
+      const r = store.get(clave(tenantId, id));
+      return Promise.resolve(r ? copia(r) : null);
+    },
+    existsTitleKey: (tenantId, titleKey, exceptId) =>
+      Promise.resolve(
+        [...store.values()].some(
+          (r) =>
+            r.tenantId === tenantId &&
+            r.titleKey === titleKey &&
+            r.id !== exceptId,
+        ),
+      ),
+    insert: guardar,
+    update: guardar,
+    remove: (tenantId, id) =>
+      Promise.resolve(store.delete(clave(tenantId, id))),
   };
 };
