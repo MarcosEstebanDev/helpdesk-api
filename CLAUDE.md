@@ -118,6 +118,12 @@ uso dependen de la interfaz, nunca del adapter.
   cambio de estado (única excepción al consumidor del outbox) y transiciones
   del reloj como `UPDATE ... WHERE` condicionados.
 
+- ADR-0030 **Respuestas predefinidas**: solo texto (no macros), compartidas
+  por organización (escribe ADMIN, lee AGENT, el VIEWER no las ve), variables
+  cerradas validadas al guardar (`{{ticket.numero}}`, `{{ticket.asunto}}`,
+  `{{cliente.email}}`, `{{agente.email}}`), relleno en el FRONT y unicidad del
+  título con `title_key`.
+
 ## Seguridad (modelo, "portfolio-pragmático")
 
 Defensa en profundidad. Puntos críticos a respetar siempre:
@@ -168,7 +174,26 @@ salen del propio código, y las decisiones que están esperando tu OK.
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
-## Estado actual (2026-11-12) — Tanda 1: esperando al cliente (ADR-0029)
+## Estado actual (2026-11-12) — Tanda 1: respuestas predefinidas (ADR-0030)
+
+Rama `feat/respuestas-predefinidas` (sale de `dev`, sin mergear). Spec y plan
+en `docs/superpowers/` (2026-11-12). "Esperando al cliente" ya está en `dev`
+(154/154 e2e).
+
+- `CannedResponse` en `ticketing/domain/canned-response/` con la regla de
+  variables en `template-variables.ts` (el web la repite en `fill.ts`).
+- Casos de uso Create/Update/Delete/List con auditoría
+  `canned_response.created|updated|deleted`; controller propio.
+- Migración `20261112130000_canned_responses` (RLS, `title_key` único por
+  tenant). Seed con 3 plantillas.
+- Sigue en la tanda 1: etiquetas + búsqueda + vistas guardadas, y después
+  horario laboral (el usuario lo dejó para el final).
+
+**Gotcha nuevo:** `prisma migrate diff --from-migrations` falla con P3015 si
+existe la carpeta de la migración nueva todavía vacía: generar el SQL primero y
+crear la carpeta después.
+
+## Estado anterior (2026-11-12) — Tanda 1: esperando al cliente (ADR-0029)
 
 Rama `feat/esperando-al-cliente` (sale de `dev`, sin mergear ni pushear). Spec
 y plan en `docs/superpowers/specs/` y `docs/superpowers/plans/` (2026-11-12).

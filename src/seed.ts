@@ -37,6 +37,7 @@ import { Password } from './modules/iam/domain/value-objects/password.vo';
 import { PrismaOrganizationRepository } from './modules/iam/infrastructure/persistence/prisma-organization.repository';
 import { AddComment } from './modules/ticketing/application/add-comment.use-case';
 import { ChangeTicketStatus } from './modules/ticketing/application/change-ticket-status.use-case';
+import { CreateCannedResponse } from './modules/ticketing/application/canned-responses/create-canned-response.use-case';
 import { CreateTicket } from './modules/ticketing/application/create-ticket.use-case';
 import { TenantId, TicketId, UserId } from './modules/ticketing/domain/ids';
 import type { TicketPriority } from './modules/ticketing/domain/ticket-status';
@@ -50,6 +51,22 @@ const DEMO_PASSWORD = 'demo-password-123';
 const ADMIN_EMAIL = 'admin@acme.test';
 const AGENT_EMAIL = 'agent@acme.test';
 const VIEWER_EMAIL = 'viewer@acme.test';
+
+/** Respuestas predefinidas de demo (ADR-0030). Usan las variables a propósito. */
+const CANNED_RESPONSES: { title: string; body: string }[] = [
+  {
+    title: 'Saludo inicial',
+    body: 'Hola! Gracias por escribirnos. Ya estamos revisando el ticket {{ticket.numero}}.',
+  },
+  {
+    title: 'Pedir más datos',
+    body: 'Para avanzar con "{{ticket.asunto}}" necesitamos un poco más de información: ¿nos pasás una captura de pantalla y los pasos para reproducirlo?',
+  },
+  {
+    title: 'Cierre',
+    body: 'Damos por resuelto el ticket {{ticket.numero}}. Si vuelve a pasar, respondé a este mensaje. Saludos, {{agente.email}}',
+  },
+];
 
 interface SeedTicket {
   subject: string;
@@ -280,11 +297,26 @@ async function main(): Promise<void> {
       }
     }
 
+    // --- 4. Respuestas predefinidas (ADR-0030), por su caso de uso ---
+    const createCanned = app.get(CreateCannedResponse);
+    for (const plantilla of CANNED_RESPONSES) {
+      const result = await createCanned.execute({
+        tenantId,
+        actorId: adminId,
+        title: plantilla.title,
+        body: plantilla.body,
+      });
+      if (result.isErr()) {
+        throw new Error(`No se pudo crear la plantilla: ${result.error.code}`);
+      }
+    }
+
     console.log(
       [
         '',
         `Organización sembrada: ${ORGANIZATION_NAME} (slug: ${ORGANIZATION_SLUG})`,
         `  ${TICKETS.length} tickets con comentarios e historial.`,
+        `  ${CANNED_RESPONSES.length} respuestas predefinidas.`,
         '',
         'Entrar con cualquiera de estos (el slug hace falta para el login):',
         `  ADMIN   ${ADMIN_EMAIL}`,
