@@ -73,7 +73,7 @@ export const parseViewFilters = (
   if (datos.tagIds !== undefined) {
     if (!Array.isArray(datos.tagIds))
       return invalido('tagIds', 'tiene que ser una lista.');
-    const ids = datos.tagIds.map((v) =>
+    const ids = (datos.tagIds as unknown[]).map((v: unknown) =>
       typeof v === 'string' ? v.toLowerCase() : v,
     );
     if (!ids.every((v): v is string => typeof v === 'string' && UUID.test(v))) {
