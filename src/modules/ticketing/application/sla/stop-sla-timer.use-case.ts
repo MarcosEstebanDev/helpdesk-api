@@ -7,6 +7,7 @@ import {
 import { TicketingError } from '../../domain/errors';
 import { TenantId, TicketId } from '../../domain/ids';
 import { SlaTimerRepository } from '../../domain/ports/sla.repository';
+import { CALENDAR_24_7 } from '../../domain/sla/sla-calendar';
 import { SlaKind } from '../../domain/sla/sla-timer.entity';
 import { runTransactional } from '../transactional';
 
@@ -69,7 +70,7 @@ export class StopSlaTimer {
           } as const);
         }
 
-        const timer = await this.timers.findRunning(
+        const timer = await this.timers.findOpen(
           input.tenantId,
           input.ticketId,
           input.kind,
@@ -81,9 +82,23 @@ export class StopSlaTimer {
           } as const);
         }
 
+        // Un reloj en pausa también se para (resolver desde la espera, ADR-0029):
+        // `stop` lo reanuda primero, así que el margen se calcula DESPUÉS de
+        // parar, sobre el vencimiento ya corrido. Calcularlo antes contaría la
+        // pausa como tiempo consumido.
+        const expected = timer.isPaused() ? 'paused' : 'running';
+        timer.stop(input.occurredAt, CALENDAR_24_7);
         const margen = timer.remainingMinutesAt(input.occurredAt);
-        timer.stop(input.occurredAt);
-        await this.timers.save(timer);
+
+        // Escritura condicionada: si otra llegó antes (el barrido lo incumplió
+        // mientras tanto), este reloj ya no estaba abierto y no se para.
+        const escrito = await this.timers.transition(timer, expected);
+        if (!escrito) {
+          return ok({
+            status: 'skipped',
+            reason: 'no_running_timer',
+          } as const);
+        }
 
         return ok({ status: 'stopped', remainingMinutes: margen } as const);
       },

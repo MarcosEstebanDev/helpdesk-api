@@ -264,43 +264,89 @@ export const fakeSlaPolicies = (
 };
 
 export interface FakeSlaTimers extends SlaTimerRepository {
+  /** Escrituras que APLICARON (altas y transiciones), en orden. */
   readonly saved: SlaTimer[];
   seed(timer: SlaTimer): void;
+  /** Lo guardado ahora mismo para ese id, como lo vería una lectura nueva. */
+  stored(id: string): SlaTimer | null;
+  /** La próxima `transition` pierde la carrera contra otra escritura. */
+  loseNextTransition(): void;
 }
 
+/**
+ * Guarda COPIAS, como una base de datos: si devolviera la misma instancia, el
+ * caso de uso la mutaría antes de `transition` y la condición compararía contra
+ * el estado ya cambiado, así que el doble nunca podría decir que no.
+ */
 export const fakeSlaTimers = (): FakeSlaTimers => {
   const store = new Map<string, SlaTimer>();
   const saved: SlaTimer[] = [];
-  const clave = (timer: SlaTimer) => `${timer.tenantId}:${timer.id}`;
+  let perderSiguiente = false;
+  const clave = (tenantId: string, id: string) => `${tenantId}:${id}`;
+  const copia = (t: SlaTimer): SlaTimer =>
+    SlaTimer.rehydrate({
+      id: t.id,
+      tenantId: t.tenantId,
+      ticketId: t.ticketId,
+      kind: t.kind,
+      startedAt: t.startedAt,
+      dueAt: t.dueAt,
+      stoppedAt: t.stoppedAt,
+      breachedAt: t.breachedAt,
+      pausedAt: t.pausedAt,
+    });
 
   return {
     saved,
     seed: (timer) => {
-      store.set(clave(timer), timer);
+      store.set(clave(timer.tenantId, timer.id), copia(timer));
+    },
+    stored: (id) => {
+      const t = [...store.values()].find((x) => x.id === id);
+      return t === undefined ? null : copia(t);
+    },
+    loseNextTransition: () => {
+      perderSiguiente = true;
     },
     save: (timer) => {
-      store.set(clave(timer), timer);
-      saved.push(timer);
+      store.set(clave(timer.tenantId, timer.id), copia(timer));
+      saved.push(copia(timer));
       return Promise.resolve();
+    },
+    transition: (timer, expected) => {
+      const k = clave(timer.tenantId, timer.id);
+      const actual = store.get(k);
+      const coincide =
+        actual !== undefined &&
+        (expected === 'running' ? actual.isRunning() : actual.isPaused());
+      if (perderSiguiente || !coincide) {
+        perderSiguiente = false;
+        return Promise.resolve(false);
+      }
+      store.set(k, copia(timer));
+      saved.push(copia(timer));
+      return Promise.resolve(true);
     },
     findByTicket: (tenantId, ticketId) =>
       Promise.resolve(
-        [...store.values()].filter(
-          (t) => t.tenantId === tenantId && t.ticketId === ticketId,
-        ),
+        [...store.values()]
+          .filter((t) => t.tenantId === tenantId && t.ticketId === ticketId)
+          .map(copia),
       ),
-    findRunning: (tenantId, ticketId, kind: SlaKind) =>
-      Promise.resolve(
-        [...store.values()].find(
-          (t) =>
-            t.tenantId === tenantId &&
-            t.ticketId === ticketId &&
-            t.kind === kind &&
-            t.isRunning(),
-        ) ?? null,
-      ),
-    findById: (tenantId, id) =>
-      Promise.resolve(store.get(`${tenantId}:${id}`) ?? null),
+    findOpen: (tenantId, ticketId, kind: SlaKind) => {
+      const t = [...store.values()].find(
+        (x) =>
+          x.tenantId === tenantId &&
+          x.ticketId === ticketId &&
+          x.kind === kind &&
+          x.isOpen(),
+      );
+      return Promise.resolve(t === undefined ? null : copia(t));
+    },
+    findById: (tenantId, id) => {
+      const t = store.get(clave(tenantId, id));
+      return Promise.resolve(t === undefined ? null : copia(t));
+    },
   };
 };
 

@@ -138,6 +138,28 @@ describe('BroadcastTicketEvent', () => {
         'ticket',
       ]);
     });
+
+    it('pasar a la espera del cliente se difunde como cualquier cambio de estado', async () => {
+      // El cliente tiene que ver que la pelota está de su lado, y el equipo que
+      // el ticket volvió solo cuando el cliente contesta (ADR-0029).
+      const { sut, realtime } = montar();
+
+      await sut.execute(
+        evento('ticket.status_changed', {
+          from: 'IN_PROGRESS',
+          to: 'WAITING_ON_CUSTOMER',
+          assigneeId: 'un-agente',
+        }),
+      );
+
+      expect(realtime.emisiones.map((e) => e.audience.scope).sort()).toEqual([
+        'tenant',
+        'ticket',
+      ]);
+      expect(realtime.emisiones[0].message.payload).toMatchObject({
+        status: 'WAITING_ON_CUSTOMER',
+      });
+    });
   });
 
   describe('qué viaja por el cable', () => {

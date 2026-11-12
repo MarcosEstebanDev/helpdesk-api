@@ -113,6 +113,10 @@ uso dependen de la interfaz, nunca del adapter.
   en el WHERE para el VIEWER, `comment.added` v3 (v2 se lee como PUBLIC) y el SLA
   usa `countsAsResponse` (equipo Y público). El aviso de una nota va a la sala
   `staff`. **Sin RLS por rol todavía**: entra con el rol CLIENTE del portal.
+- ADR-0029 **Pausa del SLA**: estado `WAITING_ON_CUSTOMER`, `sla_timers.paused_at`,
+  `due_at` corrido al reanudar, pausa/reanudación en la MISMA transacción del
+  cambio de estado (única excepción al consumidor del outbox) y transiciones
+  del reloj como `UPDATE ... WHERE` condicionados.
 
 ## Seguridad (modelo, "portfolio-pragmático")
 
@@ -164,11 +168,44 @@ salen del propio código, y las decisiones que están esperando tu OK.
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
-## Estado actual (2026-11-11) — Tanda 1 de producto: notas internas (ADR-0028)
+## Estado actual (2026-11-12) — Tanda 1: esperando al cliente (ADR-0029)
+
+Rama `feat/esperando-al-cliente` (sale de `dev`, sin mergear ni pushear). Spec
+y plan en `docs/superpowers/specs/` y `docs/superpowers/plans/` (2026-11-12).
+
+- **Estado `WAITING_ON_CUSTOMER`** (desde `IN_PROGRESS`; sale a `IN_PROGRESS` o
+  `RESOLVED`). El comentario PÚBLICO de alguien que no es del equipo lo devuelve
+  solo a `IN_PROGRESS`: lo decide `Ticket.registerComment`; `AddComment` lo
+  audita como sistema (`automatic`, `trigger: 'customer_reply'`).
+- **Reloj pausable**: `sla_timers.paused_at`, estado derivado `paused`, al
+  reanudar `due_at` se corre lo que duró la pausa (vía
+  `SlaCalendar.workingMinutesBetween`). Solo el reloj de RESOLUCIÓN.
+- **Pausa SÍNCRONA** (`SlaPauseCoordinator`, en la transacción de
+  `ChangeTicketStatus` y `AddComment`): única excepción al patrón del consumidor
+  del outbox. Elegida por el usuario tras la revisión del diseño.
+- **`SlaTimerRepository.transition(timer, expected)`**: `UPDATE ... WHERE`
+  condicionado; `save` solo da de alta. `findRunning` → `findOpen` (incluye
+  pausados).
+- Migración `20261112120000_waiting_on_customer` (`ADD VALUE ... AFTER
+  'IN_PROGRESS'`, `paused_at`, `GRANT SELECT (paused_at)` al barrido,
+  `sla_due_timers` ignora pausados). Seed con un ticket en espera.
+- ADR-0029 + adendas a 0015, 0020 (revocación parcial de "`due_at`
+  inmutable") y 0021. Total 29.
+
+**Gotchas nuevos:**
+- El repo tiene `core.autocrlf=true`: los archivos del árbol están en CRLF. Un
+  `str.replace` de Python con anclas de varias líneas en `\n` NO coincide y
+  falla en silencio; usar la herramienta Edit, o leer en modo texto (que
+  normaliza) y comprobar que cada ancla aparece una vez.
+- Un doble de repositorio que devuelve la MISMA instancia que guarda no puede
+  probar escrituras condicionadas: el caso de uso la muta antes de `transition`.
+  `fakeSlaTimers` guarda copias.
+
+## Estado anterior (2026-11-11) — Tanda 1 de producto: notas internas (ADR-0028)
 
 Se comparó con Zendesk, Freshdesk, Help Scout y Zammad y se acordó con el
 usuario un plan en tres tandas. **Tanda 1** (lo que un agente extraña el primer
-día): notas internas ✅, estado "esperando al cliente" que pausa el SLA + horario
+día): notas internas ✅, estado "esperando al cliente" que pausa el SLA ✅ + horario
 laboral, respuestas predefinidas, etiquetas + búsqueda + vistas guardadas.
 **Tanda 2**: rol CLIENTE con portal (acá entra el RLS por rol), email, adjuntos,
 CSAT. **Tanda 3**: reglas de automatización, reportes (read models), base de

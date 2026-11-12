@@ -11,7 +11,7 @@ ADR explica el contexto, la decisión y las consecuencias.
 
 ## Índice de ADRs
 
-24 decisiones. Cada una registra el contexto, la alternativa descartada y
+29 decisiones. Cada una registra el contexto, la alternativa descartada y
 lo que costaría revertirla.
 
 **Fundaciones** — Cómo está partido el código y qué reglas obedece.
@@ -38,6 +38,7 @@ lo que costaría revertirla.
 - [ADR-0016](#adr-0016--unidad-de-trabajo-explícita-el-auditlog-en-la-misma-transacción) — Unidad de trabajo explícita: el AuditLog en la misma transacción
 - [ADR-0017](#adr-0017--numeración-visible-correlativa-por-tenant) — Numeración visible correlativa por tenant
 - [ADR-0028](#adr-0028--notas-internas-visibilidad-del-comentario-sla-y-sala-del-equipo) — Notas internas: visibilidad del comentario, SLA y sala del equipo
+- [ADR-0029](#adr-0029--pausa-del-sla-reloj-pausable-vencimiento-corrido-y-pausa-en-la-transacción-del-cambio) — Pausa del SLA: reloj pausable, vencimiento corrido y pausa en la transacción del cambio
 
 **Trabajo asíncrono** — Cómo un cambio se convierte en efectos, sin perder eventos.
 
@@ -366,6 +367,17 @@ migración.
 **Revisar si.** Aparecen estados dependientes de configuración por tenant (workflows
 personalizables) → la tabla dejaría de ser una constante y pasaría a ser datos.
 
+**Adenda (2026-11-12, ADR-0029).** Estado nuevo `WAITING_ON_CUSTOMER`:
+
+| Desde | Hacia |
+| --- | --- |
+| `IN_PROGRESS` | `RESOLVED`, `OPEN`, **`WAITING_ON_CUSTOMER`** |
+| `WAITING_ON_CUSTOMER` | `IN_PROGRESS`, `RESOLVED` |
+
+Solo se entra con alguien trabajando el ticket; no se sale a `OPEN` (primero se
+retoma) ni a `CLOSED` (solo se cierra lo resuelto). Es la primera transición que
+ocurre sin que nadie la pida: la decide el agregado cuando el cliente comenta.
+
 ---
 
 ## ADR-0016 — Unidad de trabajo explícita: el AuditLog en la misma transacción
@@ -624,6 +636,13 @@ un SLA no debe permitir. Por lo mismo, el estado del reloj se **deriva** de las 
 (`stopped_at`, `breached_at`) en vez de guardarse en un campo `status` que podría
 contradecirlas.
 
+> **Revocada en parte por el ADR-0029 (2026-11-12).** `due_at` sigue siendo
+> inmutable frente a cambios de **política**, que era el motivo de esta
+> decisión. Pero ahora lo mueve una pausa del propio ticket (esperando al
+> cliente): al reanudar se corre lo que duró la pausa, porque ese tiempo no
+> cuenta. Ya no guarda el objetivo original; el estado del reloj, en cambio,
+> se sigue derivando de las fechas (ahora también de `paused_at`).
+
 **Decisión 5 — El calendario es una interfaz, hoy con una sola implementación.** Los
 minutos se cuentan sobre `SlaCalendar`; existe `CALENDAR_24_7` y nada más. La interfaz
 no es especulación: es la costura por la que entrará el horario laboral por tenant con
@@ -753,6 +772,14 @@ con cada ticket y hoy nadie la purga.
 barrido, conservándolo como red), el barrido no llega a tiempo con el volumen (→ lotes
 más grandes o varias instancias, que ya son seguras), o aparecen avisos previos al
 vencimiento del tipo "queda el 20%" (→ un segundo umbral en la misma tabla).
+
+**Adenda (2026-11-12, ADR-0029).** La "idempotencia por condición" se cumplía al
+LEER pero no al ESCRIBIR: parar e incumplir guardaban con un upsert sin
+condición, y una pausa concurrente con el barrido se pisaba. Las transiciones
+del reloj pasan a `SlaTimerRepository.transition(timer, expected)`, un
+`UPDATE ... WHERE` condicionado al estado leído que devuelve si escribió; `save`
+queda solo para el alta. `sla_due_timers` ignora los relojes en pausa
+(`paused_at IS NULL`) y el rol del barrido tiene `GRANT SELECT (paused_at)`.
 
 ---
 
@@ -1465,3 +1492,131 @@ desconocido va al equipo. El cliente web no cambia: invalida el detalle por
 - (−) El contrato del WebSocket y los tipos del frontend se siguen manteniendo a
   mano (deuda conocida del ADR-0004): `visibility` se agregó en los dos lados.
 
+---
+
+## ADR-0029 — Pausa del SLA: reloj pausable, vencimiento corrido y pausa en la transacción del cambio
+
+**Estado:** aceptado (2026-11-12). Segunda pieza de la "tanda 1" de producto:
+el estado "esperando al cliente" de Zendesk, Freshdesk y Zammad. Diseño en
+`docs/superpowers/specs/2026-11-12-esperando-al-cliente-design.md`.
+
+### Contexto
+
+Cuando un agente necesita algo del solicitante (un dato, una captura, que pruebe
+algo), el ticket seguía en `IN_PROGRESS` y el reloj de resolución seguía
+corriendo: el SLA penalizaba al equipo por un tiempo que depende del cliente, y
+el agente no tenía forma de decir "la pelota está del otro lado".
+
+Lo difícil no es el estado sino el reloj. `due_at` se calculaba una vez y era
+inmutable (ADR-0020, decisión 4), y lo lee un barrido que marca incumplimientos
+irreversibles (ADR-0021). Pausar sin tocar `due_at`, o sin que el barrido se
+entere, convierte la pausa en un incumplimiento seguro.
+
+### Decisión 1 — Estado `WAITING_ON_CUSTOMER`
+
+Se entra solo desde `IN_PROGRESS` (alguien trabaja el ticket) y se sale a
+`IN_PROGRESS` o a `RESOLVED`. No a `OPEN` ni a `CLOSED`. Ver la adenda del
+ADR-0015.
+
+### Decisión 2 — Vuelve solo cuando contesta el cliente, y lo decide el agregado
+
+Un comentario **público** de alguien que **no es del equipo**
+(`!isResponder(authorRole)`, la misma frontera que `countsAsResponse`) sobre un
+ticket en espera lo devuelve a `IN_PROGRESS`. Lo decide `Ticket.registerComment`
+llamando a `changeStatus`, así que se emite el `ticket.status_changed` normal y
+nadie aguas abajo necesita una regla propia para comentarios. Una nota interna o
+un comentario del equipo no lo sacan.
+
+El cambio lo audita `AddComment` como **sistema** (`SYSTEM_ACTOR_ID`,
+`automatic: true`, `trigger: 'customer_reply'`, `commentId`): nadie lo pidió, es
+una consecuencia. El autor queda en la entrada del comentario.
+
+### Decisión 3 — El reloj es pausable y el vencimiento se corre
+
+`sla_timers.paused_at`. El estado sigue **derivado** de fechas, ahora con cuatro
+valores: corriendo, **en pausa**, cumplido, incumplido. Al reanudar,
+`due_at = calendario.dueAt(ahora, calendario.workingMinutesBetween(paused_at, due_at))`:
+el margen se mide en el CALENDARIO y no restando fechas, para que el horario
+laboral no obligue a reescribir la pausa. Parar un reloj pausado (resolver desde
+la espera) lo reanuda primero, así que el margen descuenta la pausa. La vista
+mide el margen de un reloj pausado contra `paused_at`: queda congelado.
+
+Solo se pausa el reloj de **resolución**. El de respuesta casi siempre está
+parado (para pedirle algo al cliente hubo que responderle), y si no lo está,
+sigue corriendo: pedir algo es responder.
+
+`sla_due_timers` filtra `paused_at IS NULL`, y el rol del barrido recibe
+`GRANT SELECT (paused_at)`: sus privilegios son por columna y no alcanzan a las
+columnas nuevas (el mismo fallo que dejó sin drenar el outbox en la fase 8).
+
+### Decisión 4 — Pausar y reanudar van en la transacción del cambio de estado
+
+`SlaPauseCoordinator`, llamado por `ChangeTicketStatus` y `AddComment` dentro de
+su transacción, con el mismo `now`. **Es la única excepción** al patrón "los
+relojes los mueve el consumidor del outbox": arrancar y parar siguen en
+diferido.
+
+La razón: arrancar y parar toleran retraso (se fechan con `occurredAt` y nadie
+decide nada con el reloj mientras tanto). Pausar no, porque el barrido usa ese
+dato para decidir un incumplimiento irreversible.
+
+Como el arranque sigue siendo diferido, un ticket puede llegar a la espera
+**antes** de tener relojes (worker atrasado; el seed, siempre). Por eso
+`StartSlaTimers` mira el estado actual del ticket y, si ya espera al cliente,
+el reloj de resolución nace pausado desde `updatedAt` (aproximación que, si
+falla, cuenta de más contra el equipo, nunca de menos). Y un reloj ya vencido
+que el barrido aún no marcó **no se pausa**: pausarlo le borraría el retraso.
+Los dos huecos los encontró la revisión final de la rama.
+
+### Decisión 5 — Las transiciones del reloj son escrituras condicionadas
+
+`SlaTimerRepository.transition(timer, expected)` hace un `UPDATE ... WHERE`
+condicionado al estado en que se leyó la fila (`running` o `paused`) y devuelve
+si escribió. `save` queda solo para el alta. Antes, parar e incumplir usaban un
+upsert sin condición, y una pausa y el barrido simultáneos se pisaban. Si
+`transition` pierde, el caso de uso no actúa como si su cambio hubiera ocurrido
+(el barrido no audita ni publica un incumplimiento que no se escribió). Ver la
+adenda del ADR-0021.
+
+### Alternativas descartadas
+
+- *Pausa en diferido, reconciliando contra el estado actual del ticket.* Pausar
+  "si el ticket sigue en espera" y reanudar "si ya no lo está". Falla con espera
+  → retomar → espera antes de que el worker procese: la primera pausa se aplica,
+  la reanudación se salta (el ticket vuelve a estar en espera) y la segunda pausa
+  no hace nada. El tramo trabajado cuenta como pausa: el error favorece al
+  equipo, justo al revés de lo que promete un SLA. Además, una pausa procesada
+  tarde llegaba después de que el barrido marcara el incumplimiento.
+- *Pausa en diferido, blindada.* Columnas extra para saber qué transición se
+  aplicó la última y un `MarkSlaBreached` que consulta el ticket. Mantiene un
+  único patrón, pero con más piezas, más casos borde y alguna carrera que sigue
+  abierta.
+- *Pausar también el reloj de respuesta.* Abriría la puerta a "pausar" un ticket
+  sin haberle contestado al cliente.
+- *Que la IA decida la pausa.* El SLA es un compromiso con el cliente; no puede
+  depender de un modelo que se equivoca. La IA podrá **sugerir** pasar a la
+  espera (ROADMAP §2), nunca hacerlo.
+
+### Consecuencias
+
+- (+) El SLA deja de penalizar el tiempo que depende del cliente, y el agente
+  puede decirlo con un estado en vez de con una nota.
+- (+) La pausa no tiene carreras con el barrido ni con el orden de los eventos.
+- (+) `transition` cumple de verdad la "idempotencia por condición" que el
+  ADR-0021 prometía al leer y no cumplía al escribir.
+- (+) La costura del horario laboral (`workingMinutesBetween`) queda puesta.
+- (−) Dos patrones para mover relojes: el síncrono (pausa) y el diferido
+  (arrancar, parar, incumplir). Está acotado y explicado aquí.
+- (−) `due_at` ya no guarda el objetivo original. Se reconstruye desde el
+  AuditLog (las transiciones a y desde la espera quedan fechadas); si los
+  reportes de la tanda 3 lo necesitan seguido, se añadirá la columna entonces.
+- (−) Carrera aceptada: si el barrido incumple en el mismo instante en que el
+  agente pausa, gana quien escribe primero. Si gana el barrido es porque el
+  reloj de verdad había vencido antes de la pausa.
+- (−) Un ticket en espera queda así sin límite: el auto-resolver a los N días
+  llega con las automatizaciones de la tanda 3.
+
+**Revisar si.** Llega el horario laboral (→ comprobar que la reanudación usa el
+calendario del reloj y no uno global), o aparecen más estados que pausan el SLA
+(p. ej. "esperando a un tercero") → la regla del coordinador pasaría a ser una
+propiedad del estado en la tabla del ADR-0015.

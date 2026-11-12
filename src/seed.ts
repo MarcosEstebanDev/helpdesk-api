@@ -59,11 +59,11 @@ interface SeedTicket {
   /** `internal`: nota del equipo que el cliente no ve (ADR-0028). */
   comments?: { staff: boolean; internal?: boolean; body: string }[];
   /** Estado final; se alcanza pasando por las transiciones legales. */
-  moveTo?: ('IN_PROGRESS' | 'RESOLVED' | 'CLOSED')[];
+  moveTo?: ('IN_PROGRESS' | 'WAITING_ON_CUSTOMER' | 'RESOLVED' | 'CLOSED')[];
 }
 
 /**
- * Los tickets cubren a propósito las cuatro prioridades y los cuatro estados: la
+ * Los tickets cubren a propósito las cuatro prioridades y los cinco estados: la
  * pantalla de detalle muestra un reloj de SLA por prioridad, y sin variedad la
  * demo enseñaría siempre el mismo caso.
  */
@@ -99,6 +99,23 @@ const TICKETS: SeedTicket[] = [
       },
     ],
     moveTo: ['IN_PROGRESS', 'RESOLVED'],
+  },
+  {
+    // Esperando al cliente (ADR-0029). El seed no drena el outbox, así que el
+    // reloj de resolución nace YA pausado cuando el worker procesa el
+    // `ticket.created` (StartSlaTimers mira el estado actual del ticket). Si el
+    // cliente comenta, vuelve solo a En curso.
+    subject: 'El PDF de la factura de octubre sale en blanco',
+    description:
+      'Descargo la factura desde el panel y el PDF abre con todas las páginas vacías.',
+    priority: 'HIGH',
+    comments: [
+      {
+        staff: true,
+        body: '¿Desde qué navegador lo descargás? ¿Nos pasás una captura de la pantalla de descarga?',
+      },
+    ],
+    moveTo: ['IN_PROGRESS', 'WAITING_ON_CUSTOMER'],
   },
   {
     subject: 'Pedido de acceso al panel de facturación',

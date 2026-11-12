@@ -22,7 +22,12 @@ export type MarkSlaBreachedOutcome =
   | { status: 'breached'; kind: string }
   | {
       status: 'skipped';
-      reason: 'not_found' | 'not_running' | 'not_overdue' | 'ticket_not_found';
+      reason:
+        | 'not_found'
+        | 'paused'
+        | 'not_running'
+        | 'not_overdue'
+        | 'ticket_not_found';
     };
 
 /**
@@ -61,6 +66,11 @@ export class MarkSlaBreached {
         if (timer === null) {
           return ok({ status: 'skipped', reason: 'not_found' } as const);
         }
+        if (timer.isPaused()) {
+          // El ticket espera al cliente (ADR-0029). El barrido ya los filtra en
+          // `sla_due_timers`, pero pudo leerlo justo antes de la pausa.
+          return ok({ status: 'skipped', reason: 'paused' } as const);
+        }
         if (!timer.isRunning()) {
           // Alguien lo paró entre el barrido y este momento. Es lo normal, no un
           // fallo: significa que el SLA se cumplió a tiempo.
@@ -82,7 +92,13 @@ export class MarkSlaBreached {
         }
 
         timer.markBreached(now);
-        await this.timers.save(timer);
+        // Condicionado a que la fila SIGA corriendo: si un agente lo pausó (o
+        // alguien lo paró) entre la lectura y aquí, no se toca, y el
+        // incumplimiento no se audita ni se publica porque no ocurrió.
+        const escrito = await this.timers.transition(timer, 'running');
+        if (!escrito) {
+          return ok({ status: 'skipped', reason: 'not_running' } as const);
+        }
 
         // El incumplimiento se registra con la hora en que DEBÍA haberse
         // cumplido, no con la del barrido: el retraso real es ese, y el barrido

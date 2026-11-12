@@ -123,6 +123,7 @@ model RefreshToken {
 enum TicketStatus {
   OPEN
   IN_PROGRESS
+  WAITING_ON_CUSTOMER
   RESOLVED
   CLOSED
 
@@ -355,6 +356,9 @@ model SlaTimer {
   dueAt      DateTime  @map("due_at")
   stoppedAt  DateTime? @map("stopped_at")
   breachedAt DateTime? @map("breached_at")
+  // En pausa mientras el ticket espera al cliente (ADR-0029). El barrido ignora
+  // los pausados; ver `sla_due_timers` en la migración 20261112120000.
+  pausedAt   DateTime? @map("paused_at")
 
   organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   ticket       Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)

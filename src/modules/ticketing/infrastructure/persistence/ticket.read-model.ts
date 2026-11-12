@@ -243,6 +243,7 @@ export class TicketReadModel extends PrismaRepository {
               dueAt: true,
               stoppedAt: true,
               breachedAt: true,
+              pausedAt: true,
             },
           },
         },

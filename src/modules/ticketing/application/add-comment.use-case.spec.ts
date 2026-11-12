@@ -1,8 +1,13 @@
 import { Ticket } from '../domain/entities/ticket.entity';
-import { TicketId } from '../domain/ids';
+import { SlaTimerId, TicketId } from '../domain/ids';
+import { CALENDAR_24_7 } from '../domain/sla/sla-calendar';
+import { SlaTimer } from '../domain/sla/sla-timer.entity';
+import { SYSTEM_ACTOR_ID } from '../domain/system-actor';
+import { TicketStatus } from '../domain/ticket-status';
 import { AddComment } from './add-comment.use-case';
 import { AuditRecorder } from './audit-recorder';
 import { EventRecorder } from './event-recorder';
+import { SlaPauseCoordinator } from './sla/sla-pause-coordinator';
 import {
   ACTOR,
   AHORA,
@@ -10,6 +15,7 @@ import {
   fakeAuditLogRepository,
   fakeCommentRepository,
   fakeOutbox,
+  fakeSlaTimers,
   fakeTicketRepository,
   fakeTransactions,
   fixedClock,
@@ -18,8 +24,12 @@ import {
 
 const TICKET_ID = TicketId('44444444-4444-4444-4444-444444444444');
 const ANTES = new Date('2026-09-09T08:00:00Z');
+const RELOJ = SlaTimerId('66666666-6666-6666-6666-666666666666');
 
-const nuevoTicket = (cerrado = false): Ticket => {
+const nuevoTicket = (
+  cerrado = false,
+  estados: readonly TicketStatus[] = [],
+): Ticket => {
   const created = Ticket.open({
     id: TICKET_ID,
     tenantId: TENANT,
@@ -36,6 +46,7 @@ const nuevoTicket = (cerrado = false): Ticket => {
     created.value.changeStatus('RESOLVED', ANTES);
     created.value.changeStatus('CLOSED', ANTES);
   }
+  for (const destino of estados) created.value.changeStatus(destino, ANTES);
   // Se descartan los eventos de la creación: un ticket que viene del
   // repositorio se REHIDRATA, así que no arrastra el `ticket.created` que ya se
   // publicó en su día. Sin esto el doble mentiría respecto a producción.
@@ -53,6 +64,21 @@ const buildSut = (semilla: Ticket) => {
   const audit = new AuditRecorder(ids, auditLogs);
   const outbox = fakeOutbox();
 
+  // Reloj de resolución ya en pausa desde ANTES, por si el ticket está en la
+  // espera; si no lo está, nadie lo mira (ADR-0029).
+  const timers = fakeSlaTimers();
+  const reloj = SlaTimer.start({
+    id: RELOJ,
+    tenantId: TENANT,
+    ticketId: TICKET_ID,
+    kind: 'RESOLUTION',
+    minutes: 24 * 60,
+    calendar: CALENDAR_24_7,
+    now: ANTES,
+  });
+  if (semilla.status === 'WAITING_ON_CUSTOMER') reloj.pause(ANTES);
+  timers.seed(reloj);
+
   const sut = new AddComment(
     transactions.manager,
     tickets,
@@ -61,9 +87,10 @@ const buildSut = (semilla: Ticket) => {
     new EventRecorder(ids, outbox),
     ids,
     fixedClock(),
+    new SlaPauseCoordinator(timers),
   );
 
-  return { sut, transactions, comments, auditLogs, outbox };
+  return { sut, transactions, comments, auditLogs, outbox, timers };
 };
 
 describe('AddComment', () => {
@@ -244,5 +271,59 @@ describe('AddComment', () => {
     if (result.isErr()) {
       expect(result.error.code).toBe('ticketing.ticket_not_found');
     }
+  });
+
+  describe('vuelta automática desde la espera (ADR-0029)', () => {
+    const enEspera = () =>
+      nuevoTicket(false, ['IN_PROGRESS', 'WAITING_ON_CUSTOMER']);
+
+    it('el comentario del cliente reanuda el reloj y audita el cambio como sistema', async () => {
+      const { sut, auditLogs, timers } = buildSut(enEspera());
+
+      const result = await sut.execute({
+        tenantId: TENANT,
+        actorId: ACTOR,
+        actorRole: 'VIEWER',
+        ticketId: TICKET_ID,
+        visibility: 'PUBLIC',
+        body: 'Ahí va la captura que me pidieron.',
+      });
+
+      expect(result.isOk()).toBe(true);
+      const reloj = timers.stored(RELOJ);
+      expect(reloj?.isRunning()).toBe(true);
+      expect(reloj?.pausedAt).toBeNull();
+
+      expect(auditLogs.entries.map((e) => e.action)).toEqual([
+        'comment.added',
+        'ticket.status_changed',
+      ]);
+      expect(auditLogs.entries[0].actorId).toBe(ACTOR);
+      const automatico = auditLogs.entries[1];
+      expect(automatico.actorId).toBe(SYSTEM_ACTOR_ID);
+      expect(automatico.metadata).toEqual({
+        from: 'WAITING_ON_CUSTOMER',
+        to: 'IN_PROGRESS',
+        automatic: true,
+        trigger: 'customer_reply',
+        commentId: result.isOk() ? result.value.id : undefined,
+      });
+    });
+
+    it('una nota interna en espera no reanuda nada ni audita un cambio', async () => {
+      const { sut, auditLogs, timers } = buildSut(enEspera());
+
+      await sut.execute({
+        tenantId: TENANT,
+        actorId: ACTOR,
+        actorRole: 'AGENT',
+        ticketId: TICKET_ID,
+        visibility: 'INTERNAL',
+        body: 'Le pedí la captura, espero.',
+      });
+
+      expect(timers.stored(RELOJ)?.isPaused()).toBe(true);
+      expect(auditLogs.entries.map((e) => e.action)).toEqual(['comment.added']);
+    });
   });
 });
