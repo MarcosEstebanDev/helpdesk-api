@@ -213,6 +213,18 @@ describe('SlaTimer', () => {
       expect(timer.remainingMinutesAt(h('13:00'))).toBe(180);
     });
 
+    it('no se puede pausar un reloj ya vencido que el barrido aún no marcó', () => {
+      // El barrido pasa cada 30 s: en ese hueco el reloj ya incumplió aunque la
+      // fila no lo diga. Pausarlo le borraría el retraso (al reanudar, el margen
+      // restante sería 0 y `dueAt` saltaría a "ahora"). Tiene que incumplir con
+      // su vencimiento real.
+      const timer = arrancar(240);
+
+      expect(timer.pause(h('14:01'))).toBe(false);
+      expect(timer.pausedAt).toBeNull();
+      expect(timer.isOverdue(h('14:01'))).toBe(true);
+    });
+
     it('no se puede pausar un reloj incumplido ni uno parado', () => {
       const incumplido = arrancar(240);
       incumplido.markBreached(h('14:05'));

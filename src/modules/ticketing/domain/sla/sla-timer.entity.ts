@@ -120,6 +120,10 @@ export class SlaTimer extends Entity<SlaTimerId> {
    */
   pause(now: Date): boolean {
     if (!this.isRunning()) return false;
+    // Ya vencido aunque el barrido aún no lo haya marcado: pausarlo le borraría
+    // el retraso (al reanudar quedaría margen 0 con `dueAt` en "ahora"). Se deja
+    // correr para que el barrido lo incumpla con su vencimiento real.
+    if (this.isOverdue(now)) return false;
     this.props.pausedAt = now;
     return true;
   }

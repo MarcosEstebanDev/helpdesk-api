@@ -139,6 +139,21 @@ describe('SlaPauseCoordinator (ADR-0029)', () => {
     expect(guardado?.pausedAt).toBeNull();
   });
 
+  it('un reloj vencido que el barrido aún no marcó no se pausa', async () => {
+    const { sut, timers } = build();
+    sembrar(timers);
+
+    const r = await cambio(
+      sut,
+      'IN_PROGRESS',
+      'WAITING_ON_CUSTOMER',
+      h('14:30'),
+    );
+
+    expect(r).toBe('none');
+    expect(timers.stored(RESOLUCION)?.isRunning()).toBe(true);
+  });
+
   it('si la escritura pierde la carrera, informa que no hizo nada', async () => {
     const { sut, timers } = build();
     sembrar(timers);
