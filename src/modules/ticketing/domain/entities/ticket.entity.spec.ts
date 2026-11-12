@@ -1,4 +1,4 @@
-import { TenantId, TicketId, UserId } from '../ids';
+import { CommentId, TenantId, TicketId, UserId } from '../ids';
 import { Ticket } from './ticket.entity';
 
 const TENANT = TenantId('11111111-1111-1111-1111-111111111111');
@@ -284,6 +284,74 @@ describe('Ticket', () => {
 
       ticket.changeStatus('CLOSED', T2);
       expect(ticket.acceptsComments()).toBe(false);
+    });
+  });
+
+  describe('vuelta automática desde la espera (ADR-0029)', () => {
+    const COMENTARIO = CommentId('55555555-5555-5555-5555-555555555555');
+
+    /** Ticket en WAITING_ON_CUSTOMER con los eventos previos ya publicados. */
+    const enEspera = (): Ticket => {
+      const ticket = abrirOk();
+      ticket.changeStatus('IN_PROGRESS', T0);
+      ticket.changeStatus('WAITING_ON_CUSTOMER', T1);
+      ticket.pullDomainEvents();
+      return ticket;
+    };
+
+    it('el comentario público del cliente lo devuelve a IN_PROGRESS', () => {
+      const ticket = enEspera();
+
+      const result = ticket.registerComment(
+        COMENTARIO,
+        REQUESTER,
+        'VIEWER',
+        'PUBLIC',
+        T2,
+      );
+
+      expect(result.isOk()).toBe(true);
+      expect(ticket.status).toBe('IN_PROGRESS');
+      const eventos = ticket.pullDomainEvents();
+      expect(eventos.map((e) => e.eventName)).toEqual([
+        'comment.added',
+        'ticket.status_changed',
+      ]);
+      expect(eventos[1].payload).toMatchObject({
+        from: 'WAITING_ON_CUSTOMER',
+        to: 'IN_PROGRESS',
+      });
+    });
+
+    it.each([
+      ['AGENT', 'PUBLIC'],
+      ['AGENT', 'INTERNAL'],
+      ['ADMIN', 'PUBLIC'],
+    ] as const)(
+      'un comentario de %s (%s) no lo saca de la espera',
+      (role, visibility) => {
+        const ticket = enEspera();
+
+        ticket.registerComment(COMENTARIO, AGENTE, role, visibility, T2);
+
+        expect(ticket.status).toBe('WAITING_ON_CUSTOMER');
+        expect(ticket.pullDomainEvents().map((e) => e.eventName)).toEqual([
+          'comment.added',
+        ]);
+      },
+    );
+
+    it('fuera de la espera, el comentario del cliente no cambia el estado', () => {
+      const ticket = abrirOk();
+      ticket.changeStatus('IN_PROGRESS', T0);
+      ticket.pullDomainEvents();
+
+      ticket.registerComment(COMENTARIO, REQUESTER, 'VIEWER', 'PUBLIC', T2);
+
+      expect(ticket.status).toBe('IN_PROGRESS');
+      expect(ticket.pullDomainEvents().map((e) => e.eventName)).toEqual([
+        'comment.added',
+      ]);
     });
   });
 });

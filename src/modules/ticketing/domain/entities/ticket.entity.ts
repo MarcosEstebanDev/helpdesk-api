@@ -17,6 +17,7 @@ import {
   TicketingEvent,
 } from '../events/ticketing.events';
 import { CommentId, TenantId, TicketId, UserId } from '../ids';
+import { isResponder } from '../sla/responder-role';
 import {
   TicketPriority,
   TicketStatus,
@@ -216,6 +217,20 @@ export class Ticket extends AggregateRoot<TicketId, TicketingEvent> {
         visibility,
       }),
     );
+
+    // Vuelta automática desde la espera (ADR-0029): si estábamos esperando al
+    // cliente y el que habla es él —alguien que no responde en nombre de la
+    // organización, en un comentario que se ve—, la pelota vuelve al equipo.
+    // La decide el agregado y pasa por `changeStatus`, así emite el mismo
+    // `ticket.status_changed` que un cambio a mano y nadie aguas abajo necesita
+    // una regla propia para comentarios.
+    if (
+      this.props.status === 'WAITING_ON_CUSTOMER' &&
+      visibility === 'PUBLIC' &&
+      !isResponder(authorRole)
+    ) {
+      return this.changeStatus('IN_PROGRESS', now);
+    }
     return ok(undefined);
   }
 
