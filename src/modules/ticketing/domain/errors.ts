@@ -169,6 +169,37 @@ export class TooManyTagsError extends DomainError {
   }
 }
 
+/** Nombre o filtros de una vista guardada inválidos (ADR-0033). Dice cuál. */
+export class InvalidSavedViewError extends DomainError {
+  readonly code = 'ticketing.invalid_saved_view';
+  constructor(detail: string) {
+    super(detail);
+  }
+}
+
+/** No existe, o es la vista personal de otra persona (invisible: mismo 404). */
+export class SavedViewNotFoundError extends DomainError {
+  readonly code = 'ticketing.saved_view_not_found';
+  constructor() {
+    super('La vista no existe.');
+  }
+}
+
+export class DuplicateSavedViewNameError extends DomainError {
+  readonly code = 'ticketing.duplicate_saved_view_name';
+  constructor() {
+    super('Ya hay una vista con ese nombre.');
+  }
+}
+
+/** Las vistas compartidas solo las crea, edita y borra un ADMIN. */
+export class SavedViewForbiddenError extends DomainError {
+  readonly code = 'ticketing.saved_view_forbidden';
+  constructor() {
+    super('Solo un administrador puede crear o cambiar vistas compartidas.');
+  }
+}
+
 export type TicketingError =
   | InvalidTicketSubjectError
   | InvalidTicketDescriptionError
@@ -187,4 +218,8 @@ export type TicketingError =
   | InvalidTagError
   | TagNotFoundError
   | DuplicateTagNameError
-  | TooManyTagsError;
+  | TooManyTagsError
+  | InvalidSavedViewError
+  | SavedViewNotFoundError
+  | DuplicateSavedViewNameError
+  | SavedViewForbiddenError;
