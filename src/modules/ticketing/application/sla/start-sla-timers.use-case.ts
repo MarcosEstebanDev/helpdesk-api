@@ -14,6 +14,7 @@ import {
 import { CALENDAR_24_7 } from '../../domain/sla/sla-calendar';
 import { resolvePolicy } from '../../domain/sla/sla-policy';
 import { SLA_KINDS, SlaTimer } from '../../domain/sla/sla-timer.entity';
+import { TicketRepository } from '../../domain/ports/ticket.repository';
 import { TicketPriority } from '../../domain/ticket-status';
 import { runTransactional } from '../transactional';
 
@@ -47,6 +48,7 @@ export class StartSlaTimers {
     private readonly timers: SlaTimerRepository,
     private readonly processed: ProcessedMessages,
     private readonly ids: IdGenerator,
+    private readonly tickets: TicketRepository,
   ) {}
 
   async execute(
@@ -78,18 +80,33 @@ export class StartSlaTimers {
           RESOLUTION: objetivo.resolutionMinutes,
         };
 
+        // El arranque es diferido y la pausa síncrona (ADR-0029): si el ticket
+        // llegó a la espera ANTES de que este job corriera, el coordinador no
+        // encontró reloj que pausar. Se mira el estado actual y el de
+        // resolución nace pausado. La hora de la pausa es `updatedAt`, la mejor
+        // aproximación que guarda el ticket: si hubo actividad después de entrar
+        // en la espera es algo posterior a la real, o sea que cuenta de más
+        // contra el equipo y nunca de menos.
+        const ticket = await this.tickets.findById(
+          input.tenantId,
+          input.ticketId,
+        );
+        const enEspera = ticket?.status === 'WAITING_ON_CUSTOMER';
+
         for (const kind of SLA_KINDS) {
-          await this.timers.save(
-            SlaTimer.start({
-              id: SlaTimerId(this.ids.uuid()),
-              tenantId: input.tenantId,
-              ticketId: input.ticketId,
-              kind,
-              minutes: minutosPor[kind],
-              calendar: CALENDAR_24_7,
-              now: input.occurredAt,
-            }),
-          );
+          const timer = SlaTimer.start({
+            id: SlaTimerId(this.ids.uuid()),
+            tenantId: input.tenantId,
+            ticketId: input.ticketId,
+            kind,
+            minutes: minutosPor[kind],
+            calendar: CALENDAR_24_7,
+            now: input.occurredAt,
+          });
+          if (enEspera && kind === 'RESOLUTION') {
+            timer.pause(ticket.updatedAt);
+          }
+          await this.timers.save(timer);
         }
 
         return ok({ status: 'started', timers: SLA_KINDS.length } as const);

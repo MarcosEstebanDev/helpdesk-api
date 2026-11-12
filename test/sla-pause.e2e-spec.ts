@@ -378,6 +378,33 @@ describe('Pausa del SLA (e2e)', () => {
     );
   });
 
+  it('si llega a la espera antes de arrancar sus relojes, el de resolución nace pausado', async () => {
+    // El arranque es diferido y la pausa síncrona: el coordinador no encontró
+    // reloj que pausar, así que lo resuelve StartSlaTimers mirando el estado.
+    const res = await request(app.getHttpServer())
+      .post('/tickets')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        subject: 'Worker atrasado',
+        description: 'x',
+        priority: 'NORMAL',
+      })
+      .expect(201);
+    const id = (res.body as { id: string }).id;
+    reloj.avanzarMinutos(1);
+    await cambiarEstado(id, 'IN_PROGRESS').expect(200);
+    reloj.avanzarMinutos(1);
+    await cambiarEstado(id, 'WAITING_ON_CUSTOMER').expect(200);
+
+    expect((await procesarSla(id, 'ticket.created')).action).toBe('started');
+
+    const reloj_ = await resolucionDe(id);
+    expect(reloj_.pausedAt).not.toBeNull();
+    reloj.avanzarMinutos(RESOLUCION_NORMAL + 60);
+    await sweeper.sweep(reloj.now());
+    expect((await resolucionDe(id)).breachedAt).toBeNull();
+  });
+
   it('desde la espera no se cierra ni se devuelve a la cola, y un VIEWER no la usa', async () => {
     const id = await ticketEnCurso('Transiciones prohibidas');
     await cambiarEstado(id, 'WAITING_ON_CUSTOMER').expect(200);

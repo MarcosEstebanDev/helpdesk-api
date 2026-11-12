@@ -1560,6 +1560,14 @@ La razón: arrancar y parar toleran retraso (se fechan con `occurredAt` y nadie
 decide nada con el reloj mientras tanto). Pausar no, porque el barrido usa ese
 dato para decidir un incumplimiento irreversible.
 
+Como el arranque sigue siendo diferido, un ticket puede llegar a la espera
+**antes** de tener relojes (worker atrasado; el seed, siempre). Por eso
+`StartSlaTimers` mira el estado actual del ticket y, si ya espera al cliente,
+el reloj de resolución nace pausado desde `updatedAt` (aproximación que, si
+falla, cuenta de más contra el equipo, nunca de menos). Y un reloj ya vencido
+que el barrido aún no marcó **no se pausa**: pausarlo le borraría el retraso.
+Los dos huecos los encontró la revisión final de la rama.
+
 ### Decisión 5 — Las transiciones del reloj son escrituras condicionadas
 
 `SlaTimerRepository.transition(timer, expected)` hace un `UPDATE ... WHERE`

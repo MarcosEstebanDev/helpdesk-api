@@ -51,17 +51,23 @@ const nuevoTicket = (): Ticket => {
 
 describe('StartSlaTimers', () => {
   const build = (
-    opciones: { overrides?: Parameters<typeof fakeSlaPolicies>[0] } = {},
+    opciones: {
+      overrides?: Parameters<typeof fakeSlaPolicies>[0];
+      ticket?: Ticket;
+    } = {},
   ) => {
     const transactions = fakeTransactions();
     const timers = fakeSlaTimers();
     const processed = fakeProcessedMessages();
+    const tickets = fakeTicketRepository();
+    tickets.seed(opciones.ticket ?? nuevoTicket());
     const sut = new StartSlaTimers(
       transactions.manager,
       fakeSlaPolicies(opciones.overrides),
       timers,
       processed,
       sequentialIds(),
+      tickets,
     );
     return { sut, transactions, timers, processed };
   };
@@ -74,6 +80,28 @@ describe('StartSlaTimers', () => {
       priority: 'HIGH',
       occurredAt: CREADO,
     });
+
+  it('si el ticket ya espera al cliente, el reloj de resolución nace pausado (ADR-0029)', async () => {
+    // La pausa es síncrona pero el arranque es diferido: si el ticket llegó a
+    // la espera antes de que el worker procesara `ticket.created`, el
+    // coordinador no encontró reloj que pausar. Sin esto, el ticket esperaría
+    // con el reloj corriendo hasta incumplir (le pasaba al seed siempre).
+    const ticket = nuevoTicket();
+    const enEspera = new Date('2026-09-09T10:20:00.000Z');
+    ticket.changeStatus('IN_PROGRESS', new Date('2026-09-09T10:10:00.000Z'));
+    ticket.changeStatus('WAITING_ON_CUSTOMER', enEspera);
+    const { sut, timers } = build({ ticket });
+
+    await ejecutar(sut);
+
+    const resolucion = timers.saved.find((t) => t.kind === 'RESOLUTION');
+    const respuesta = timers.saved.find((t) => t.kind === 'RESPONSE');
+    expect(resolucion?.isPaused()).toBe(true);
+    expect(resolucion?.pausedAt).toEqual(enEspera);
+    // Cuenta desde la creación igual que siempre; solo el de resolución pausa.
+    expect(resolucion?.startedAt).toEqual(CREADO);
+    expect(respuesta?.isRunning()).toBe(true);
+  });
 
   it('arranca los dos relojes con los objetivos por defecto', async () => {
     const { sut, timers } = build();

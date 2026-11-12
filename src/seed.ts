@@ -101,8 +101,10 @@ const TICKETS: SeedTicket[] = [
     moveTo: ['IN_PROGRESS', 'RESOLVED'],
   },
   {
-    // Esperando al cliente (ADR-0029): el reloj de resolución queda en pausa
-    // y la vista lo enseña congelado. Si el cliente comenta, vuelve solo.
+    // Esperando al cliente (ADR-0029). El seed no drena el outbox, así que el
+    // reloj de resolución nace YA pausado cuando el worker procesa el
+    // `ticket.created` (StartSlaTimers mira el estado actual del ticket). Si el
+    // cliente comenta, vuelve solo a En curso.
     subject: 'El PDF de la factura de octubre sale en blanco',
     description:
       'Descargo la factura desde el panel y el PDF abre con todas las páginas vacías.',

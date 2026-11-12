@@ -274,6 +274,7 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
         SLA_TIMER_REPOSITORY,
         PROCESSED_MESSAGES,
         ID_GENERATOR,
+        TICKET_REPOSITORY,
       ],
       useFactory: (
         transactions: TransactionManager,
@@ -281,8 +282,16 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
         timers: SlaTimerRepository,
         processed: ProcessedMessages,
         ids: IdGenerator,
+        tickets: TicketRepository,
       ): StartSlaTimers =>
-        new StartSlaTimers(transactions, policies, timers, processed, ids),
+        new StartSlaTimers(
+          transactions,
+          policies,
+          timers,
+          processed,
+          ids,
+          tickets,
+        ),
     },
     {
       provide: BroadcastTicketEvent,
