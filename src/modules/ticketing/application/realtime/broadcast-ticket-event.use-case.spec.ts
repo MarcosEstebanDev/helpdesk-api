@@ -164,6 +164,62 @@ describe('BroadcastTicketEvent', () => {
       });
     });
 
+    describe('notas internas (ADR-0028)', () => {
+      it('una nota interna se avisa solo a la sala del equipo', async () => {
+        const { sut, realtime } = montar();
+
+        await sut.execute(
+          evento('comment.added', {
+            commentId: 'c-1',
+            authorId: 'agente',
+            authorRole: 'AGENT',
+            visibility: 'INTERNAL',
+          }),
+        );
+
+        expect(realtime.emisiones.map((e) => e.audience.scope)).toEqual([
+          'staff',
+        ]);
+      });
+
+      it('una respuesta pública sigue yendo a la sala del ticket', async () => {
+        const { sut, realtime } = montar();
+
+        await sut.execute(
+          evento('comment.added', {
+            commentId: 'c-1',
+            authorId: 'agente',
+            authorRole: 'AGENT',
+            visibility: 'PUBLIC',
+          }),
+        );
+
+        expect(realtime.emisiones.map((e) => e.audience.scope)).toEqual([
+          'ticket',
+        ]);
+      });
+
+      it('un v2 (sin visibilidad) era público; un valor desconocido falla cerrado', async () => {
+        const { sut, realtime } = montar();
+
+        await sut.execute(
+          evento('comment.added', { commentId: 'c-1', authorRole: 'AGENT' }),
+        );
+        await sut.execute(
+          evento('comment.added', {
+            commentId: 'c-2',
+            authorRole: 'AGENT',
+            visibility: 'PRIVADO',
+          }),
+        );
+
+        expect(realtime.emisiones.map((e) => e.audience.scope)).toEqual([
+          'ticket',
+          'staff',
+        ]);
+      });
+    });
+
     it('no reenvía el evento de integración entero', async () => {
       // El evento es "gordo" a propósito (ADR-0018). Si se reenviara tal cual,
       // cualquier campo nuevo del outbox acabaría publicado sin querer.

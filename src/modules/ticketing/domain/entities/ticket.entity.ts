@@ -1,4 +1,5 @@
 import { AggregateRoot, Result, err, ok } from '../../../../shared-kernel';
+import { CommentVisibility } from '../comment-visibility';
 import {
   InvalidTicketDescriptionError,
   InvalidTicketSubjectError,
@@ -200,6 +201,7 @@ export class Ticket extends AggregateRoot<TicketId, TicketingEvent> {
     authorId: UserId,
     /** Rol del autor EN EL MOMENTO de comentar; lo usa el SLA (ADR-0020). */
     authorRole: string,
+    visibility: CommentVisibility,
     now: Date,
   ): Result<void, TicketingError> {
     if (!this.acceptsComments()) {
@@ -211,6 +213,7 @@ export class Ticket extends AggregateRoot<TicketId, TicketingEvent> {
         commentId,
         authorId,
         authorRole,
+        visibility,
       }),
     );
     return ok(undefined);

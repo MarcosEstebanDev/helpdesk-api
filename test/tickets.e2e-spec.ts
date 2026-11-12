@@ -454,6 +454,80 @@ describe('Tickets (e2e)', () => {
 
   // ------------------------------------------------------------------- RBAC
 
+  describe('notas internas (ADR-0028)', () => {
+    let ticketId: string;
+
+    type Conversacion = {
+      comments: { body: string; visibility: string }[];
+    };
+    const conversacion = async (token: string) =>
+      (
+        (await conAuth('get', `/tickets/${ticketId}`, token).expect(200))
+          .body as Conversacion
+      ).comments;
+
+    beforeAll(async () => {
+      acme.token = await tokenConRol(acme, 'ADMIN');
+      const res = await crearTicket(acme.token).expect(201);
+      ticketId = (res.body as { id: string }).id;
+
+      await conAuth('post', `/tickets/${ticketId}/comments`, acme.token)
+        .send({ body: 'Respuesta al cliente.' })
+        .expect(201);
+      const nota = await conAuth(
+        'post',
+        `/tickets/${ticketId}/comments`,
+        acme.token,
+      )
+        .send({ body: 'Nota del equipo.', visibility: 'INTERNAL' })
+        .expect(201);
+      expect((nota.body as { visibility: string }).visibility).toBe('INTERNAL');
+    });
+
+    afterAll(async () => {
+      acme.token = await tokenConRol(acme, 'ADMIN');
+    });
+
+    it('sin visibilidad, un comentario es público (como siempre)', async () => {
+      const comentarios = await conversacion(acme.token);
+      expect(comentarios.map((c) => c.visibility)).toEqual([
+        'PUBLIC',
+        'INTERNAL',
+      ]);
+    });
+
+    it('el equipo ve la conversación entera, notas incluidas', async () => {
+      const tokenAgente = await tokenConRol(acme, 'AGENT');
+      const comentarios = await conversacion(tokenAgente);
+      expect(comentarios.map((c) => c.body)).toEqual([
+        'Respuesta al cliente.',
+        'Nota del equipo.',
+      ]);
+    });
+
+    it('el cliente (VIEWER) no ve las notas internas', async () => {
+      const tokenViewer = await tokenConRol(acme, 'VIEWER');
+      const comentarios = await conversacion(tokenViewer);
+      expect(comentarios.map((c) => c.body)).toEqual(['Respuesta al cliente.']);
+    });
+
+    it('el cliente no puede escribir una nota interna (403) y no queda nada', async () => {
+      const tokenViewer = await tokenConRol(acme, 'VIEWER');
+      await conAuth('post', `/tickets/${ticketId}/comments`, tokenViewer)
+        .send({ body: 'A ver qué dicen.', visibility: 'INTERNAL' })
+        .expect(403);
+
+      const comentarios = await conversacion(acme.token);
+      expect(comentarios).toHaveLength(2);
+    });
+
+    it('rechaza una visibilidad que no existe antes de llegar al dominio', async () => {
+      await conAuth('post', `/tickets/${ticketId}/comments`, acme.token)
+        .send({ body: 'Hola', visibility: 'SECRETO' })
+        .expect(400);
+    });
+  });
+
   describe('permisos por rol (ADR-0014)', () => {
     let ticketId: string;
     let tokenViewer: string;

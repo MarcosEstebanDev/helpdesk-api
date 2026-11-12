@@ -6,6 +6,7 @@ import {
   err,
   ok,
 } from '../../../shared-kernel';
+import { CommentVisibility } from '../domain/comment-visibility';
 import { Comment } from '../domain/entities/comment.entity';
 import {
   TicketClosedError,
@@ -26,6 +27,8 @@ export interface AddCommentInput {
   actorRole: string;
   ticketId: TicketId;
   body: string;
+  /** Respuesta al cliente o nota del equipo (ADR-0028). */
+  visibility: CommentVisibility;
 }
 
 /**
@@ -69,7 +72,9 @@ export class AddComment {
         tenantId: input.tenantId,
         ticketId: input.ticketId,
         authorId: input.actorId,
+        authorRole: input.actorRole,
         body: input.body,
+        visibility: input.visibility,
         now,
       });
       if (written.isErr()) {
@@ -86,6 +91,7 @@ export class AddComment {
         comment.id,
         input.actorId,
         input.actorRole,
+        comment.visibility,
         now,
       );
       if (registered.isErr()) {
@@ -100,7 +106,7 @@ export class AddComment {
         action: 'comment.added',
         entityType: 'ticket',
         entityId: ticket.id,
-        metadata: { commentId: comment.id },
+        metadata: { commentId: comment.id, visibility: comment.visibility },
         now,
       });
       await this.events.record(ticket);

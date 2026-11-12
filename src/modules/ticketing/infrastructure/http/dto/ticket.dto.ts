@@ -11,6 +11,8 @@ import {
   Max,
   Min,
 } from 'class-validator';
+import { COMMENT_VISIBILITIES } from '../../../domain/comment-visibility';
+import type { CommentVisibility } from '../../../domain/comment-visibility';
 import { SLA_KINDS } from '../../../domain/sla/sla-timer.entity';
 import {
   TRIAGE_CATEGORIES,
@@ -79,6 +81,16 @@ export class AddCommentDto {
   @IsString()
   @Length(1, 10_000)
   body!: string;
+
+  @ApiPropertyOptional({
+    enum: COMMENT_VISIBILITIES,
+    default: 'PUBLIC',
+    description:
+      'INTERNAL = nota del equipo: el cliente no la ve y no cuenta como respuesta para el SLA. Solo AGENT o ADMIN.',
+  })
+  @IsOptional()
+  @IsIn(COMMENT_VISIBILITIES)
+  visibility?: CommentVisibility;
 }
 
 export class ListTicketsQueryDto {
@@ -151,6 +163,7 @@ export class TicketCommentDto {
   @ApiProperty() id!: string;
   @ApiProperty() authorId!: string;
   @ApiProperty() body!: string;
+  @ApiProperty({ enum: COMMENT_VISIBILITIES }) visibility!: string;
   @ApiProperty() createdAt!: Date;
 }
 

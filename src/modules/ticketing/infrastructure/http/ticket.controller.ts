@@ -137,6 +137,8 @@ export class TicketController {
     const ticket = await this.tickets.detail(
       TenantId(user.tenantId),
       TicketId(id),
+      // Del token verificado: decide si la conversación trae las notas internas.
+      user.role,
     );
     // Un ticket de otra organización es invisible por RLS, así que aquí llega
     // como "no existe" — que es justo lo que queremos responder: un 403 estaría
@@ -231,6 +233,10 @@ export class TicketController {
   @MinRole('VIEWER')
   @ApiOperation({ summary: 'Añade un comentario al ticket' })
   @ApiResponse({ status: 201, type: TicketCommentDto })
+  @ApiResponse({
+    status: 403,
+    description: 'Un VIEWER no puede escribir notas internas',
+  })
   @ApiResponse({ status: 409, description: 'El ticket está cerrado' })
   async comment(
     @CurrentUser() user: TenantContext,
@@ -245,6 +251,7 @@ export class TicketController {
       actorRole: user.role,
       ticketId: TicketId(id),
       body: dto.body,
+      visibility: dto.visibility ?? 'PUBLIC',
     });
     if (result.isErr()) throw toHttpException(result.error);
 
@@ -253,6 +260,7 @@ export class TicketController {
       id: comment.id,
       authorId: comment.authorId,
       body: comment.body,
+      visibility: comment.visibility,
       createdAt: comment.createdAt,
     };
   }

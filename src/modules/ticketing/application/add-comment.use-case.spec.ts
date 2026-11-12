@@ -75,6 +75,7 @@ describe('AddComment', () => {
       actorId: ACTOR,
       actorRole: 'AGENT',
       ticketId: TICKET_ID,
+      visibility: 'PUBLIC',
       body: '  Ya lo estamos mirando.  ',
     });
 
@@ -101,6 +102,7 @@ describe('AddComment', () => {
       actorId: ACTOR,
       actorRole: 'AGENT',
       ticketId: TICKET_ID,
+      visibility: 'PUBLIC',
       body: 'Ya lo estamos mirando.',
     });
 
@@ -115,11 +117,75 @@ describe('AddComment', () => {
         commentId: result.value.id,
         authorId: ACTOR,
         authorRole: 'AGENT',
+        visibility: 'PUBLIC',
       });
-      // v2: el rol viaja EN el evento porque lo que importa es cuál tenía al
-      // comentar, no el que tenga cuando el consumidor lo procese.
-      expect(evento.version).toBe(2);
+      // v2 sumó el rol y v3 la visibilidad (ADR-0028): viajan EN el evento
+      // porque lo que importa es cómo era el comentario al escribirse, no lo
+      // que haya cuando el consumidor lo procese.
+      expect(evento.version).toBe(3);
     }
+  });
+
+  describe('notas internas (ADR-0028)', () => {
+    it('el equipo deja una nota interna; el evento y la auditoría lo dicen', async () => {
+      const { sut, comments, auditLogs, outbox } = buildSut(nuevoTicket());
+
+      const result = await sut.execute({
+        tenantId: TENANT,
+        actorId: ACTOR,
+        actorRole: 'AGENT',
+        ticketId: TICKET_ID,
+        visibility: 'INTERNAL',
+        body: 'Parece el bug de la 4.2.0.',
+      });
+
+      expect(result.isOk()).toBe(true);
+      expect(comments.comments[0].visibility).toBe('INTERNAL');
+      // El SLA y el tiempo real deciden con lo que viaja en el evento.
+      expect(outbox.records[0].payload).toMatchObject({
+        visibility: 'INTERNAL',
+      });
+      expect(auditLogs.entries[0].metadata).toMatchObject({
+        visibility: 'INTERNAL',
+      });
+    });
+
+    it('el cliente (VIEWER) no puede escribir una nota interna, y nada se guarda', async () => {
+      const { sut, transactions, comments, outbox } = buildSut(nuevoTicket());
+
+      const result = await sut.execute({
+        tenantId: TENANT,
+        actorId: ACTOR,
+        actorRole: 'VIEWER',
+        ticketId: TICKET_ID,
+        visibility: 'INTERNAL',
+        body: 'Quiero ver qué dicen de mí.',
+      });
+
+      expect(result.isErr()).toBe(true);
+      if (result.isErr()) {
+        expect(result.error.code).toBe('ticketing.internal_note_forbidden');
+      }
+      expect(comments.comments).toHaveLength(0);
+      expect(outbox.records).toHaveLength(0);
+      expect(transactions.rollbacks).toBe(1);
+    });
+
+    it('el cliente sí puede responder en público', async () => {
+      const { sut, comments } = buildSut(nuevoTicket());
+
+      const result = await sut.execute({
+        tenantId: TENANT,
+        actorId: ACTOR,
+        actorRole: 'VIEWER',
+        ticketId: TICKET_ID,
+        visibility: 'PUBLIC',
+        body: 'Tengo la 4.2.0.',
+      });
+
+      expect(result.isOk()).toBe(true);
+      expect(comments.comments[0].visibility).toBe('PUBLIC');
+    });
   });
 
   it('rechaza un comentario vacío y revierte', async () => {
@@ -130,6 +196,7 @@ describe('AddComment', () => {
       actorId: ACTOR,
       actorRole: 'AGENT',
       ticketId: TICKET_ID,
+      visibility: 'PUBLIC',
       body: '   ',
     });
 
@@ -149,6 +216,7 @@ describe('AddComment', () => {
       actorId: ACTOR,
       actorRole: 'AGENT',
       ticketId: TICKET_ID,
+      visibility: 'PUBLIC',
       body: 'Una cosa más...',
     });
 
@@ -168,6 +236,7 @@ describe('AddComment', () => {
       actorId: ACTOR,
       actorRole: 'AGENT',
       ticketId: TicketId('55555555-5555-5555-5555-555555555555'),
+      visibility: 'PUBLIC',
       body: 'Hola',
     });
 

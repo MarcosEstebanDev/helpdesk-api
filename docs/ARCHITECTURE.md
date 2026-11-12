@@ -37,6 +37,7 @@ lo que costaría revertirla.
 - [ADR-0015](#adr-0015--ciclo-de-vida-del-ticket-como-máquina-de-estados-en-el-dominio) — Ciclo de vida del ticket como máquina de estados en el dominio
 - [ADR-0016](#adr-0016--unidad-de-trabajo-explícita-el-auditlog-en-la-misma-transacción) — Unidad de trabajo explícita: el AuditLog en la misma transacción
 - [ADR-0017](#adr-0017--numeración-visible-correlativa-por-tenant) — Numeración visible correlativa por tenant
+- [ADR-0028](#adr-0028--notas-internas-visibilidad-del-comentario-sla-y-sala-del-equipo) — Notas internas: visibilidad del comentario, SLA y sala del equipo
 
 **Trabajo asíncrono** — Cómo un cambio se convierte en efectos, sin perder eventos.
 
@@ -1376,3 +1377,91 @@ funciona igual. Entre servicios autentica un secreto compartido
   sugerida (0/6 en ese subconjunto de las evals). Como la sugerencia no se
   aplica sola, el efecto es una etiqueta engañosa para el agente; mejorarlo es
   trabajo de prompt y de modelo, medible con las evals.
+
+## ADR-0028 — Notas internas: visibilidad del comentario, SLA y sala del equipo
+
+**Estado:** aceptado (2026-11-11). Primera funcionalidad de la "tanda 1" de
+producto, tras comparar con Zendesk, Freshdesk, Help Scout y Zammad: todos
+tienen notas que el cliente no ve, y el resto de la tanda (portal del cliente,
+email) no se puede abrir sin ellas.
+
+### Contexto
+
+Hasta ahora todo comentario era conversación con el cliente. El equipo no tenía
+dónde coordinarse ("parece el bug de la 4.2.0, lo escalo") sin que lo leyera el
+solicitante, que en el modelo de roles es el VIEWER (ADR-0014, ADR-0025).
+
+Sumarlo como "una columna más" tenía un hueco serio: el SLA de primera respuesta
+se para con el primer comentario de un AGENT o ADMIN (ADR-0020). Una nota
+interna lo habría parado, y el SLA se daría por cumplido sin que el cliente
+recibiera una sola palabra.
+
+### Decisión 1 — Visibilidad en el comentario, no una tabla aparte
+
+`comments.visibility` (`PUBLIC` | `INTERNAL`, `PUBLIC` por defecto). La migración
+deja todos los comentarios existentes como `PUBLIC`, que es lo que eran. Es la
+misma conversación, en el mismo orden, con la misma inmutabilidad: dos tablas
+obligarían a mezclar dos listas para mostrar un hilo.
+
+La visibilidad es **inmutable** como el resto del comentario: una nota no se
+"publica" después. Si se pudiera, lo que vio el cliente y lo que cuenta la
+auditoría dejarían de coincidir.
+
+### Decisión 2 — Solo el equipo escribe notas, y lo decide el dominio
+
+`Comment.write` recibe el rol del autor (del JWT verificado, nunca del body) y
+devuelve `InternalNoteForbiddenError` (403) si un VIEWER intenta una nota. El
+"equipo" es la misma pregunta que ya se hacía el SLA, `isResponder` (AGENT y
+ADMIN), expuesta como `isStaff`: si un rol pudiera leer notas pero su comentario
+no contara como respuesta, o al revés, las dos reglas acabarían
+contradiciéndose.
+
+### Decisión 3 — La lectura filtra en el WHERE, no en memoria
+
+`TicketReadModel.detail` recibe el rol de quien mira y filtra con
+`visibility IN (visibleTo(role))`. Una nota que el cliente no puede ver ni
+siquiera sale de la base. El historial de auditoría no necesita filtro: ya es
+solo para AGENT.
+
+**No hay RLS por rol, y es deliberado.** Las policies filtran por tenant, no por
+rol. Sumar `app.current_role` a la transacción y una policy sobre `comments`
+daría defensa en profundidad, pero toca el `TransactionManager` y todos los
+roles de base de datos, y es exactamente el trabajo que trae el rol CLIENTE del
+portal (donde además hay que filtrar "solo sus tickets"). Entra ahí. Hasta
+entonces, la garantía la dan este WHERE y su e2e.
+
+### Decisión 4 — `comment.added` v3, y v2 se lee como público
+
+El evento suma `visibility`. El consumidor del SLA usa la regla de dominio
+`countsAsResponse({ authorRole, visibility })`: cuenta solo lo que escribe el
+equipo **y** ve el cliente. Una nota interna se ignora con `detail: 'nota
+interna'`.
+
+Un v2 en vuelo no se descarta: se lee como `PUBLIC`. No es una suposición, es lo
+que pasó: antes de este ADR todos los comentarios lo eran. Es la diferencia con
+el v1 del ADR-0020, que se descartaba porque le faltaba un dato imposible de
+deducir. Un valor de visibilidad desconocido, en cambio, no se adivina: fallo
+permanente, a la DLQ.
+
+### Decisión 5 — El aviso de una nota va a la sala del equipo
+
+`BroadcastTicketEvent` manda el `comment.added` de una nota a `staff`, no a la
+sala del ticket. El aviso no lleva el cuerpo (ADR-0023), pero en la sala del
+ticket está el cliente que lo tiene abierto: sabría que el equipo escribió algo,
+y cuándo. Es la regla del ADR-0022, "el filtrado por rol es una sala, no un
+`if`". Falla cerrado: un v2 sin el campo va al ticket (era público), un valor
+desconocido va al equipo. El cliente web no cambia: invalida el detalle por
+`ticketId`, venga de la sala que venga.
+
+### Consecuencias
+
+- (+) El equipo coordina dentro del ticket sin abrir otro canal.
+- (+) El SLA sigue midiendo lo que promete: cuánto tarda el cliente en recibir
+  una respuesta.
+- (+) Prepara el portal del cliente y el canal de email: lo que se le manda al
+  cliente es exactamente lo `PUBLIC`.
+- (−) La confidencialidad de las notas depende de la aplicación, no de la base,
+  hasta que entre el RLS por rol.
+- (−) El contrato del WebSocket y los tipos del frontend se siguen manteniendo a
+  mano (deuda conocida del ADR-0004): `visibility` se agregó en los dos lados.
+

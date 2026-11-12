@@ -56,7 +56,8 @@ interface SeedTicket {
   description: string;
   priority: TicketPriority;
   /** Comentarios a añadir, en orden. `staff` decide quién los firma. */
-  comments?: { staff: boolean; body: string }[];
+  /** `internal`: nota del equipo que el cliente no ve (ADR-0028). */
+  comments?: { staff: boolean; internal?: boolean; body: string }[];
   /** Estado final; se alcanza pasando por las transiciones legales. */
   moveTo?: ('IN_PROGRESS' | 'RESOLVED' | 'CLOSED')[];
 }
@@ -76,6 +77,11 @@ const TICKETS: SeedTicket[] = [
       {
         staff: true,
         body: '¿Qué versión de la app tenés? Estamos viendo un problema con la 4.2.0 en Android.',
+      },
+      {
+        staff: true,
+        internal: true,
+        body: 'Pinta el mismo crash de la 4.2.0 que ya reportó mobile. Si confirma la versión, lo escalo y le ofrecemos la 4.1.3 mientras tanto.',
       },
       { staff: false, body: 'La 4.2.0, sí. Android 14.' },
     ],
@@ -237,6 +243,7 @@ async function main(): Promise<void> {
           actorRole: comment.staff ? 'AGENT' : 'VIEWER',
           ticketId,
           body: comment.body,
+          visibility: comment.internal === true ? 'INTERNAL' : 'PUBLIC',
         });
         if (result.isErr()) {
           throw new Error(`No se pudo comentar: ${result.error.code}`);

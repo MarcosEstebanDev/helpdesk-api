@@ -6,6 +6,7 @@ import { CLOCK } from '../../../../shared-kernel';
 import type { Clock } from '../../../../shared-kernel';
 import { PrismaRepository } from '../../../../infrastructure/prisma/prisma.repository';
 import { PrismaService } from '../../../../infrastructure/prisma/prisma.service';
+import { CommentVisibility, visibleTo } from '../../domain/comment-visibility';
 import { TenantId, TicketId } from '../../domain/ids';
 import {
   SlaTimerView,
@@ -80,6 +81,7 @@ export interface TicketDetail extends TicketSummary {
     id: string;
     authorId: string;
     body: string;
+    visibility: CommentVisibility;
     createdAt: Date;
   }[];
   /**
@@ -210,20 +212,28 @@ export class TicketReadModel extends PrismaRepository {
     });
   }
 
+  /**
+   * `viewerRole` decide qué parte de la conversación se devuelve (ADR-0028): al
+   * cliente, sin las notas internas. El filtro va en el WHERE y no después en
+   * memoria, así una nota que el cliente no puede ver ni siquiera sale de la base.
+   */
   async detail(
     tenantId: TenantId,
     ticketId: TicketId,
+    viewerRole: string,
   ): Promise<TicketDetail | null> {
     return this.runInTenant(tenantId, async (tx) => {
       const row = await tx.ticket.findFirst({
         where: { id: ticketId, tenantId },
         include: {
           comments: {
+            where: { visibility: { in: [...visibleTo(viewerRole)] } },
             orderBy: { createdAt: 'asc' },
             select: {
               id: true,
               authorId: true,
               body: true,
+              visibility: true,
               createdAt: true,
             },
           },
