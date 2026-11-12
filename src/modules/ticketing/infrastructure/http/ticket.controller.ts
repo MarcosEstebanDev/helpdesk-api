@@ -135,6 +135,11 @@ export class TicketController {
       aiSuggestsHigher: query.aiSuggestsHigher,
       withTags: esEquipo,
       tagIds: query.tagId,
+      // Del token verificado: decide si las notas internas cuentan al buscar.
+      search:
+        query.q === undefined
+          ? undefined
+          : { text: query.q, viewerRole: user.role },
       limit: query.limit ?? DEFAULT_PAGE_SIZE,
       cursor: query.cursor,
     });
