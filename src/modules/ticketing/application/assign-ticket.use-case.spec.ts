@@ -67,6 +67,22 @@ const buildSut = (semilla: Ticket) => {
 };
 
 describe('AssignTicket', () => {
+  it('lee el ticket bloqueado', async () => {
+    // Lee y vuelve a guardar el ticket ENTERO: sin bloquear la fila, un cambio
+    // concurrente (p. ej. otro agente que lo cierra) se pisaría con el estado
+    // viejo. Mismo hallazgo que en SetTicketTags (ADR-0031).
+    const { sut, tickets } = buildSut(nuevoTicket());
+
+    await sut.execute({
+      tenantId: TENANT,
+      actorId: ACTOR,
+      ticketId: TICKET_ID,
+      assigneeId: AGENTE,
+    });
+
+    expect(tickets.lockedReads).toBe(1);
+  });
+
   it('asigna a un miembro y lo audita', async () => {
     const { sut, auditLogs } = buildSut(nuevoTicket());
 

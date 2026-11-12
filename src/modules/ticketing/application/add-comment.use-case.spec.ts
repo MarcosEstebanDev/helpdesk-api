@@ -90,10 +90,28 @@ const buildSut = (semilla: Ticket) => {
     new SlaPauseCoordinator(timers),
   );
 
-  return { sut, transactions, comments, auditLogs, outbox, timers };
+  return { sut, transactions, tickets, comments, auditLogs, outbox, timers };
 };
 
 describe('AddComment', () => {
+  it('lee el ticket bloqueado', async () => {
+    // Lee y vuelve a guardar el ticket ENTERO: sin bloquear la fila, un cambio
+    // concurrente (p. ej. otro agente que lo cierra) se pisaría con el estado
+    // viejo. Mismo hallazgo que en SetTicketTags (ADR-0031).
+    const { sut, tickets } = buildSut(nuevoTicket());
+
+    await sut.execute({
+      tenantId: TENANT,
+      actorId: ACTOR,
+      actorRole: 'AGENT',
+      ticketId: TICKET_ID,
+      visibility: 'PUBLIC',
+      body: 'Hola',
+    });
+
+    expect(tickets.lockedReads).toBe(1);
+  });
+
   it('guarda el comentario y lo audita en la misma transacción', async () => {
     const { sut, transactions, comments, auditLogs } = buildSut(nuevoTicket());
 

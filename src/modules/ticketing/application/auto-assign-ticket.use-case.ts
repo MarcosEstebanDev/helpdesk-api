@@ -93,7 +93,7 @@ export class AutoAssignTicket {
           } as const);
         }
 
-        const ticket = await this.tickets.findById(
+        const ticket = await this.tickets.findByIdForUpdate(
           input.tenantId,
           input.ticketId,
         );

@@ -59,7 +59,7 @@ export class AddComment {
     const now = this.clock.now();
 
     return runTransactional(this.transactions, input.tenantId, async () => {
-      const ticket = await this.tickets.findById(
+      const ticket = await this.tickets.findByIdForUpdate(
         input.tenantId,
         input.ticketId,
       );
