@@ -93,6 +93,22 @@ Preguntas de diseño abiertas, a resolver antes de codear:
 - ¿Qué se muestra de alguien que se dio de baja pero sigue en la conversación?
 - ¿Va dentro de cada comentario o como un mapa `participants` a nivel del ticket?
 
+**Siguiente pieza de IA (anotada el 2026-11-12, después de "esperando al
+cliente"): clasificador de intención del comentario.** Un solo clasificador en
+`helpdesk-ai` (`/v1/comment-intent`) con tres etiquetas:
+- `pide_info` en un comentario público de un AGENTE → sugerir "¿pasar a
+  *esperando al cliente*?" (si el agente se olvida del estado, el SLA lo penaliza).
+- `confirma_resolucion` en el comentario del cliente que saca el ticket de la
+  espera → sugerir "¿resolver?" (hoy un "gracias, ya funciona" lo reabre).
+- `otro` → nada.
+
+Regla de fondo (ADR-0027): **la IA sugiere, no decide — y en particular NUNCA
+pausa ni reanuda el SLA**, que es un compromiso con el cliente y no puede
+depender de un modelo que se equivoca. Misma tubería que el triage
+(`comment.added` → cola `ai-intent` → tabla con RLS → realtime solo a `staff`),
+con su propio set de evals de comentarios etiquetados y medido antes de
+enseñárselo al agente. ADR propio.
+
 ---
 
 ## 3. Qué mejorar del producto
