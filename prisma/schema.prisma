@@ -53,6 +53,7 @@ model Organization {
   cannedResponses CannedResponse[]
   tags            Tag[]
   ticketTags      TicketTag[]
+  savedViews      SavedView[]
 
   @@map("organizations")
 }
@@ -478,4 +479,26 @@ model TicketTag {
   // El filtro de la bandeja va de la etiqueta a sus tickets.
   @@index([tenantId, tagId])
   @@map("ticket_tags")
+}
+
+/// Vista guardada de la bandeja (ADR-0033). `owner_id` null = compartida (solo
+/// un ADMIN la escribe). `scope_key` = 'shared' o el id del dueño: Postgres no
+/// trata los NULL como iguales en un índice único, así que la unicidad del
+/// nombre por ámbito necesita una columna sin NULL.
+model SavedView {
+  id        String   @id @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  ownerId   String?  @map("owner_id") @db.Uuid
+  scopeKey  String   @map("scope_key")
+  name      String
+  nameKey   String   @map("name_key")
+  filters   Json
+  createdBy String   @map("created_by") @db.Uuid
+  createdAt DateTime @map("created_at")
+  updatedAt DateTime @map("updated_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, scopeKey, nameKey])
+  @@map("saved_views")
 }
