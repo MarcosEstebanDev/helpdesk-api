@@ -82,9 +82,23 @@ export class StopSlaTimer {
           } as const);
         }
 
-        const margen = timer.remainingMinutesAt(input.occurredAt);
+        // Un reloj en pausa también se para (resolver desde la espera, ADR-0029):
+        // `stop` lo reanuda primero, así que el margen se calcula DESPUÉS de
+        // parar, sobre el vencimiento ya corrido. Calcularlo antes contaría la
+        // pausa como tiempo consumido.
+        const expected = timer.isPaused() ? 'paused' : 'running';
         timer.stop(input.occurredAt, CALENDAR_24_7);
-        await this.timers.save(timer);
+        const margen = timer.remainingMinutesAt(input.occurredAt);
+
+        // Escritura condicionada: si otra llegó antes (el barrido lo incumplió
+        // mientras tanto), este reloj ya no estaba abierto y no se para.
+        const escrito = await this.timers.transition(timer, expected);
+        if (!escrito) {
+          return ok({
+            status: 'skipped',
+            reason: 'no_running_timer',
+          } as const);
+        }
 
         return ok({ status: 'stopped', remainingMinutes: margen } as const);
       },
