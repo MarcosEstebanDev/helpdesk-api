@@ -42,6 +42,7 @@ lo que costaría revertirla.
 - [ADR-0030](#adr-0030--respuestas-predefinidas-solo-texto-variables-cerradas-y-relleno-en-el-cliente) — Respuestas predefinidas: solo texto, variables cerradas y relleno en el cliente
 - [ADR-0031](#adr-0031--etiquetas-catálogo-por-organización-clasificación-interna-y-fuera-del-agregado) — Etiquetas: catálogo por organización, clasificación interna y fuera del agregado
 - [ADR-0032](#adr-0032--búsqueda-texto-completo-de-postgres-con-columnas-generadas) — Búsqueda: texto completo de Postgres con columnas generadas
+- [ADR-0033](#adr-0033--vistas-guardadas-filtros-versionados-personales-y-compartidas) — Vistas guardadas: filtros versionados, personales y compartidas
 
 **Trabajo asíncrono** — Cómo un cambio se convierte en efectos, sin perder eventos.
 
@@ -1875,3 +1876,66 @@ prefijo): aceptado.
 tipeo (`pg_trgm`), o un tenant supera el volumen en el que 1000 coincidencias
 dejan de ser "las que importan" → entonces la página entera en SQL, o un
 motor dedicado con el aislamiento resuelto.
+
+---
+
+## ADR-0033 — Vistas guardadas: filtros versionados, personales y compartidas
+
+**Estado:** aceptado (2026-11-13). Entrega 3 de 3 de "etiquetas + búsqueda +
+vistas guardadas". Diseño en
+`docs/superpowers/specs/2026-11-13-vistas-guardadas-design.md`.
+
+### Contexto
+
+Un agente arma siempre las mismas combinaciones de filtros, y el equipo
+necesita colas comunes ("urgentes sin asignar"). Rearmarlas a mano cada vez
+es fricción.
+
+### Decisión 1 — Filtros como JSON validado y VERSIONADO
+
+`saved_views.filters` es `jsonb`, pero no es un cajón libre: `parseViewFilters`
+(dominio) acepta una lista CERRADA de claves (`status`, `assignee`, `tagIds`,
+`q`, `aiSuggestsHigher`) y exige `version: 1`. Una clave desconocida es un 400
+que la nombra: una vista que dice filtrar algo y no lo hace es peor que un
+error al guardarla. La versión es la puerta para cambiar la forma: una v2 se
+traduciría en esa función, no en cada lector. Las etiquetas borradas después
+no rompen una vista: el filtro de la bandeja ya tolera ids inexistentes
+(ADR-0031).
+
+### Decisión 2 — "Asignados a mí" se guarda como "yo"
+
+`assignee: 'me'`, no un id. Una vista compartida "mis urgentes" le muestra a
+cada agente lo suyo; con un id fijo, le mostraría a todos lo de quien la creó.
+
+### Decisión 3 — Personales y compartidas; solo el ADMIN comparte
+
+`owner_id` NULL = compartida. Cada uno ve las compartidas y las suyas; la
+personal de otro es invisible (404, también para un ADMIN: es configuración
+personal, no un dato de la organización). Una compartida solo la crea, edita
+y borra un ADMIN; un agente recibe 403. Todo pide AGENT: las vistas organizan
+la bandeja del equipo (el VIEWER, 403, como con etiquetas).
+
+### Decisión 4 — Unicidad del nombre por ámbito con una columna sin NULL
+
+Dos personas pueden tener una vista personal "Mis urgentes"; dos compartidas
+no pueden llamarse igual. Postgres no trata los NULL como iguales en un índice
+único, así que `owner_id` no sirve para la restricción: `scope_key` ('shared'
+o el id del dueño) + `name_key`, con `@@unique([tenant_id, scope_key,
+name_key])`.
+
+### Decisión 5 — Sin auditoría ni eventos
+
+Una vista es configuración de la interfaz, no un dato del negocio: no se
+audita ni avisa en vivo (a diferencia de las respuestas predefinidas, que le
+llegan al cliente). El front invalida su consulta al guardar.
+
+### Decisión 6 — En el front, la vista monta la bandeja
+
+La bandeja lee `?vista=<id>` y se monta con `key` por vista, así sus filtros
+arrancan de la vista sin un efecto que sincronice estado. "Guardar vista"
+aparece cuando hay filtros; "Actualizar vista" solo si cambiaron. Una vista
+que ya no existe muestra la bandeja entera con un aviso.
+
+**Revisar si.** Se piden contadores (una consulta por vista o un read model
+de conteos), vistas por defecto al entrar, o compartir con personas puntuales
+(→ tabla de destinatarios en vez de `owner_id` nulo).
