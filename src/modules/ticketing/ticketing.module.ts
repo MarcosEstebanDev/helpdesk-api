@@ -103,6 +103,8 @@ import {
   PrismaSlaPolicyRepository,
   PrismaSlaTimerRepository,
 } from './infrastructure/persistence/prisma-sla.repository';
+import { PrismaBusinessCalendarRepository } from './infrastructure/persistence/prisma-business-calendar.repository';
+import { BUSINESS_CALENDAR_REPOSITORY } from './domain/ports/business-calendar.repository';
 import { TicketReadModel } from './infrastructure/persistence/ticket.read-model';
 import { TriageTicket } from './application/triage/triage-ticket.use-case';
 import {
@@ -151,6 +153,7 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
     TicketReadModel,
     PrismaSlaPolicyRepository,
     PrismaSlaTimerRepository,
+    PrismaBusinessCalendarRepository,
     TicketRoutingProcessor,
     SlaProcessor,
     RealtimeProcessor,
@@ -184,6 +187,10 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
     { provide: MEMBER_DIRECTORY, useExisting: PrismaMemberDirectory },
     { provide: SLA_POLICY_REPOSITORY, useExisting: PrismaSlaPolicyRepository },
     { provide: SLA_TIMER_REPOSITORY, useExisting: PrismaSlaTimerRepository },
+    {
+      provide: BUSINESS_CALENDAR_REPOSITORY,
+      useExisting: PrismaBusinessCalendarRepository,
+    },
     {
       provide: TICKET_TRIAGE_REPOSITORY,
       useExisting: PrismaTicketTriageRepository,
