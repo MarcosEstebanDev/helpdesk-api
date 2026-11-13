@@ -23,10 +23,18 @@ alineadas. Nada de MAYÚSCULAS en etiquetas visuales.
    mismo criterio que `tags`):
    - `requesterEmail`: el email de quien abrió el ticket.
    - `slaSummary`: el reloj más urgente del ticket, resumido por una función
-     pura del dominio (`summarizeSla`): `{ state: 'breached', since }` si
-     alguno abierto incumplió; si no, `{ state: 'running', dueAt }` con el
-     vencimiento más próximo; si no, `{ state: 'paused' }`; si el ticket está
-     resuelto/cerrado o no tiene relojes abiertos, `{ state: 'none' }`.
+     pura del dominio (`summarizeSla`). **Regla revisada el 2026-11-13
+     (opción B, tras la revisión de la rama): lo que todavía se puede
+     salvar.** `{ state: 'running', dueAt }` con el vencimiento más próximo de
+     los relojes vivos; si no, `{ state: 'paused' }`; solo si no queda
+     ninguno vivo, `{ state: 'breached', since }` con el incumplimiento más
+     viejo (un vencido sin marcar por el barrido cuenta igual); si el ticket
+     está resuelto/cerrado o no tiene relojes abiertos, `{ state: 'none' }`.
+     La primera versión decía "gana el incumplido", pero un reloj incumplido
+     nunca se para: la fila quedaba en rojo hasta resolver aunque ya se
+     hubiera respondido. Costo aceptado: una primera respuesta vencida y aún
+     sin responder, con la resolución corriendo, se ve como "vence en…" en la
+     bandeja; el incumplimiento sigue en el detalle.
 2. **`GET /tickets/counts`** → `{ OPEN, IN_PROGRESS, WAITING_ON_CUSTOMER,
    RESOLVED, CLOSED }` con los MISMOS filtros que el listado salvo el estado
    (para que el número de cada pestaña sea lo que muestra al elegirla).
