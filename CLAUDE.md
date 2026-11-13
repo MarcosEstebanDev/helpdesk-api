@@ -179,6 +179,16 @@ salen del propio código, y las decisiones que están esperando tu OK.
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
+## Estado actual (2026-11-13) — UX de bandeja y detalle
+
+Rama `feat/ux-bandeja-detalle`. Mockup aprobado por el usuario
+(https://claude.ai/artifact/CCx4Szw574hwuz7xzrGL6b). Backend: el listado
+trae para el equipo `requesterEmail` y `slaSummary` (`summarizeSla`, dominio);
+`GET /tickets/counts` con los filtros del listado salvo el estado (el `where`
+vive en `whereDelListado`, compartido); el triage dice `disabled` sin
+`AI_SERVICE_URL`. **Gotcha:** `GET /tickets/counts` tiene que declararse ANTES
+de `GET /tickets/:id` (el `ParseUUIDPipe` de `:id` rechazaría "counts").
+
 ## PENDIENTE (al retomar, 2026-11-12)
 
 Todo lo de hoy está en `dev` y pusheado (nada en `main`): esperando al

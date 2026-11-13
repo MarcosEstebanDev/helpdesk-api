@@ -238,6 +238,25 @@ export class TicketTriageSummaryDto {
   @ApiProperty({ enum: TICKET_PRIORITIES }) suggestedPriority!: string;
 }
 
+export class SlaSummaryDto {
+  @ApiProperty({ enum: ['none', 'paused', 'running', 'breached'] })
+  state!: string;
+  @ApiPropertyOptional({ description: 'Vencimiento más próximo (running).' })
+  dueAt?: Date;
+  @ApiPropertyOptional({
+    description: 'Desde cuándo está incumplido (breached).',
+  })
+  since?: Date;
+}
+
+export class TicketCountsDto {
+  @ApiProperty() OPEN!: number;
+  @ApiProperty() IN_PROGRESS!: number;
+  @ApiProperty() WAITING_ON_CUSTOMER!: number;
+  @ApiProperty() RESOLVED!: number;
+  @ApiProperty() CLOSED!: number;
+}
+
 export class TicketListItemDto extends TicketSummaryDto {
   @ApiPropertyOptional({
     type: TicketTriageSummaryDto,
@@ -246,6 +265,16 @@ export class TicketListItemDto extends TicketSummaryDto {
       'Solo para AGENT o superior (para un VIEWER la clave no aparece). `null` = sin sugerencia.',
   })
   aiTriage?: TicketTriageSummaryDto | null;
+  @ApiPropertyOptional({
+    description:
+      'Solo para AGENT o superior: el email de quien abrió el ticket.',
+  })
+  requesterEmail?: string;
+  @ApiPropertyOptional({
+    type: SlaSummaryDto,
+    description: 'Solo para AGENT o superior: el reloj de SLA que más apura.',
+  })
+  slaSummary?: SlaSummaryDto;
   @ApiPropertyOptional({
     type: [TagDto],
     description:
@@ -277,7 +306,11 @@ export class AuditEntryDto {
  * distingue "todavía no" de "no existe el ticket" sin un 404 que parezca error.
  */
 export class TicketTriageDto {
-  @ApiProperty({ enum: ['pending', 'ready'] }) status!: 'pending' | 'ready';
+  @ApiProperty({
+    enum: ['pending', 'ready', 'disabled'],
+    description: '`disabled`: el servicio de IA no está configurado.',
+  })
+  status!: 'pending' | 'ready' | 'disabled';
   @ApiPropertyOptional({ enum: TRIAGE_CATEGORIES }) category?: string;
   @ApiPropertyOptional({ enum: TICKET_PRIORITIES }) suggestedPriority?: string;
   @ApiPropertyOptional({ enum: TRIAGE_SENTIMENTS }) sentiment?: string;

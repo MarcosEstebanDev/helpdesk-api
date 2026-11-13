@@ -44,11 +44,14 @@ import {
   ListTicketsQueryDto,
   TicketCommentDto,
   TicketDetailDto,
+  TicketCountsDto,
   TicketPageDto,
   TicketSummaryDto,
   TicketTriageDto,
 } from './dto/ticket.dto';
 import { TicketReadModel } from '../persistence/ticket.read-model';
+import { ConfigService } from '@nestjs/config';
+import type { Env } from '../../../../infrastructure/config/env.schema';
 import { toHttpException } from './ticketing-http.mapper';
 
 const DEFAULT_PAGE_SIZE = 20;
@@ -81,6 +84,7 @@ export class TicketController {
     // El lado de lectura se inyecta directo (CQRS-lite, ADR-0008): no pasa por
     // un caso de uso porque no hay ninguna decisión de negocio que tomar.
     private readonly tickets: TicketReadModel,
+    private readonly config: ConfigService<Env, true>,
   ) {}
 
   @Post()
@@ -112,37 +116,74 @@ export class TicketController {
     @CurrentUser() user: TenantContext,
     @Query() query: ListTicketsQueryDto,
   ): Promise<TicketPageDto> {
-    // La sugerencia de la IA es del equipo (ADR-0027): incluye cómo la IA lee al
-    // cliente. Un VIEWER no la recibe, y si pide filtrar por ella se le dice que
-    // no en vez de ignorar el parámetro en silencio.
+    const esEquipo = this.filtrosPermitidos(user, query);
+    return this.tickets.list(TenantId(user.tenantId), {
+      ...this.filtros(user, query),
+      status: query.status,
+      withTriage: esEquipo,
+      withTags: esEquipo,
+      // Email del solicitante y resumen de SLA: datos de trabajo del equipo.
+      withStaffDetails: esEquipo,
+      limit: query.limit ?? DEFAULT_PAGE_SIZE,
+      cursor: query.cursor,
+    });
+  }
+
+  @Get('counts')
+  @MinRole('VIEWER')
+  @ApiOperation({
+    summary:
+      'Cuántos tickets hay en cada estado, con los mismos filtros que el listado salvo el estado',
+  })
+  @ApiResponse({ status: 200, type: TicketCountsDto })
+  async counts(
+    @CurrentUser() user: TenantContext,
+    @Query() query: ListTicketsQueryDto,
+  ): Promise<TicketCountsDto> {
+    this.filtrosPermitidos(user, query);
+    return this.tickets.countByStatus(
+      TenantId(user.tenantId),
+      this.filtros(user, query),
+    );
+  }
+
+  /**
+   * Comprueba los filtros que solo puede usar el equipo y dice si quien pide
+   * es del equipo. La sugerencia de la IA (ADR-0027) y las etiquetas
+   * (ADR-0031) son internas: a un VIEWER se le dice que no en vez de ignorar
+   * el parámetro en silencio.
+   */
+  private filtrosPermitidos(
+    user: TenantContext,
+    query: ListTicketsQueryDto,
+  ): boolean {
     const esEquipo = isRole(user.role) && hasAtLeastRole(user.role, 'AGENT');
     if (query.aiSuggestsHigher === true && !esEquipo) {
       throw new ForbiddenException(
         'Filtrar por la sugerencia de la IA requiere rol AGENT o superior.',
       );
     }
-    // Las etiquetas son clasificación interna (ADR-0031): mismo criterio.
     if (query.tagId !== undefined && !esEquipo) {
       throw new ForbiddenException(
         'Filtrar por etiquetas requiere rol AGENT o superior.',
       );
     }
-    return this.tickets.list(TenantId(user.tenantId), {
-      status: query.status,
+    return esEquipo;
+  }
+
+  /** Los filtros del listado salvo el estado: los comparten `list` y `counts`. */
+  private filtros(user: TenantContext, query: ListTicketsQueryDto) {
+    return {
       assigneeId: query.assigneeId,
       requesterId: query.requesterId,
-      withTriage: esEquipo,
       aiSuggestsHigher: query.aiSuggestsHigher,
-      withTags: esEquipo,
       tagIds: query.tagId,
       // Del token verificado: decide si las notas internas cuentan al buscar.
       search:
         query.q === undefined
           ? undefined
           : { text: query.q, viewerRole: user.role },
-      limit: query.limit ?? DEFAULT_PAGE_SIZE,
-      cursor: query.cursor,
-    });
+    };
   }
 
   @Get(':id')
@@ -187,6 +228,15 @@ export class TicketController {
     );
     if (view === null) {
       throw new NotFoundException('El ticket no existe.');
+    }
+    // Sin servicio de IA configurado, "pending" sería una promesa que nunca se
+    // cumple: la pantalla quedaba en "Analizando…" para siempre. Una
+    // sugerencia ya guardada (de cuando había IA) se sigue mostrando.
+    if (
+      view.status === 'pending' &&
+      !this.config.get('AI_SERVICE_URL', { infer: true })
+    ) {
+      return { status: 'disabled' };
     }
     return view;
   }
