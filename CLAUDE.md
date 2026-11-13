@@ -190,10 +190,9 @@ de menores. Sigue, en este orden:
    dominio, tope de 1000 coincidencias. **Gotcha:** una columna generada va en
    Prisma como `Unsupported("tsvector")?` con `@default(dbgenerated("…"))` y
    la expresión EXACTA de `prisma db pull`; sin eso, drift permanente.
-2. **Vistas guardadas (ADR-0033), entrega 3.** JSON de filtros validado y
-   versionado; personales + compartidas (solo ADMIN crea compartidas);
-   "asignados a mí" se guarda como "yo"; etiquetas = "al menos una"; en la
-   barra lateral, sin contador.
+2. ~~Vistas guardadas (ADR-0033)~~ — HECHAS en `feat/vistas-guardadas`
+   (2026-11-13): `saved_views` con `scope_key` para la unicidad por ámbito,
+   `parseViewFilters` (lista cerrada + `version`), sin auditoría.
 3. **Horario laboral** (diseño propio; el hueco es `SlaCalendar`).
 4. Clasificador de intención con IA (ROADMAP §2).
 

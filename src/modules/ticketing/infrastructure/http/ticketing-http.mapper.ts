@@ -28,6 +28,10 @@ const STATUS_BY_CODE: Record<string, HttpStatus> = {
   'ticketing.too_many_tags': HttpStatus.BAD_REQUEST,
   'ticketing.tag_not_found': HttpStatus.NOT_FOUND,
   'ticketing.duplicate_tag_name': HttpStatus.CONFLICT,
+  'ticketing.invalid_saved_view': HttpStatus.BAD_REQUEST,
+  'ticketing.saved_view_not_found': HttpStatus.NOT_FOUND,
+  'ticketing.duplicate_saved_view_name': HttpStatus.CONFLICT,
+  'ticketing.saved_view_forbidden': HttpStatus.FORBIDDEN,
 };
 
 export const toHttpException = (error: TicketingError): HttpException => {

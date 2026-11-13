@@ -25,11 +25,14 @@ import { CannedResponse } from '../domain/canned-response/canned-response.entity
 import { CannedResponseRepository } from '../domain/ports/canned-response.repository';
 import {
   CannedResponseId,
+  SavedViewId,
   TagId,
   TenantId,
   TicketId,
   UserId,
 } from '../domain/ids';
+import { SavedView } from '../domain/saved-view/saved-view.entity';
+import { SavedViewRepository } from '../domain/ports/saved-view.repository';
 import { Tag } from '../domain/tag/tag.entity';
 import { TagRepository } from '../domain/ports/tag.repository';
 import { TicketTagRepository } from '../domain/ports/ticket-tag.repository';
@@ -610,5 +613,71 @@ export const fakeTicketTags = (): FakeTicketTags => {
       state.replaces += 1;
       return Promise.resolve();
     },
+  };
+};
+
+export interface FakeSavedViews extends SavedViewRepository {
+  seed(view: SavedView): void;
+  stored(id: string): SavedView | null;
+}
+
+/** Vistas en memoria; guarda COPIAS y la clave lleva el tenant (RLS). */
+export const fakeSavedViews = (): FakeSavedViews => {
+  const store = new Map<string, SavedView>();
+  const clave = (tenantId: string, id: string) => `${tenantId}:${id}`;
+  const copia = (v: SavedView) =>
+    SavedView.rehydrate({
+      id: v.id,
+      tenantId: v.tenantId,
+      ownerId: v.ownerId,
+      name: v.name,
+      nameKey: v.nameKey,
+      filters: { ...v.filters },
+      createdBy: v.createdBy,
+      createdAt: v.createdAt,
+      updatedAt: v.updatedAt,
+    });
+  const guardar = (v: SavedView) => {
+    store.set(clave(v.tenantId, v.id), copia(v));
+    return Promise.resolve();
+  };
+  const visible = (v: SavedView, userId: UserId) =>
+    v.ownerId === null || v.ownerId === userId;
+
+  return {
+    seed: (v) => void guardar(v),
+    stored: (id) => {
+      for (const v of store.values()) if (v.id === id) return copia(v);
+      return null;
+    },
+    listVisible: (tenantId, userId) =>
+      Promise.resolve(
+        [...store.values()]
+          .filter((v) => v.tenantId === tenantId && visible(v, userId))
+          .sort(
+            (a, b) =>
+              Number(b.isShared) - Number(a.isShared) ||
+              a.nameKey.localeCompare(b.nameKey),
+          )
+          .map(copia),
+      ),
+    findVisible: (tenantId, userId, id: SavedViewId) => {
+      const v = store.get(clave(tenantId, id));
+      return Promise.resolve(v && visible(v, userId) ? copia(v) : null);
+    },
+    existsName: (tenantId, scopeKey, nameKey, exceptId) =>
+      Promise.resolve(
+        [...store.values()].some(
+          (v) =>
+            v.tenantId === tenantId &&
+            v.scopeKey === scopeKey &&
+            v.nameKey === nameKey &&
+            v.id !== exceptId,
+        ),
+      ),
+    insert: guardar,
+    update: guardar,
+    remove: (tenantId, id) =>
+      Promise.resolve(store.delete(clave(tenantId, id))),
   };
 };

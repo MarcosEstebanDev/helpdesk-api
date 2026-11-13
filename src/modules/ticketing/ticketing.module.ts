@@ -28,6 +28,16 @@ import {
 } from './domain/ports/canned-response.repository';
 import { CannedResponseController } from './infrastructure/http/canned-response.controller';
 import { TagController } from './infrastructure/http/tag.controller';
+import { SavedViewController } from './infrastructure/http/saved-view.controller';
+import { PrismaSavedViewRepository } from './infrastructure/persistence/prisma-saved-view.repository';
+import { CreateSavedView } from './application/saved-views/create-saved-view.use-case';
+import { DeleteSavedView } from './application/saved-views/delete-saved-view.use-case';
+import { ListSavedViews } from './application/saved-views/list-saved-views.use-case';
+import { UpdateSavedView } from './application/saved-views/update-saved-view.use-case';
+import {
+  SAVED_VIEW_REPOSITORY,
+  SavedViewRepository,
+} from './domain/ports/saved-view.repository';
 import { PrismaTagRepository } from './infrastructure/persistence/prisma-tag.repository';
 import { PrismaTicketTagRepository } from './infrastructure/persistence/prisma-ticket-tag.repository';
 import { CreateTag } from './application/tags/create-tag.use-case';
@@ -129,6 +139,7 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
     SlaPolicyController,
     CannedResponseController,
     TagController,
+    SavedViewController,
   ],
   providers: [
     // --- Adapters ---
@@ -150,9 +161,14 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
     PrismaCannedResponseRepository,
     PrismaTagRepository,
     PrismaTicketTagRepository,
+    PrismaSavedViewRepository,
 
     // --- Puertos -> adapters ---
     { provide: TAG_REPOSITORY, useExisting: PrismaTagRepository },
+    {
+      provide: SAVED_VIEW_REPOSITORY,
+      useExisting: PrismaSavedViewRepository,
+    },
     { provide: TICKET_TAG_REPOSITORY, useExisting: PrismaTicketTagRepository },
     {
       provide: CANNED_RESPONSE_REPOSITORY,
@@ -335,6 +351,40 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
       inject: [REALTIME_PUBLISHER],
       useFactory: (realtime: RealtimePublisher): BroadcastTicketEvent =>
         new BroadcastTicketEvent(realtime),
+    },
+    {
+      provide: ListSavedViews,
+      inject: [SAVED_VIEW_REPOSITORY],
+      useFactory: (views: SavedViewRepository): ListSavedViews =>
+        new ListSavedViews(views),
+    },
+    {
+      provide: CreateSavedView,
+      inject: [TRANSACTION_MANAGER, SAVED_VIEW_REPOSITORY, ID_GENERATOR, CLOCK],
+      useFactory: (
+        transactions: TransactionManager,
+        views: SavedViewRepository,
+        ids: IdGenerator,
+        clock: Clock,
+      ): CreateSavedView =>
+        new CreateSavedView(transactions, views, ids, clock),
+    },
+    {
+      provide: UpdateSavedView,
+      inject: [TRANSACTION_MANAGER, SAVED_VIEW_REPOSITORY, CLOCK],
+      useFactory: (
+        transactions: TransactionManager,
+        views: SavedViewRepository,
+        clock: Clock,
+      ): UpdateSavedView => new UpdateSavedView(transactions, views, clock),
+    },
+    {
+      provide: DeleteSavedView,
+      inject: [TRANSACTION_MANAGER, SAVED_VIEW_REPOSITORY],
+      useFactory: (
+        transactions: TransactionManager,
+        views: SavedViewRepository,
+      ): DeleteSavedView => new DeleteSavedView(transactions, views),
     },
     {
       provide: ListTags,

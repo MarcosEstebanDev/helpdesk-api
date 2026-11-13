@@ -392,6 +392,10 @@ The full contract, with schemas, is at `/docs`.
 | `PATCH` | `/tags/:id` | ADMIN | Rename / recolor (8-color palette) |
 | `DELETE` | `/tags/:id` | ADMIN | Removes it from every ticket |
 | `PUT` | `/tickets/:id/tags` | AGENT | Replaces the ticket's tags (max 10); `GET /tickets?tagId=` filters by any of them |
+| `GET` | `/views` | AGENT | Saved inbox views: shared ones first, then the caller's own |
+| `POST` | `/views` | AGENT | `{ name, filters, shared? }`; `shared` is ADMIN-only. Filters are versioned JSON validated by the domain |
+| `PUT` | `/views/:id` | AGENT | Owner for personal views, ADMIN for shared ones; someone else's personal view is a 404 |
+| `DELETE` | `/views/:id` | AGENT | Same rules as `PUT` |
 | `GET` | `/health/live` | — | No dependencies, on purpose |
 | `GET` | `/health/ready` | — | Postgres + Redis, via the app's own connections |
 
