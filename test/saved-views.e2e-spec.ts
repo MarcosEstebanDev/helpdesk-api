@@ -39,6 +39,8 @@ describe('Vistas guardadas (e2e, ADR-0033)', () => {
   let admin: string;
   let agente: string;
   let agenteBeto: string;
+  /** Beto como ADMIN: un administrador que NO es dueño de las vistas de Ana. */
+  let adminBeto: string;
   let viewer: string;
 
   const claimsDe = (accessToken: string): { sub: string; tenantId: string } =>
@@ -143,6 +145,9 @@ describe('Vistas guardadas (e2e, ADR-0033)', () => {
     });
     beto = { ...acme, email: betoEmail, userId: betoId };
     agenteBeto = await login(acme, betoEmail);
+    await ponerRol(acme, betoId, 'ADMIN');
+    adminBeto = await login(acme, betoEmail);
+    await ponerRol(acme, betoId, 'AGENT');
 
     // Ana como AGENT y como VIEWER (el token de ADMIN sigue valiendo).
     await ponerRol(acme, acme.userId, 'AGENT');
@@ -221,7 +226,8 @@ describe('Vistas guardadas (e2e, ADR-0033)', () => {
     await conAuth('put', `/views/${id}`, agenteBeto)
       .send({ name: 'Robada', filters: { version: 1 } })
       .expect(404);
-    await conAuth('delete', `/views/${id}`, admin).expect(404);
+    // `admin` es Ana con otro rol (la dueña); el ADMIN ajeno es Beto.
+    await conAuth('delete', `/views/${id}`, adminBeto).expect(404);
     expect(await nombres(agente)).toContain('Privada');
   });
 
