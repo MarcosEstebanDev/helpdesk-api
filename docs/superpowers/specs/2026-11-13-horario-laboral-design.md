@@ -1,6 +1,6 @@
 # Horario laboral para el SLA — diseño
 
-**Fecha:** 2026-11-13 · **Estado:** borrador para aprobar ·
+**Fecha:** 2026-11-13 · **Estado:** revisado, esperando aprobación ·
 **Repos:** `helpdesk-api` (calendario, SLA, configuración) + `helpdesk-web`
 (pantalla de configuración y aviso al cliente) · **Cierra la tanda 1** del
 plan de producto.
@@ -118,11 +118,45 @@ se atiende cuando abre la oficina, y **se le avisa** cuándo.
   ADR-0020 decisión 4 (los cambios de política no tocan relojes vivos).
 - Granularidad de minutos en apertura y cierre (HH:MM), con apertura < cierre.
 
-## Pendiente de decidir
+## Decididas tras la revisión del diseño (del usuario, 2026-11-13)
 
-- **Qué calendario tienen las organizaciones que ya existen** y las que se
-  registren a partir de ahora, si nadie lo configura: ¿el horario por defecto
-  (8–18, L–V) desde el primer día, o 24/7 hasta que un ADMIN lo configure?
+- **Sin configurar = horario por defecto (8–18, L–V, Argentina), con
+  interruptor "atención 24/7"** que el ADMIN puede activar (opción B). Las
+  organizaciones existentes y las nuevas arrancan con el horario por defecto;
+  quien tiene guardia vuelve a 24/7 con el interruptor, y entonces el
+  calendario es `CALENDAR_24_7` (la semana tipo y las excepciones se
+  conservan pero no se aplican). Implica que la configuración tiene un modo
+  (`business_hours` | `24_7`) y no solo una franja.
+- **Los objetivos del SLA se cuentan en minutos HÁBILES, y los valores de
+  fábrica se ajustan** a días hábiles redondos: NORMAL resolución 10 h (1 día
+  hábil, antes 24 h) y LOW resolución 30 h (3 días hábiles, antes 72 h);
+  URGENT y HIGH sin cambios. Los overrides que una organización ya pactó en
+  `sla_policies` no se tocan. El web dice "horas hábiles" en la pantalla de
+  SLA (y "horas" a secas en modo 24/7). Adenda al ADR-0020 por el cambio de
+  los valores por defecto.
+
+## Decisiones mías tras la revisión (revisables)
+
+- **Reanudar una pausa usa el calendario ACTUAL del tenant**, no una foto del
+  calendario con el que nació el reloj (sin esquema nuevo). Efecto aceptado y
+  documentado en la adenda al ADR-0029: si el horario cambia mientras un
+  reloj está en pausa —o el reloj nació en 24/7 antes de este despliegue—, el
+  margen se mide con el calendario nuevo y puede quedar más corto o más
+  largo; un reloj creado en 24/7 y pausado fuera de horario puede quedar
+  incumplido al reanudar. Es una ventana de transición, no un caso estable.
+- **`remainingMinutes` sigue en tiempo real** (`dueAt` − ahora) y la API no
+  cambia: `dueAt` ya viene calculado en el calendario. El web, cuando falta
+  más de un día, muestra la fecha de vencimiento ("vence lun 17/11 11:00") en
+  vez de "vence en 2 d", que con fines de semana engaña.
+- **Feriados precargables: año actual y siguiente**, solo los **feriados
+  nacionales oficiales** (inamovibles + trasladables, ya con su fecha
+  trasladada). NO los "días no laborables con fines turísticos" ni el 24 y 31
+  de diciembre: el sector privado suele trabajarlos, y el ADMIN los agrega a
+  mano si su equipo no. Precargar **respeta** las excepciones que el ADMIN ya
+  cargó en esas fechas (no las pisa) e informa cuántas agregó.
+- **El aviso "fuera de horario" es para el cliente (VIEWER)**: se muestra en el
+  formulario de abrir ticket ANTES de enviar y sobre la caja de respuesta del
+  detalle. Al equipo no (sabe el horario; vería un aviso que no le habla).
 
 ## Lo que queda a criterio de quien implemente
 
