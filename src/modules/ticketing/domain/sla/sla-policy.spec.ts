@@ -6,6 +6,24 @@ import {
   resolvePolicy,
 } from './sla-policy';
 
+describe('DEFAULT_SLA_POLICY (horas hábiles, 2026-11-13)', () => {
+  it('normal y baja se resuelven en días hábiles redondos de 10 h', () => {
+    expect(DEFAULT_SLA_POLICY.NORMAL.resolutionMinutes).toBe(10 * 60);
+    expect(DEFAULT_SLA_POLICY.LOW.resolutionMinutes).toBe(30 * 60);
+  });
+
+  it('urgente y alta no cambian', () => {
+    expect(DEFAULT_SLA_POLICY.URGENT).toEqual({
+      responseMinutes: 15,
+      resolutionMinutes: 4 * 60,
+    });
+    expect(DEFAULT_SLA_POLICY.HIGH).toEqual({
+      responseMinutes: 60,
+      resolutionMinutes: 8 * 60,
+    });
+  });
+});
+
 describe('resolvePolicy', () => {
   it('sin configuración devuelve la política por defecto completa', () => {
     // Una organización que nunca tocó nada tiene SLA igualmente: por eso el

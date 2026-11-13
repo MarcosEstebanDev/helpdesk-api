@@ -31,8 +31,11 @@ export type SlaPolicy = Readonly<Record<TicketPriority, SlaTarget>>;
 export const DEFAULT_SLA_POLICY: SlaPolicy = {
   URGENT: { responseMinutes: 15, resolutionMinutes: 4 * 60 },
   HIGH: { responseMinutes: 60, resolutionMinutes: 8 * 60 },
-  NORMAL: { responseMinutes: 4 * 60, resolutionMinutes: 24 * 60 },
-  LOW: { responseMinutes: 8 * 60, resolutionMinutes: 72 * 60 },
+  // En HORAS HÁBILES desde el horario laboral (ADR-0034): 10 h = un día hábil
+  // de 8 a 18. Antes eran 24 h y 72 h pensadas para 24/7, que con días de
+  // 10 h se volvían 2,4 y 7,2 días hábiles.
+  NORMAL: { responseMinutes: 4 * 60, resolutionMinutes: 10 * 60 },
+  LOW: { responseMinutes: 8 * 60, resolutionMinutes: 30 * 60 },
 };
 
 /**

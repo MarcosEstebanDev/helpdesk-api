@@ -92,6 +92,18 @@ export class InvalidSlaTargetError extends DomainError {
 }
 
 /**
+ * Horario laboral imposible: sin días hábiles, cierre antes de la apertura,
+ * una hora que no existe o una zona horaria desconocida. El detalle viaja en el
+ * error por la misma razón que en el SLA: el ADMIN está editando un formulario.
+ */
+export class InvalidBusinessHoursError extends DomainError {
+  readonly code = 'ticketing.invalid_business_hours';
+  constructor(detail: string) {
+    super(detail);
+  }
+}
+
+/**
  * El servicio de IA no está disponible ahora (caído, timeout, sobrecargado).
  * Es TRANSITORIO: el consumidor lo lanza para que la cola reintente con backoff.
  */
@@ -210,6 +222,7 @@ export type TicketingError =
   | EmptyCommentError
   | InternalNoteForbiddenError
   | InvalidSlaTargetError
+  | InvalidBusinessHoursError
   | TriageUnavailableError
   | TriageRejectedError
   | InvalidCannedResponseError
