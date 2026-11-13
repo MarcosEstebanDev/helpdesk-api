@@ -26,7 +26,12 @@ import {
   describeSlaTimer,
   isSlaKind,
 } from '../../domain/sla/sla-timer.entity';
-import { TicketPriority, TicketStatus } from '../../domain/ticket-status';
+import {
+  TICKET_STATUSES,
+  TicketPriority,
+  TicketStatus,
+} from '../../domain/ticket-status';
+import { SlaSummary, summarizeSla } from '../../domain/sla/sla-summary';
 import { parseSearch } from '../../domain/search/search-query';
 
 /**
@@ -35,6 +40,55 @@ import { parseSearch } from '../../domain/search/search-query';
  * lista de ids sin límite.
  */
 export const SEARCH_MATCH_LIMIT = 1000;
+
+/** Filtros del listado: los comparten `list` y `countByStatus`. */
+export interface FiltrosDeListado {
+  status?: TicketStatus;
+  assigneeId?: string;
+  requesterId?: string;
+  /** Solo tickets donde la IA sugiere más urgencia que la actual. */
+  aiSuggestsHigher?: boolean;
+  /** Tickets con AL MENOS UNA de estas etiquetas (ADR-0031). */
+  tagIds?: string[];
+  /** Texto libre (ADR-0032). El rol decide si las notas internas cuentan. */
+  search?: { text: string; viewerRole: string };
+}
+
+/**
+ * El `where` del listado en UN lugar: si `countByStatus` lo armara por su
+ * cuenta, el número de una pestaña podría no coincidir con lo que muestra.
+ */
+const whereDelListado = (
+  tenantId: TenantId,
+  options: FiltrosDeListado,
+  coincidencias: string[] | undefined,
+): Prisma.TicketWhereInput => ({
+  tenantId,
+  ...(options.status === undefined ? {} : { status: options.status }),
+  ...(options.assigneeId === undefined
+    ? {}
+    : { assigneeId: options.assigneeId }),
+  ...(options.requesterId === undefined
+    ? {}
+    : { requesterId: options.requesterId }),
+  ...(options.aiSuggestsHigher === true
+    ? {
+        OR: (['LOW', 'NORMAL', 'HIGH'] as const).map((priority) => ({
+          priority,
+          triage: {
+            is: { suggestedPriority: { in: MAS_URGENTES[priority] } },
+          },
+        })),
+      }
+    : {}),
+  // `some` y no un JOIN a mano: un ticket con dos de las etiquetas
+  // pedidas sale UNA vez. Ids que no existen simplemente no coinciden
+  // (una vista guardada con una etiqueta borrada no se rompe).
+  ...(options.tagIds === undefined || options.tagIds.length === 0
+    ? {}
+    : { tags: { some: { tagId: { in: options.tagIds } } } }),
+  ...(coincidencias === undefined ? {} : { id: { in: coincidencias } }),
+});
 
 /**
  * Lado de LECTURA del contexto Ticketing (CQRS-lite, ADR-0008).
@@ -75,6 +129,10 @@ export interface TicketListItem extends TicketSummary {
   aiTriage?: TicketTriageSummary | null;
   /** Solo para el equipo: para un VIEWER la clave NO existe (ADR-0031). */
   tags?: TagView[];
+  /** Solo para el equipo: el email de quien abrió el ticket. */
+  requesterEmail?: string;
+  /** Solo para el equipo: el reloj que más apura (`summarizeSla`). */
+  slaSummary?: SlaSummary;
 }
 
 /**
@@ -166,20 +224,13 @@ export class TicketReadModel extends PrismaRepository {
    */
   async list(
     tenantId: TenantId,
-    options: {
-      status?: TicketStatus;
-      assigneeId?: string;
-      requesterId?: string;
+    options: FiltrosDeListado & {
       /** Incluir la sugerencia de la IA en cada fila (solo AGENT o superior). */
       withTriage?: boolean;
-      /** Solo tickets donde la IA sugiere más urgencia que la actual. */
-      aiSuggestsHigher?: boolean;
       /** Incluir las etiquetas de cada fila (solo AGENT o superior). */
       withTags?: boolean;
-      /** Tickets con AL MENOS UNA de estas etiquetas (ADR-0031). */
-      tagIds?: string[];
-      /** Texto libre (ADR-0032). El rol decide si las notas internas cuentan. */
-      search?: { text: string; viewerRole: string };
+      /** Email del solicitante y resumen de SLA (solo AGENT o superior). */
+      withStaffDetails?: boolean;
       limit: number;
       cursor?: string;
     },
@@ -198,33 +249,7 @@ export class TicketReadModel extends PrismaRepository {
       }
 
       const rows = await tx.ticket.findMany({
-        where: {
-          tenantId,
-          ...(options.status === undefined ? {} : { status: options.status }),
-          ...(options.assigneeId === undefined
-            ? {}
-            : { assigneeId: options.assigneeId }),
-          ...(options.requesterId === undefined
-            ? {}
-            : { requesterId: options.requesterId }),
-          ...(options.aiSuggestsHigher === true
-            ? {
-                OR: (['LOW', 'NORMAL', 'HIGH'] as const).map((priority) => ({
-                  priority,
-                  triage: {
-                    is: { suggestedPriority: { in: MAS_URGENTES[priority] } },
-                  },
-                })),
-              }
-            : {}),
-          // `some` y no un JOIN a mano: un ticket con dos de las etiquetas
-          // pedidas sale UNA vez. Ids que no existen simplemente no coinciden
-          // (una vista guardada con una etiqueta borrada no se rompe).
-          ...(options.tagIds === undefined || options.tagIds.length === 0
-            ? {}
-            : { tags: { some: { tagId: { in: options.tagIds } } } }),
-          ...(coincidencias === undefined ? {} : { id: { in: coincidencias } }),
-        },
+        where: whereDelListado(tenantId, options, coincidencias),
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         // `skip: 1` porque el cursor es el ÚLTIMO elemento ya entregado.
         ...(options.cursor === undefined
@@ -245,18 +270,46 @@ export class TicketReadModel extends PrismaRepository {
           // `IN (...)` para toda la página, no una por fila.
           triage: { select: { category: true, suggestedPriority: true } },
           ...(options.withTags === true ? { tags: TAG_SELECT } : {}),
+          ...(options.withStaffDetails === true
+            ? {
+                requester: { select: { email: true } },
+                slaTimers: {
+                  select: {
+                    dueAt: true,
+                    stoppedAt: true,
+                    breachedAt: true,
+                    pausedAt: true,
+                  },
+                },
+              }
+            : {}),
         },
       });
+      const now = this.clock.now();
 
       const items: TicketListItem[] = rows.map((row) => {
         const { triage, ...resto } = row;
-        const { tags, ...ticket } = resto as typeof resto & {
-          tags?: FilaDeEtiqueta[];
-        };
+        const { tags, requester, slaTimers, ...ticket } =
+          resto as typeof resto & {
+            tags?: FilaDeEtiqueta[];
+            requester?: { email: string };
+            slaTimers?: {
+              dueAt: Date;
+              stoppedAt: Date | null;
+              breachedAt: Date | null;
+              pausedAt: Date | null;
+            }[];
+          };
         return {
           ...ticket,
           ...(options.withTriage === true ? { aiTriage: triage } : {}),
           ...(tags === undefined ? {} : { tags: aVistasDeEtiquetas(tags) }),
+          ...(requester === undefined
+            ? {}
+            : { requesterEmail: requester.email }),
+          ...(slaTimers === undefined
+            ? {}
+            : { slaSummary: summarizeSla(ticket.status, slaTimers, now) }),
         };
       });
 
@@ -266,6 +319,36 @@ export class TicketReadModel extends PrismaRepository {
         nextCursor:
           rows.length === take ? (rows[rows.length - 1]?.id ?? null) : null,
       };
+    });
+  }
+
+  /**
+   * Cuántos tickets hay en cada estado con los MISMOS filtros que el listado,
+   * salvo el estado (UX 2026-11-13): el número de cada pestaña es lo que
+   * muestra al elegirla. Los estados sin tickets vienen en 0.
+   */
+  async countByStatus(
+    tenantId: TenantId,
+    options: Omit<FiltrosDeListado, 'status'>,
+  ): Promise<Record<TicketStatus, number>> {
+    const vacio = Object.fromEntries(
+      TICKET_STATUSES.map((s) => [s, 0]),
+    ) as Record<TicketStatus, number>;
+    return this.runInTenant(tenantId, async (tx) => {
+      const coincidencias =
+        options.search === undefined
+          ? undefined
+          : await this.idsQueCoinciden(tx, tenantId, options.search, options);
+      if (coincidencias !== undefined && coincidencias.length === 0)
+        return vacio;
+
+      const grupos = await tx.ticket.groupBy({
+        by: ['status'],
+        where: whereDelListado(tenantId, options, coincidencias),
+        _count: { _all: true },
+      });
+      for (const g of grupos) vacio[g.status] = g._count._all;
+      return vacio;
     });
   }
 
