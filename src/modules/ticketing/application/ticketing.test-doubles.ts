@@ -367,6 +367,21 @@ export const fakeBusinessCalendars = (
   };
 };
 
+/**
+ * Una organización en modo 24/7: los tests de SLA anteriores al horario
+ * laboral (ADR-0034) la usan para seguir probando exactamente lo mismo.
+ */
+export const calendars24x7 = () =>
+  fakeBusinessCalendars({
+    mode: '24_7',
+    week: {
+      timeZone: DEFAULT_BUSINESS_HOURS.timeZone,
+      weekdays: DEFAULT_BUSINESS_HOURS.weekdays,
+      opensAtMinute: DEFAULT_BUSINESS_HOURS.opensAtMinute,
+      closesAtMinute: DEFAULT_BUSINESS_HOURS.closesAtMinute,
+    },
+  });
+
 export interface FakeSlaTimers extends SlaTimerRepository {
   /** Escrituras que APLICARON (altas y transiciones), en orden. */
   readonly saved: SlaTimer[];

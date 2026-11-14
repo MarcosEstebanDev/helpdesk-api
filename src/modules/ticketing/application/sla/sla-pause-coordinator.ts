@@ -1,6 +1,7 @@
 import { TenantId, TicketId } from '../../domain/ids';
 import { SlaTimerRepository } from '../../domain/ports/sla.repository';
-import { CALENDAR_24_7 } from '../../domain/sla/sla-calendar';
+import { BusinessCalendarRepository } from '../../domain/ports/business-calendar.repository';
+import { toBusinessCalendar } from '../../domain/sla/business-calendar';
 import { TicketStatus } from '../../domain/ticket-status';
 
 export type SlaPauseOutcome = 'paused' | 'resumed' | 'none';
@@ -28,7 +29,10 @@ export type SlaPauseOutcome = 'paused' | 'resumed' | 'none';
  * barrido, no es un error: se devuelve `none` y el cambio de estado sigue.
  */
 export class SlaPauseCoordinator {
-  constructor(private readonly timers: SlaTimerRepository) {}
+  constructor(
+    private readonly timers: SlaTimerRepository,
+    private readonly calendars: BusinessCalendarRepository,
+  ) {}
 
   async onStatusChange(input: {
     tenantId: TenantId;
@@ -56,8 +60,11 @@ export class SlaPauseCoordinator {
         : 'none';
     }
 
-    // Mismo calendario con el que arrancó el reloj (hoy siempre 24/7).
-    if (!timer.resume(input.now, CALENDAR_24_7)) return 'none';
+    // El calendario ACTUAL de la organización (ADR-0034), no una foto del que
+    // había cuando arrancó el reloj: si el horario cambió durante la pausa, el
+    // margen se mide con el nuevo. Efecto aceptado y documentado en el ADR.
+    const { config } = await this.calendars.configOf(input.tenantId);
+    if (!timer.resume(input.now, toBusinessCalendar(config))) return 'none';
     return (await this.timers.transition(timer, 'paused')) ? 'resumed' : 'none';
   }
 }

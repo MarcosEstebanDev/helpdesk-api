@@ -20,6 +20,7 @@ import {
   fakeTransactions,
   fixedClock,
   sequentialIds,
+  calendars24x7,
 } from './ticketing.test-doubles';
 
 const TICKET_ID = TicketId('44444444-4444-4444-4444-444444444444');
@@ -87,7 +88,7 @@ const buildSut = (semilla: Ticket) => {
     new EventRecorder(ids, outbox),
     ids,
     fixedClock(),
-    new SlaPauseCoordinator(timers),
+    new SlaPauseCoordinator(timers, calendars24x7()),
   );
 
   return { sut, transactions, tickets, comments, auditLogs, outbox, timers };

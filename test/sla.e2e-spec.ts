@@ -189,6 +189,21 @@ describe('SLA (e2e)', () => {
     ) as { sub: string; tenantId: string };
     tenantId = claims.tenantId;
     userId = claims.sub;
+
+    // Esta suite prueba el motor de SLA con horas de reloj (24/7); el horario
+    // laboral (ADR-0034) tiene la suya. Sin esto regiría el L–V 8–18 por
+    // defecto y los vencimientos calculados acá no coincidirían.
+    await request(app.getHttpServer())
+      .put('/business-hours')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        mode: '24_7',
+        timeZone: 'America/Argentina/Buenos_Aires',
+        weekdays: [1, 2, 3, 4, 5],
+        opensAt: '08:00',
+        closesAt: '18:00',
+      })
+      .expect(200);
   });
 
   afterAll(async () => {

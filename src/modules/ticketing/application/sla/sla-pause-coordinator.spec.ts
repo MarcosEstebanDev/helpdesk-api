@@ -3,7 +3,12 @@ import { CALENDAR_24_7 } from '../../domain/sla/sla-calendar';
 import { SlaKind, SlaTimer } from '../../domain/sla/sla-timer.entity';
 import { SlaTimerId } from '../../domain/ids';
 import { TicketStatus } from '../../domain/ticket-status';
-import { TENANT, fakeSlaTimers } from '../ticketing.test-doubles';
+import {
+  TENANT,
+  calendars24x7,
+  fakeBusinessCalendars,
+  fakeSlaTimers,
+} from '../ticketing.test-doubles';
 import { SlaPauseCoordinator } from './sla-pause-coordinator';
 
 const TICKET_ID = TicketId('44444444-4444-4444-4444-444444444444');
@@ -31,7 +36,7 @@ const sembrar = (
 describe('SlaPauseCoordinator (ADR-0029)', () => {
   const build = () => {
     const timers = fakeSlaTimers();
-    return { timers, sut: new SlaPauseCoordinator(timers) };
+    return { timers, sut: new SlaPauseCoordinator(timers, calendars24x7()) };
   };
 
   const cambio = (
@@ -182,5 +187,43 @@ describe('SlaPauseCoordinator (ADR-0029)', () => {
     await cambio(sut, 'WAITING_ON_CUSTOMER', 'IN_PROGRESS', h('11:06'));
 
     expect(timers.stored(RESOLUCION)?.dueAt).toEqual(h('15:05'));
+  });
+
+  it('reanuda con el horario laboral del tenant: el margen no corre el fin de semana (ADR-0034)', async () => {
+    const timers = fakeSlaTimers();
+    // Viernes 13/11/2026 17:30 en Argentina, vence 19:30: de ese margen solo
+    // 30 min son hábiles (17:30–18:00). En 24/7 serían 120.
+    const timer = SlaTimer.start({
+      id: RESOLUCION,
+      tenantId: TENANT,
+      ticketId: TICKET_ID,
+      kind: 'RESOLUTION',
+      minutes: 120,
+      calendar: CALENDAR_24_7,
+      now: new Date('2026-11-13T20:30:00.000Z'),
+    });
+    timers.seed(timer);
+    const sut = new SlaPauseCoordinator(timers, fakeBusinessCalendars());
+
+    await sut.onStatusChange({
+      tenantId: TENANT,
+      ticketId: TICKET_ID,
+      from: 'IN_PROGRESS',
+      to: 'WAITING_ON_CUSTOMER',
+      now: new Date('2026-11-13T20:30:00.000Z'),
+    });
+    // El cliente contesta el lunes 16/11 a las 08:00.
+    await sut.onStatusChange({
+      tenantId: TENANT,
+      ticketId: TICKET_ID,
+      from: 'WAITING_ON_CUSTOMER',
+      to: 'IN_PROGRESS',
+      now: new Date('2026-11-16T11:00:00.000Z'),
+    });
+
+    // Lunes 08:00 + 30 min hábiles = 08:30 (en 24/7 daría 10:00).
+    expect(timers.stored(RESOLUCION)?.dueAt).toEqual(
+      new Date('2026-11-16T11:30:00.000Z'),
+    );
   });
 });

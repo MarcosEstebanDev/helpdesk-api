@@ -9,7 +9,9 @@ import { EventRecorder } from '../event-recorder';
 import {
   ACTOR,
   TENANT,
+  calendars24x7,
   fakeAuditLogRepository,
+  fakeBusinessCalendars,
   fakeOutbox,
   fakeProcessedMessages,
   fakeSlaPolicies,
@@ -54,6 +56,7 @@ describe('StartSlaTimers', () => {
     opciones: {
       overrides?: Parameters<typeof fakeSlaPolicies>[0];
       ticket?: Ticket;
+      calendars?: ReturnType<typeof fakeBusinessCalendars>;
     } = {},
   ) => {
     const transactions = fakeTransactions();
@@ -68,6 +71,7 @@ describe('StartSlaTimers', () => {
       processed,
       sequentialIds(),
       tickets,
+      opciones.calendars ?? calendars24x7(),
     );
     return { sut, transactions, timers, processed };
   };
@@ -101,6 +105,26 @@ describe('StartSlaTimers', () => {
     // Cuenta desde la creación igual que siempre; solo el de resolución pausa.
     expect(resolucion?.startedAt).toEqual(CREADO);
     expect(respuesta?.isRunning()).toBe(true);
+  });
+
+  it('con horario laboral los relojes cuentan solo las horas hábiles (ADR-0034)', async () => {
+    // Viernes 13/11/2026 17:00 en Argentina, ticket URGENT (15 min / 4 h).
+    const viernes17 = new Date('2026-11-13T20:00:00.000Z');
+    const { sut, timers } = build({ calendars: fakeBusinessCalendars() });
+
+    await sut.execute({
+      eventId: EVENT_ID,
+      tenantId: TENANT,
+      ticketId: TICKET_ID,
+      priority: 'URGENT',
+      occurredAt: viernes17,
+    });
+
+    const due = (kind: string) =>
+      timers.saved.find((t) => t.kind === kind)?.dueAt;
+    expect(due('RESPONSE')).toEqual(new Date('2026-11-13T20:15:00.000Z'));
+    // 1 h el viernes (17–18) y 3 h el lunes desde las 8: lunes 11:00.
+    expect(due('RESOLUTION')).toEqual(new Date('2026-11-16T14:00:00.000Z'));
   });
 
   it('arranca los dos relojes con los objetivos por defecto', async () => {
@@ -194,6 +218,7 @@ describe('StopSlaTimer', () => {
       transactions.manager,
       timers,
       fakeProcessedMessages(),
+      calendars24x7(),
     );
     return { sut, transactions, timers };
   };
@@ -206,6 +231,42 @@ describe('StopSlaTimer', () => {
       kind: 'RESPONSE',
       occurredAt: RESPUESTA,
     });
+
+  it('parar un reloj en pausa lo reanuda con el horario del tenant (ADR-0034)', async () => {
+    // Pausado el viernes 13/11 17:30 con vencimiento 19:30: 30 min hábiles.
+    const timers = fakeSlaTimers();
+    const timer = SlaTimer.start({
+      id: TIMER_ID,
+      tenantId: TENANT,
+      ticketId: TICKET_ID,
+      kind: 'RESOLUTION',
+      minutes: 120,
+      calendar: CALENDAR_24_7,
+      now: new Date('2026-11-13T20:30:00.000Z'),
+    });
+    timer.pause(new Date('2026-11-13T20:30:00.000Z'));
+    timers.seed(timer);
+    const sut = new StopSlaTimer(
+      fakeTransactions().manager,
+      timers,
+      fakeProcessedMessages(),
+      fakeBusinessCalendars(),
+    );
+
+    // Se resuelve desde la espera el lunes 16/11 a las 08:10.
+    await sut.execute({
+      eventId: EVENT_ID,
+      tenantId: TENANT,
+      ticketId: TICKET_ID,
+      kind: 'RESOLUTION',
+      occurredAt: new Date('2026-11-16T11:10:00.000Z'),
+    });
+
+    // Reanudado a las 08:10 con 30 min hábiles: vence 08:40 (en 24/7, 10:10).
+    expect(timers.stored(TIMER_ID)?.dueAt).toEqual(
+      new Date('2026-11-16T11:40:00.000Z'),
+    );
+  });
 
   it('para el reloj y devuelve el margen que quedaba', async () => {
     const { sut, timers } = build();

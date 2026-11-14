@@ -385,9 +385,11 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
     {
       // Pausa del SLA síncrona, en la transacción del cambio (ADR-0029).
       provide: SlaPauseCoordinator,
-      inject: [SLA_TIMER_REPOSITORY],
-      useFactory: (timers: SlaTimerRepository): SlaPauseCoordinator =>
-        new SlaPauseCoordinator(timers),
+      inject: [SLA_TIMER_REPOSITORY, BUSINESS_CALENDAR_REPOSITORY],
+      useFactory: (
+        timers: SlaTimerRepository,
+        calendars: BusinessCalendarRepository,
+      ): SlaPauseCoordinator => new SlaPauseCoordinator(timers, calendars),
     },
     {
       provide: ChangeTicketStatus,
@@ -425,6 +427,7 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
         PROCESSED_MESSAGES,
         ID_GENERATOR,
         TICKET_REPOSITORY,
+        BUSINESS_CALENDAR_REPOSITORY,
       ],
       useFactory: (
         transactions: TransactionManager,
@@ -433,6 +436,7 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
         processed: ProcessedMessages,
         ids: IdGenerator,
         tickets: TicketRepository,
+        calendars: BusinessCalendarRepository,
       ): StartSlaTimers =>
         new StartSlaTimers(
           transactions,
@@ -441,6 +445,7 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
           processed,
           ids,
           tickets,
+          calendars,
         ),
     },
     {
@@ -651,12 +656,19 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
     },
     {
       provide: StopSlaTimer,
-      inject: [TRANSACTION_MANAGER, SLA_TIMER_REPOSITORY, PROCESSED_MESSAGES],
+      inject: [
+        TRANSACTION_MANAGER,
+        SLA_TIMER_REPOSITORY,
+        PROCESSED_MESSAGES,
+        BUSINESS_CALENDAR_REPOSITORY,
+      ],
       useFactory: (
         transactions: TransactionManager,
         timers: SlaTimerRepository,
         processed: ProcessedMessages,
-      ): StopSlaTimer => new StopSlaTimer(transactions, timers, processed),
+        calendars: BusinessCalendarRepository,
+      ): StopSlaTimer =>
+        new StopSlaTimer(transactions, timers, processed, calendars),
     },
     {
       provide: MarkSlaBreached,

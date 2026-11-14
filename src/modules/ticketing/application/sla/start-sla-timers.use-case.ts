@@ -11,7 +11,8 @@ import {
   SlaPolicyRepository,
   SlaTimerRepository,
 } from '../../domain/ports/sla.repository';
-import { CALENDAR_24_7 } from '../../domain/sla/sla-calendar';
+import { BusinessCalendarRepository } from '../../domain/ports/business-calendar.repository';
+import { toBusinessCalendar } from '../../domain/sla/business-calendar';
 import { resolvePolicy } from '../../domain/sla/sla-policy';
 import { SLA_KINDS, SlaTimer } from '../../domain/sla/sla-timer.entity';
 import { TicketRepository } from '../../domain/ports/ticket.repository';
@@ -49,6 +50,7 @@ export class StartSlaTimers {
     private readonly processed: ProcessedMessages,
     private readonly ids: IdGenerator,
     private readonly tickets: TicketRepository,
+    private readonly calendars: BusinessCalendarRepository,
   ) {}
 
   async execute(
@@ -92,6 +94,11 @@ export class StartSlaTimers {
           input.ticketId,
         );
         const enEspera = ticket?.status === 'WAITING_ON_CUSTOMER';
+        // Horario laboral de la organización (ADR-0034): un ticket que entra
+        // con la oficina cerrada empieza a contar en la próxima apertura.
+        const calendar = toBusinessCalendar(
+          (await this.calendars.configOf(input.tenantId)).config,
+        );
 
         for (const kind of SLA_KINDS) {
           const timer = SlaTimer.start({
@@ -100,7 +107,7 @@ export class StartSlaTimers {
             ticketId: input.ticketId,
             kind,
             minutes: minutosPor[kind],
-            calendar: CALENDAR_24_7,
+            calendar,
             now: input.occurredAt,
           });
           if (enEspera && kind === 'RESOLUTION') {
