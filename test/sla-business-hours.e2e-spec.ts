@@ -35,12 +35,8 @@ describe('SLA con horario laboral (e2e, ADR-0034)', () => {
   let slaQueue: Queue;
   let routingQueue: Queue;
   // Sábado 14/11/2026 22:00 en Argentina: la oficina está cerrada.
-  const reloj: Clock & { ahora: Date } = {
-    ahora: new Date('2026-11-15T01:00:00.000Z'),
-    now() {
-      return new Date(this.ahora);
-    },
-  };
+  const AHORA = new Date('2026-11-15T01:00:00.000Z');
+  const reloj: Clock = { now: () => new Date(AHORA) };
 
   const run = randomUUID().slice(0, 8);
   const slug = `sla-bh-${run}`;
