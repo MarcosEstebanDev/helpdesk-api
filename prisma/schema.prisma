@@ -38,22 +38,24 @@ model Organization {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  users           User[]
-  memberships     Membership[]
-  refreshTokens   RefreshToken[]
-  tickets         Ticket[]
-  comments        Comment[]
-  auditLogs       AuditLog[]
-  ticketCounter   TicketCounter?
-  outbox          OutboxMessage[]
-  processed       ProcessedMessage[]
-  slaPolicies     SlaPolicy[]
-  slaTimers       SlaTimer[]
-  ticketTriages   TicketTriage[]
-  cannedResponses CannedResponse[]
-  tags            Tag[]
-  ticketTags      TicketTag[]
-  savedViews      SavedView[]
+  users                      User[]
+  memberships                Membership[]
+  refreshTokens              RefreshToken[]
+  tickets                    Ticket[]
+  comments                   Comment[]
+  auditLogs                  AuditLog[]
+  ticketCounter              TicketCounter?
+  outbox                     OutboxMessage[]
+  processed                  ProcessedMessage[]
+  slaPolicies                SlaPolicy[]
+  slaTimers                  SlaTimer[]
+  ticketTriages              TicketTriage[]
+  cannedResponses            CannedResponse[]
+  tags                       Tag[]
+  ticketTags                 TicketTag[]
+  savedViews                 SavedView[]
+  businessCalendar           BusinessCalendar?
+  businessCalendarExceptions BusinessCalendarException[]
 
   @@map("organizations")
 }
@@ -501,4 +503,41 @@ model SavedView {
 
   @@unique([tenantId, scopeKey, nameKey])
   @@map("saved_views")
+}
+
+/// Horario laboral (ADR-0034). Sin fila = valores por defecto del dominio
+/// (L–V 08:00–18:00, Argentina): no hay backfill para las organizaciones.
+enum BusinessCalendarMode {
+  BUSINESS_HOURS
+  TWENTY_FOUR_SEVEN
+}
+
+model BusinessCalendar {
+  tenantId       String               @id @map("tenant_id") @db.Uuid
+  mode           BusinessCalendarMode
+  timeZone       String               @map("time_zone")
+  /// Días ISO (1 = lunes … 7 = domingo).
+  weekdays       Int[]                @db.SmallInt
+  opensAtMinute  Int                  @map("opens_at_minute") @db.SmallInt
+  closesAtMinute Int                  @map("closes_at_minute") @db.SmallInt
+  updatedAt      DateTime             @map("updated_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("business_calendars")
+}
+
+model BusinessCalendarException {
+  id        String   @id @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  /// Fecha LOCAL de la organización.
+  date      DateTime @db.Date
+  working   Boolean
+  name      String
+  createdAt DateTime @map("created_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, date])
+  @@map("business_calendar_exceptions")
 }

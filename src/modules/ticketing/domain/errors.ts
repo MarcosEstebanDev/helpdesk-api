@@ -92,6 +92,32 @@ export class InvalidSlaTargetError extends DomainError {
 }
 
 /**
+ * Horario laboral imposible: sin días hábiles, cierre antes de la apertura,
+ * una hora que no existe o una zona horaria desconocida. El detalle viaja en el
+ * error por la misma razón que en el SLA: el ADMIN está editando un formulario.
+ */
+export class InvalidBusinessHoursError extends DomainError {
+  readonly code = 'ticketing.invalid_business_hours';
+  constructor(detail: string) {
+    super(detail);
+  }
+}
+
+export class CalendarExceptionNotFoundError extends DomainError {
+  readonly code = 'ticketing.calendar_exception_not_found';
+  constructor() {
+    super('Esa fecha no está cargada en el horario laboral.');
+  }
+}
+
+export class DuplicateCalendarExceptionError extends DomainError {
+  readonly code = 'ticketing.duplicate_calendar_exception';
+  constructor(date: string) {
+    super(`La fecha ${date} ya está cargada.`);
+  }
+}
+
+/**
  * El servicio de IA no está disponible ahora (caído, timeout, sobrecargado).
  * Es TRANSITORIO: el consumidor lo lanza para que la cola reintente con backoff.
  */
@@ -210,6 +236,9 @@ export type TicketingError =
   | EmptyCommentError
   | InternalNoteForbiddenError
   | InvalidSlaTargetError
+  | InvalidBusinessHoursError
+  | CalendarExceptionNotFoundError
+  | DuplicateCalendarExceptionError
   | TriageUnavailableError
   | TriageRejectedError
   | InvalidCannedResponseError

@@ -39,6 +39,7 @@ import { AddComment } from './modules/ticketing/application/add-comment.use-case
 import { ChangeTicketStatus } from './modules/ticketing/application/change-ticket-status.use-case';
 import { CreateCannedResponse } from './modules/ticketing/application/canned-responses/create-canned-response.use-case';
 import { CreateTag } from './modules/ticketing/application/tags/create-tag.use-case';
+import { LoadNationalHolidays } from './modules/ticketing/application/business-hours/business-hours.use-cases';
 import { SetTicketTags } from './modules/ticketing/application/tags/set-ticket-tags.use-case';
 import { CreateTicket } from './modules/ticketing/application/create-ticket.use-case';
 import {
@@ -268,6 +269,19 @@ async function main(): Promise<void> {
         return created;
       },
     );
+
+    // --- 2b. Horario laboral (ADR-0034): rige el de fábrica (L–V 8–18,
+    // Argentina) y se precargan los feriados nacionales del año, por el mismo
+    // caso de uso que el botón de la pantalla.
+    const feriados = await app.get(LoadNationalHolidays).execute({
+      tenantId,
+      actorId: adminId,
+      year: clock.now().getUTCFullYear(),
+    });
+    if (feriados.isErr()) {
+      // Un año sin lista cargada no es motivo para no tener demo.
+      console.warn(`Sin feriados precargados: ${feriados.error.message}`);
+    }
 
     // --- 3. Tickets, comentarios y transiciones, por sus casos de uso ---
     const createTicket = app.get(CreateTicket);

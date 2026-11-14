@@ -31,6 +31,16 @@ import {
   TicketId,
   UserId,
 } from '../domain/ids';
+import {
+  BusinessCalendarRepository,
+  CalendarMode,
+  StoredCalendarException,
+} from '../domain/ports/business-calendar.repository';
+import {
+  BusinessWeek,
+  CalendarException,
+  DEFAULT_BUSINESS_HOURS,
+} from '../domain/sla/business-calendar';
 import { SavedView } from '../domain/saved-view/saved-view.entity';
 import { SavedViewRepository } from '../domain/ports/saved-view.repository';
 import { Tag } from '../domain/tag/tag.entity';
@@ -286,6 +296,91 @@ export const fakeSlaPolicies = (
     },
   };
 };
+
+/**
+ * Horario laboral en memoria (ADR-0034). Sin `inicial`, se comporta como una
+ * organización que nunca configuró nada: rige `DEFAULT_BUSINESS_HOURS`.
+ */
+export const fakeBusinessCalendars = (
+  inicial: { mode: CalendarMode; week: BusinessWeek } | null = null,
+): BusinessCalendarRepository & {
+  readonly exceptions: StoredCalendarException[];
+} => {
+  let fila = inicial;
+  const exceptions: StoredCalendarException[] = [];
+  const semanaPorDefecto: BusinessWeek = {
+    timeZone: DEFAULT_BUSINESS_HOURS.timeZone,
+    weekdays: DEFAULT_BUSINESS_HOURS.weekdays,
+    opensAtMinute: DEFAULT_BUSINESS_HOURS.opensAtMinute,
+    closesAtMinute: DEFAULT_BUSINESS_HOURS.closesAtMinute,
+  };
+  const agregar = (id: string, e: CalendarException): boolean => {
+    if (exceptions.some((x) => x.date === e.date)) return false;
+    exceptions.push({ id, ...e });
+    exceptions.sort((a, b) => a.date.localeCompare(b.date));
+    return true;
+  };
+  return {
+    exceptions,
+    configOf: () => {
+      const mode = fila?.mode ?? 'business_hours';
+      const week = fila?.week ?? semanaPorDefecto;
+      const lista = exceptions.map((e) => ({ ...e }));
+      return Promise.resolve({
+        config:
+          mode === '24_7'
+            ? { mode: '24_7' }
+            : {
+                mode: 'business_hours',
+                ...week,
+                exceptions: lista.map(({ date, working, name }) => ({
+                  date,
+                  working,
+                  name,
+                })),
+              },
+        source: fila === null ? 'default' : 'organization',
+        mode,
+        week,
+        exceptions: lista,
+      });
+    },
+    saveWeek: (input) => {
+      fila = { mode: input.mode, week: input.week };
+      return Promise.resolve();
+    },
+    addException: (input) =>
+      Promise.resolve(
+        agregar(input.id, input.exception) ? 'added' : 'duplicate',
+      ),
+    addExceptions: (input) =>
+      Promise.resolve(
+        input.items.filter(({ id, exception }) => agregar(id, exception))
+          .length,
+      ),
+    removeException: (_tenantId, id) => {
+      const i = exceptions.findIndex((e) => e.id === id);
+      if (i === -1) return Promise.resolve(false);
+      exceptions.splice(i, 1);
+      return Promise.resolve(true);
+    },
+  };
+};
+
+/**
+ * Una organización en modo 24/7: los tests de SLA anteriores al horario
+ * laboral (ADR-0034) la usan para seguir probando exactamente lo mismo.
+ */
+export const calendars24x7 = () =>
+  fakeBusinessCalendars({
+    mode: '24_7',
+    week: {
+      timeZone: DEFAULT_BUSINESS_HOURS.timeZone,
+      weekdays: DEFAULT_BUSINESS_HOURS.weekdays,
+      opensAtMinute: DEFAULT_BUSINESS_HOURS.opensAtMinute,
+      closesAtMinute: DEFAULT_BUSINESS_HOURS.closesAtMinute,
+    },
+  });
 
 export interface FakeSlaTimers extends SlaTimerRepository {
   /** Escrituras que APLICARON (altas y transiciones), en orden. */

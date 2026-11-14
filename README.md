@@ -384,6 +384,12 @@ The full contract, with schemas, is at `/docs`.
 | `GET` | `/sla-policy` | ADMIN | Four priorities, each flagged as agreed or default |
 | `PUT` | `/sla-policy/:priority` | ADMIN | |
 | `DELETE` | `/sla-policy/:priority` | ADMIN | Back to the default |
+| `GET` | `/business-hours` | ADMIN | Working week + date exceptions; Mon–Fri 08:00–18:00 (Argentina) until configured |
+| `PUT` | `/business-hours` | ADMIN | Week and mode (`business_hours` or `24_7`); running clocks are not recalculated |
+| `POST` | `/business-hours/exceptions` | ADMIN | A date that overrides the week (holiday, or an extra working day); 409 if already set |
+| `DELETE` | `/business-hours/exceptions/:id` | ADMIN | |
+| `POST` | `/business-hours/holidays/:year` | ADMIN | Preloads Argentina's national holidays (this year or next); never overwrites |
+| `GET` | `/business-hours/status` | VIEWER | Only `open`, `nextOpening` and `timeZone`: the out-of-hours notice |
 | `GET` | `/canned-responses` | AGENT | Shared reply templates, by title. Not VIEWER, on purpose |
 | `POST` | `/canned-responses` | ADMIN | Unknown `{{variables}}` or stray braces are a 400 |
 | `PUT` | `/canned-responses/:id` | ADMIN | Replaces title and body |

@@ -103,6 +103,20 @@ import {
   PrismaSlaPolicyRepository,
   PrismaSlaTimerRepository,
 } from './infrastructure/persistence/prisma-sla.repository';
+import { PrismaBusinessCalendarRepository } from './infrastructure/persistence/prisma-business-calendar.repository';
+import {
+  BUSINESS_CALENDAR_REPOSITORY,
+  BusinessCalendarRepository,
+} from './domain/ports/business-calendar.repository';
+import { BusinessHoursController } from './infrastructure/http/business-hours.controller';
+import {
+  AddCalendarException,
+  GetBusinessHours,
+  GetBusinessStatus,
+  LoadNationalHolidays,
+  RemoveCalendarException,
+  UpdateBusinessHours,
+} from './application/business-hours/business-hours.use-cases';
 import { TicketReadModel } from './infrastructure/persistence/ticket.read-model';
 import { TriageTicket } from './application/triage/triage-ticket.use-case';
 import {
@@ -140,8 +154,86 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
     CannedResponseController,
     TagController,
     SavedViewController,
+    BusinessHoursController,
   ],
   providers: [
+    // --- Horario laboral (ADR-0034) ---
+    {
+      provide: GetBusinessHours,
+      inject: [BUSINESS_CALENDAR_REPOSITORY],
+      useFactory: (calendars: BusinessCalendarRepository) =>
+        new GetBusinessHours(calendars),
+    },
+    {
+      provide: UpdateBusinessHours,
+      inject: [
+        TRANSACTION_MANAGER,
+        BUSINESS_CALENDAR_REPOSITORY,
+        AuditRecorder,
+        CLOCK,
+      ],
+      useFactory: (
+        tx: TransactionManager,
+        calendars: BusinessCalendarRepository,
+        audit: AuditRecorder,
+        clock: Clock,
+      ) => new UpdateBusinessHours(tx, calendars, audit, clock),
+    },
+    {
+      provide: AddCalendarException,
+      inject: [
+        TRANSACTION_MANAGER,
+        BUSINESS_CALENDAR_REPOSITORY,
+        AuditRecorder,
+        CLOCK,
+        ID_GENERATOR,
+      ],
+      useFactory: (
+        tx: TransactionManager,
+        calendars: BusinessCalendarRepository,
+        audit: AuditRecorder,
+        clock: Clock,
+        ids: IdGenerator,
+      ) => new AddCalendarException(tx, calendars, audit, clock, ids),
+    },
+    {
+      provide: RemoveCalendarException,
+      inject: [
+        TRANSACTION_MANAGER,
+        BUSINESS_CALENDAR_REPOSITORY,
+        AuditRecorder,
+        CLOCK,
+      ],
+      useFactory: (
+        tx: TransactionManager,
+        calendars: BusinessCalendarRepository,
+        audit: AuditRecorder,
+        clock: Clock,
+      ) => new RemoveCalendarException(tx, calendars, audit, clock),
+    },
+    {
+      provide: LoadNationalHolidays,
+      inject: [
+        TRANSACTION_MANAGER,
+        BUSINESS_CALENDAR_REPOSITORY,
+        AuditRecorder,
+        CLOCK,
+        ID_GENERATOR,
+      ],
+      useFactory: (
+        tx: TransactionManager,
+        calendars: BusinessCalendarRepository,
+        audit: AuditRecorder,
+        clock: Clock,
+        ids: IdGenerator,
+      ) => new LoadNationalHolidays(tx, calendars, audit, clock, ids),
+    },
+    {
+      provide: GetBusinessStatus,
+      inject: [BUSINESS_CALENDAR_REPOSITORY, CLOCK],
+      useFactory: (calendars: BusinessCalendarRepository, clock: Clock) =>
+        new GetBusinessStatus(calendars, clock),
+    },
     // --- Adapters ---
     PrismaTicketRepository,
     PrismaCommentRepository,
@@ -151,6 +243,7 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
     TicketReadModel,
     PrismaSlaPolicyRepository,
     PrismaSlaTimerRepository,
+    PrismaBusinessCalendarRepository,
     TicketRoutingProcessor,
     SlaProcessor,
     RealtimeProcessor,
@@ -184,6 +277,10 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
     { provide: MEMBER_DIRECTORY, useExisting: PrismaMemberDirectory },
     { provide: SLA_POLICY_REPOSITORY, useExisting: PrismaSlaPolicyRepository },
     { provide: SLA_TIMER_REPOSITORY, useExisting: PrismaSlaTimerRepository },
+    {
+      provide: BUSINESS_CALENDAR_REPOSITORY,
+      useExisting: PrismaBusinessCalendarRepository,
+    },
     {
       provide: TICKET_TRIAGE_REPOSITORY,
       useExisting: PrismaTicketTriageRepository,
@@ -288,9 +385,11 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
     {
       // Pausa del SLA síncrona, en la transacción del cambio (ADR-0029).
       provide: SlaPauseCoordinator,
-      inject: [SLA_TIMER_REPOSITORY],
-      useFactory: (timers: SlaTimerRepository): SlaPauseCoordinator =>
-        new SlaPauseCoordinator(timers),
+      inject: [SLA_TIMER_REPOSITORY, BUSINESS_CALENDAR_REPOSITORY],
+      useFactory: (
+        timers: SlaTimerRepository,
+        calendars: BusinessCalendarRepository,
+      ): SlaPauseCoordinator => new SlaPauseCoordinator(timers, calendars),
     },
     {
       provide: ChangeTicketStatus,
@@ -328,6 +427,7 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
         PROCESSED_MESSAGES,
         ID_GENERATOR,
         TICKET_REPOSITORY,
+        BUSINESS_CALENDAR_REPOSITORY,
       ],
       useFactory: (
         transactions: TransactionManager,
@@ -336,6 +436,7 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
         processed: ProcessedMessages,
         ids: IdGenerator,
         tickets: TicketRepository,
+        calendars: BusinessCalendarRepository,
       ): StartSlaTimers =>
         new StartSlaTimers(
           transactions,
@@ -344,6 +445,7 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
           processed,
           ids,
           tickets,
+          calendars,
         ),
     },
     {
@@ -516,9 +618,11 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
     },
     {
       provide: GetSlaPolicy,
-      inject: [SLA_POLICY_REPOSITORY],
-      useFactory: (policies: SlaPolicyRepository): GetSlaPolicy =>
-        new GetSlaPolicy(policies),
+      inject: [SLA_POLICY_REPOSITORY, BUSINESS_CALENDAR_REPOSITORY],
+      useFactory: (
+        policies: SlaPolicyRepository,
+        calendars: BusinessCalendarRepository,
+      ): GetSlaPolicy => new GetSlaPolicy(policies, calendars),
     },
     {
       provide: UpdateSlaPolicy,
@@ -527,14 +631,16 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
         SLA_POLICY_REPOSITORY,
         AuditRecorder,
         CLOCK,
+        BUSINESS_CALENDAR_REPOSITORY,
       ],
       useFactory: (
         transactions: TransactionManager,
         policies: SlaPolicyRepository,
         audit: AuditRecorder,
         clock: Clock,
+        calendars: BusinessCalendarRepository,
       ): UpdateSlaPolicy =>
-        new UpdateSlaPolicy(transactions, policies, audit, clock),
+        new UpdateSlaPolicy(transactions, policies, audit, clock, calendars),
     },
     {
       provide: ResetSlaPolicy,
@@ -543,23 +649,32 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
         SLA_POLICY_REPOSITORY,
         AuditRecorder,
         CLOCK,
+        BUSINESS_CALENDAR_REPOSITORY,
       ],
       useFactory: (
         transactions: TransactionManager,
         policies: SlaPolicyRepository,
         audit: AuditRecorder,
         clock: Clock,
+        calendars: BusinessCalendarRepository,
       ): ResetSlaPolicy =>
-        new ResetSlaPolicy(transactions, policies, audit, clock),
+        new ResetSlaPolicy(transactions, policies, audit, clock, calendars),
     },
     {
       provide: StopSlaTimer,
-      inject: [TRANSACTION_MANAGER, SLA_TIMER_REPOSITORY, PROCESSED_MESSAGES],
+      inject: [
+        TRANSACTION_MANAGER,
+        SLA_TIMER_REPOSITORY,
+        PROCESSED_MESSAGES,
+        BUSINESS_CALENDAR_REPOSITORY,
+      ],
       useFactory: (
         transactions: TransactionManager,
         timers: SlaTimerRepository,
         processed: ProcessedMessages,
-      ): StopSlaTimer => new StopSlaTimer(transactions, timers, processed),
+        calendars: BusinessCalendarRepository,
+      ): StopSlaTimer =>
+        new StopSlaTimer(transactions, timers, processed, calendars),
     },
     {
       provide: MarkSlaBreached,

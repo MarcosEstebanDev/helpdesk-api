@@ -21,7 +21,8 @@ import {
   TenantId,
   TicketId,
 } from '../src/modules/ticketing/domain/ids';
-import { DEFAULT_SLA_POLICY } from '../src/modules/ticketing/domain/sla/sla-policy';
+// Esta suite corre en 24/7: los valores de fábrica son los de reloj (ADR-0034).
+import { DEFAULT_SLA_POLICY_24_7 as DEFAULT_SLA_POLICY } from '../src/modules/ticketing/domain/sla/sla-policy';
 import { SlaTimer } from '../src/modules/ticketing/domain/sla/sla-timer.entity';
 import { SYSTEM_ACTOR_ID } from '../src/modules/ticketing/domain/system-actor';
 import { PrismaSlaTimerRepository } from '../src/modules/ticketing/infrastructure/persistence/prisma-sla.repository';
@@ -200,6 +201,20 @@ describe('Pausa del SLA (e2e)', () => {
     ) as { sub: string; tenantId: string };
     tenantId = claims.tenantId;
     userId = claims.sub;
+
+    // La pausa se prueba con horas de reloj (24/7); el horario laboral
+    // (ADR-0034) tiene su propia suite.
+    await request(app.getHttpServer())
+      .put('/business-hours')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        mode: '24_7',
+        timeZone: 'America/Argentina/Buenos_Aires',
+        weekdays: [1, 2, 3, 4, 5],
+        opensAt: '08:00',
+        closesAt: '18:00',
+      })
+      .expect(200);
   });
 
   afterAll(async () => {

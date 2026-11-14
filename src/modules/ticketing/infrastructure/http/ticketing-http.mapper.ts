@@ -32,6 +32,9 @@ const STATUS_BY_CODE: Record<string, HttpStatus> = {
   'ticketing.saved_view_not_found': HttpStatus.NOT_FOUND,
   'ticketing.duplicate_saved_view_name': HttpStatus.CONFLICT,
   'ticketing.saved_view_forbidden': HttpStatus.FORBIDDEN,
+  'ticketing.invalid_business_hours': HttpStatus.BAD_REQUEST,
+  'ticketing.calendar_exception_not_found': HttpStatus.NOT_FOUND,
+  'ticketing.duplicate_calendar_exception': HttpStatus.CONFLICT,
 };
 
 export const toHttpException = (error: TicketingError): HttpException => {

@@ -43,6 +43,7 @@ lo que costaría revertirla.
 - [ADR-0031](#adr-0031--etiquetas-catálogo-por-organización-clasificación-interna-y-fuera-del-agregado) — Etiquetas: catálogo por organización, clasificación interna y fuera del agregado
 - [ADR-0032](#adr-0032--búsqueda-texto-completo-de-postgres-con-columnas-generadas) — Búsqueda: texto completo de Postgres con columnas generadas
 - [ADR-0033](#adr-0033--vistas-guardadas-filtros-versionados-personales-y-compartidas) — Vistas guardadas: filtros versionados, personales y compartidas
+- [ADR-0034](#adr-0034--horario-laboral-calendario-de-días-hábiles-por-organización) — Horario laboral: calendario de días hábiles por organización
 
 **Trabajo asíncrono** — Cómo un cambio se convierte en efectos, sin perder eventos.
 
@@ -652,6 +653,16 @@ minutos se cuentan sobre `SlaCalendar`; existe `CALENDAR_24_7` y nada más. La i
 no es especulación: es la costura por la que entrará el horario laboral por tenant con
 su zona horaria. Aislar hoy lo que sabemos que va a cambiar cuesta una interfaz; no
 aislarlo cuesta reescribir cada sitio donde se sumó tiempo a mano.
+
+> **Ampliada por el ADR-0034 (2026-11-13).** La costura sirvió: el horario
+> laboral entró como otro `SlaCalendar` (`toBusinessCalendar`) sin tocar el
+> motor ni el barrido. `CALENDAR_24_7` queda para el modo "atención 24/7". Los
+> **valores por defecto** pasan a pensarse en horas HÁBILES: NORMAL resuelve
+> en 10 h (antes 24 h) y LOW en 30 h (antes 72 h); URGENT y HIGH no cambian.
+> En modo 24/7 rigen los de siempre (`DEFAULT_SLA_POLICY_24_7`, 24 h y 72 h):
+> el ajuste es para días de 10 h, y aplicarlo en horas de reloj habría
+> endurecido en silencio el SLA de quien tiene guardia (`defaultPolicyFor`).
+> Las políticas pactadas por cada organización no se tocan.
 
 **Decisión 6 — La política se configura POR PRIORIDAD, y leerla ya es cosa de
 `ADMIN`.** `GET /sla-policy` devuelve siempre las cuatro prioridades diciendo si cada
@@ -1620,6 +1631,11 @@ adenda del ADR-0021.
 - (−) Un ticket en espera queda así sin límite: el auto-resolver a los N días
   llega con las automatizaciones de la tanda 3.
 
+> **Resuelto por el ADR-0034 (2026-11-13).** La reanudación (y la parada de un
+> reloj en pausa) usa el calendario ACTUAL de la organización del ticket, no
+> uno global ni una foto del que había al arrancar. Efecto aceptado: si el
+> horario cambia durante una pausa, el margen se mide con el nuevo.
+
 **Revisar si.** Llega el horario laboral (→ comprobar que la reanudación usa el
 calendario del reloj y no uno global), o aparecen más estados que pausan el SLA
 (p. ej. "esperando a un tercero") → la regla del coordinador pasaría a ser una
@@ -1939,3 +1955,84 @@ que ya no existe muestra la bandeja entera con un aviso.
 **Revisar si.** Se piden contadores (una consulta por vista o un read model
 de conteos), vistas por defecto al entrar, o compartir con personas puntuales
 (→ tabla de destinatarios en vez de `owner_id` nulo).
+
+---
+
+## ADR-0034 — Horario laboral: calendario de días hábiles por organización
+
+**Fecha:** 2026-11-13 · **Estado:** aceptado · **Spec:**
+`docs/superpowers/specs/2026-11-13-horario-laboral-design.md`
+
+**Contexto.** El SLA contaba 24/7: un ticket urgente del viernes a las 17:00
+con 4 h de resolución vencía a las 21:00, con el equipo en su casa. Una
+organización de soporte trabaja con una franja (en Argentina, típicamente
+08:00–18:00 de lunes a viernes, sin feriados).
+
+### Decisión 1 — Semana tipo + excepciones por fecha, por organización
+
+`business_calendars` (una fila por tenant: modo, zona IANA, días ISO, apertura
+y cierre en minutos) y `business_calendar_exceptions` (fecha LOCAL, hábil o
+no, nombre; única por tenant y fecha), las dos con RLS ENABLE+FORCE. Una
+excepción pisa la semana: un feriado en martes es no hábil, un sábado de
+cierre de mes es hábil con la franja de la semana. Es el dato completo que
+necesitará un calendario visual: esa pantalla vendrá después, sin migración.
+
+### Decisión 2 — Sin fila = horario por defecto, con interruptor 24/7
+
+Los valores por defecto viven en el dominio (`DEFAULT_BUSINESS_HOURS`), igual
+que la política de SLA: no hay backfill ni filas sembradas al registrar. Quien
+tiene guardia activa el modo `24_7` (= `CALENDAR_24_7`); la semana y las
+excepciones se conservan para cuando se vuelva.
+
+### Decisión 3 — El cálculo es del dominio, en la zona guardada
+
+`toBusinessCalendar(config)` implementa `SlaCalendar` recorriendo días
+hábiles; convierte "fecha local + minuto" a instante con `Intl.DateTimeFormat`
+calculando el desfase de ESE instante (sirve para zonas con horario de
+verano, sin dependencia nueva). Nunca usa la zona del proceso. Un calendario
+sin días hábiles en 730 días falla fuerte en vez de colgarse, y no se puede
+guardar una semana sin días hábiles. Si vence al cierre, vence ese día.
+
+### Decisión 4 — Los objetivos se cuentan en horas hábiles
+
+Ver la adenda al ADR-0020: NORMAL resuelve en 10 h (un día hábil) y LOW en
+30 h. `due_at` se sigue persistiendo y el barrido no cambia.
+
+### Decisión 5 — El calendario actual, no una foto; sin recalcular relojes vivos
+
+Arrancar, parar y reanudar piden el calendario del tenant en ese momento.
+Cambiar el horario no toca `due_at` de relojes en marcha (como la política,
+ADR-0020 decisión 4), pero una reanudación posterior mide el margen con el
+calendario nuevo (adenda al ADR-0029).
+
+### Decisión 6 — Configurar es del ADMIN; el cliente solo ve "abierto o cerrado"
+
+`GET|PUT /business-hours`, `POST|DELETE /business-hours/exceptions`, `POST
+/business-hours/holidays/:year` (año actual y siguiente) son ADMIN y auditan
+`business_hours.changed` en la misma transacción. `GET /business-hours/status`
+es para cualquier rol y devuelve solo `{ open, nextOpening, timeZone }`: el web
+le muestra al cliente que escribe fuera de horario cuándo lo van a ver (un
+aviso en pantalla, no un mensaje en la conversación).
+
+### Decisión 7 — Feriados nacionales como lista en el código
+
+`argentina-holidays.ts` con 2026 y 2027: inamovibles + trasladables ya movidos
+según la Ley 27.399, sin "no laborables turísticos" ni 24/31 de diciembre.
+Una lista y no una API externa: el SLA no debe depender de un tercero. La
+precarga no pisa lo que el ADMIN cargó a mano.
+
+### Consecuencias
+
+- (+) Los incumplimientos vuelven a ser del equipo, no del calendario.
+- (+) La costura de la fase 6 rindió: ni el motor ni el barrido cambiaron.
+- (−) Las fechas trasladables se calcularon con la ley, sin contrastar con el
+  decreto anual: si el Ejecutivo fija otra fecha, hay que corregir la lista
+  (el ADMIN puede editarla mientras tanto).
+- (−) Un reloj creado en 24/7 y pausado fuera de horario al momento del
+  despliegue puede quedar con menos margen al reanudar. Ventana de transición.
+- (−) La bandeja formatea vencimientos lejanos en la zona del navegador (no
+  conoce la de la organización).
+
+**Revisar si.** Se piden franjas por día de la semana o turnos partidos (→ la
+semana pasa a ser una lista de franjas por día), horarios por equipo, o
+guardia solo para urgentes (→ calendario por prioridad).

@@ -179,7 +179,28 @@ salen del propio código, y las decisiones que están esperando tu OK.
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
-## Estado actual (2026-11-13) — UX de bandeja y detalle
+## Estado actual (2026-11-13) — Horario laboral (ADR-0034), cierra la tanda 1
+
+Rama `feat/horario-laboral` (api y web). Spec y plan en `docs/superpowers/`.
+
+- Dominio `ticketing/domain/sla/business-calendar.ts`: `toBusinessCalendar`
+  (implementa `SlaCalendar` + `isOpenAt`/`nextOpeningAfter`),
+  `DEFAULT_BUSINESS_HOURS` (L–V 08:00–18:00 Argentina), `makeBusinessHours`.
+  Zona con `Intl` (desfase del instante, no fijo), tope `MAX_SEARCH_DAYS`.
+- `argentina-holidays.ts` 2026/2027, calculados con la Ley 27.399 SIN
+  contrastar con el decreto anual (dicho en el archivo).
+- Tablas `business_calendars` + `business_calendar_exceptions` (RLS),
+  migración `20261113160000_business_hours`. Sin fila = defaults.
+- `StartSlaTimers`, `StopSlaTimer` y `SlaPauseCoordinator` reciben
+  `BusinessCalendarRepository` y usan el calendario ACTUAL del tenant.
+- `DEFAULT_SLA_POLICY`: NORMAL resolución 10 h, LOW 30 h (horas hábiles).
+- HTTP `BusinessHoursController` (`/business-hours…`), `/status` para VIEWER.
+- **Gotcha de tests:** los e2e de SLA anteriores (`sla`, `sla-pause`) fijan
+  `mode: '24_7'` en su `beforeAll`; un e2e nuevo que mida vencimientos tiene
+  que decidir su calendario o va a heredar L–V 8–18. En los unit,
+  `calendars24x7()` de los test-doubles.
+
+## Estado anterior (2026-11-13) — UX de bandeja y detalle
 
 Rama `feat/ux-bandeja-detalle`. Mockup aprobado por el usuario
 (https://claude.ai/artifact/CCx4Szw574hwuz7xzrGL6b). Backend: el listado

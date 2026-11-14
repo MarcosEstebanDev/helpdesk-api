@@ -3,7 +3,9 @@ import { AuditRecorder } from '../audit-recorder';
 import {
   ACTOR,
   TENANT,
+  calendars24x7,
   fakeAuditLogRepository,
+  fakeBusinessCalendars,
   fakeSlaPolicies,
   fakeTransactions,
   fixedClock,
@@ -15,7 +17,7 @@ import { UpdateSlaPolicy } from './update-sla-policy.use-case';
 
 const AHORA = new Date('2026-09-09T10:00:00.000Z');
 
-const montar = (iniciales = {}) => {
+const montar = (iniciales = {}, calendars = fakeBusinessCalendars()) => {
   const policies = fakeSlaPolicies(iniciales);
   const auditLogs = fakeAuditLogRepository();
   const transactions = fakeTransactions();
@@ -26,13 +28,38 @@ const montar = (iniciales = {}) => {
     policies,
     auditLogs,
     transactions,
-    get: new GetSlaPolicy(policies),
-    update: new UpdateSlaPolicy(transactions.manager, policies, audit, clock),
-    reset: new ResetSlaPolicy(transactions.manager, policies, audit, clock),
+    get: new GetSlaPolicy(policies, calendars),
+    update: new UpdateSlaPolicy(
+      transactions.manager,
+      policies,
+      audit,
+      clock,
+      calendars,
+    ),
+    reset: new ResetSlaPolicy(
+      transactions.manager,
+      policies,
+      audit,
+      clock,
+      calendars,
+    ),
   };
 };
 
 describe('GetSlaPolicy', () => {
+  it('en 24/7 muestra los valores de fábrica de reloj (revisión, ADR-0034)', async () => {
+    const { get } = montar({}, calendars24x7());
+
+    const vigente = await get.execute({ tenantId: TENANT });
+
+    expect(
+      vigente.find((t) => t.priority === 'NORMAL')?.resolutionMinutes,
+    ).toBe(24 * 60);
+    expect(vigente.find((t) => t.priority === 'LOW')?.resolutionMinutes).toBe(
+      72 * 60,
+    );
+  });
+
   it('una organización que no ha configurado nada ya tiene política', async () => {
     // El caso que justifica que exista este caso de uso: la respuesta NO está
     // en la tabla, que está vacía. Sale de `DEFAULT_SLA_POLICY`.

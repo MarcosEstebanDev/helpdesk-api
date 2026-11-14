@@ -7,7 +7,8 @@ import {
 import { TicketingError } from '../../domain/errors';
 import { TenantId, TicketId } from '../../domain/ids';
 import { SlaTimerRepository } from '../../domain/ports/sla.repository';
-import { CALENDAR_24_7 } from '../../domain/sla/sla-calendar';
+import { BusinessCalendarRepository } from '../../domain/ports/business-calendar.repository';
+import { toBusinessCalendar } from '../../domain/sla/business-calendar';
 import { SlaKind } from '../../domain/sla/sla-timer.entity';
 import { runTransactional } from '../transactional';
 
@@ -47,6 +48,7 @@ export class StopSlaTimer {
     private readonly transactions: TransactionManager,
     private readonly timers: SlaTimerRepository,
     private readonly processed: ProcessedMessages,
+    private readonly calendars: BusinessCalendarRepository,
   ) {}
 
   async execute(
@@ -87,7 +89,12 @@ export class StopSlaTimer {
         // parar, sobre el vencimiento ya corrido. Calcularlo antes contaría la
         // pausa como tiempo consumido.
         const expected = timer.isPaused() ? 'paused' : 'running';
-        timer.stop(input.occurredAt, CALENDAR_24_7);
+        // El calendario solo importa si el reloj estaba en pausa (`stop` lo
+        // reanuda antes de parar): es el horario ACTUAL del tenant (ADR-0034).
+        const calendar = toBusinessCalendar(
+          (await this.calendars.configOf(input.tenantId)).config,
+        );
+        timer.stop(input.occurredAt, calendar);
         const margen = timer.remainingMinutesAt(input.occurredAt);
 
         // Escritura condicionada: si otra llegó antes (el barrido lo incumplió

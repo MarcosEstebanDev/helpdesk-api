@@ -23,12 +23,24 @@ export interface SlaCalendar {
   workingMinutesBetween(from: Date, to: Date): number;
 }
 
+/**
+ * Un calendario que además sabe si la organización está atendiendo (horario
+ * laboral, ADR-0034). Lo usa el aviso al cliente fuera de horario.
+ */
+export interface BusinessCalendar extends SlaCalendar {
+  isOpenAt(at: Date): boolean;
+  /** Próxima apertura posterior a `at`; `null` si en `at` ya está abierto. */
+  nextOpeningAfter(at: Date): Date | null;
+}
+
 const MS_PER_MINUTE = 60_000;
 
 /** El reloj corre siempre: noches, fines de semana y festivos incluidos. */
-export const CALENDAR_24_7: SlaCalendar = {
+export const CALENDAR_24_7: BusinessCalendar = {
   name: '24/7',
   dueAt: (from, minutes) => new Date(from.getTime() + minutes * MS_PER_MINUTE),
   workingMinutesBetween: (from, to) =>
     Math.max(0, (to.getTime() - from.getTime()) / MS_PER_MINUTE),
+  isOpenAt: () => true,
+  nextOpeningAfter: () => null,
 };

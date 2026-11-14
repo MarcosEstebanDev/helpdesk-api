@@ -1,10 +1,54 @@
 import {
   DEFAULT_SLA_POLICY,
   SLA_MAX_MINUTES,
+  defaultPolicyFor,
   effectivePolicy,
   makeSlaTarget,
   resolvePolicy,
 } from './sla-policy';
+
+describe('DEFAULT_SLA_POLICY (horas hábiles, 2026-11-13)', () => {
+  it('normal y baja se resuelven en días hábiles redondos de 10 h', () => {
+    expect(DEFAULT_SLA_POLICY.NORMAL.resolutionMinutes).toBe(10 * 60);
+    expect(DEFAULT_SLA_POLICY.LOW.resolutionMinutes).toBe(30 * 60);
+  });
+
+  it('urgente y alta no cambian', () => {
+    expect(DEFAULT_SLA_POLICY.URGENT).toEqual({
+      responseMinutes: 15,
+      resolutionMinutes: 4 * 60,
+    });
+    expect(DEFAULT_SLA_POLICY.HIGH).toEqual({
+      responseMinutes: 60,
+      resolutionMinutes: 8 * 60,
+    });
+  });
+});
+
+describe('defaultPolicyFor (revisión de la rama, ADR-0034)', () => {
+  it('en 24/7 los valores de fábrica son los de siempre, en horas de reloj', () => {
+    // Una organización con guardia no tiene que ver su SLA endurecido por un
+    // ajuste pensado para días hábiles de 10 h.
+    expect(defaultPolicyFor('24_7').NORMAL.resolutionMinutes).toBe(24 * 60);
+    expect(defaultPolicyFor('24_7').LOW.resolutionMinutes).toBe(72 * 60);
+    expect(defaultPolicyFor('24_7').URGENT).toEqual(DEFAULT_SLA_POLICY.URGENT);
+  });
+
+  it('con horario laboral son los de horas hábiles', () => {
+    expect(defaultPolicyFor('business_hours')).toEqual(DEFAULT_SLA_POLICY);
+  });
+
+  it('resolvePolicy y effectivePolicy completan con los defaults que se les pasan', () => {
+    const d = defaultPolicyFor('24_7');
+    expect(resolvePolicy({}, d)).toEqual(d);
+    expect(
+      effectivePolicy({}, d).find((t) => t.priority === 'LOW'),
+    ).toMatchObject({
+      resolutionMinutes: 72 * 60,
+      source: 'default',
+    });
+  });
+});
 
 describe('resolvePolicy', () => {
   it('sin configuración devuelve la política por defecto completa', () => {

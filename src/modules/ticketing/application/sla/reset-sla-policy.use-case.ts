@@ -3,8 +3,10 @@ import { TenantId, UserId } from '../../domain/ids';
 import { SlaPolicyRepository } from '../../domain/ports/sla.repository';
 import {
   EffectiveSlaTarget,
+  defaultPolicyFor,
   effectivePolicy,
 } from '../../domain/sla/sla-policy';
+import { BusinessCalendarRepository } from '../../domain/ports/business-calendar.repository';
 import { TicketPriority } from '../../domain/ticket-status';
 import { AuditRecorder } from '../audit-recorder';
 
@@ -33,12 +35,16 @@ export class ResetSlaPolicy {
     private readonly policies: SlaPolicyRepository,
     private readonly audit: AuditRecorder,
     private readonly clock: Clock,
+    private readonly calendars: BusinessCalendarRepository,
   ) {}
 
   async execute(input: ResetSlaPolicyInput): Promise<EffectiveSlaTarget[]> {
     return this.transactions.run(input.tenantId, async () => {
       const overrides = await this.policies.overridesOf(input.tenantId);
-      const antes = effectivePolicy(overrides).find(
+      const defaults = defaultPolicyFor(
+        (await this.calendars.configOf(input.tenantId)).mode,
+      );
+      const antes = effectivePolicy(overrides, defaults).find(
         (t) => t.priority === input.priority,
       );
 
@@ -49,6 +55,7 @@ export class ResetSlaPolicy {
       // estado real tras el borrado, sin una segunda copia de la regla.
       const vigente = effectivePolicy(
         await this.policies.overridesOf(input.tenantId),
+        defaults,
       );
 
       if (habia) {

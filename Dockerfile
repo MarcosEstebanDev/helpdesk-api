@@ -20,8 +20,9 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 # sin él el cliente no se genera. Ese fue el motivo real de que esta imagen
 # estuviera rota desde que Prisma llegó al proyecto.
 COPY prisma ./prisma
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-    pnpm install --frozen-lockfile
+# Sin `--mount=type=cache`: Railway exige que el id del caché lleve el id del
+# servicio como prefijo, y eso ataría el Dockerfile a un servicio concreto.
+RUN pnpm install --frozen-lockfile
 # Explícito y no confiado al postinstall: `prisma generate` es lo que convierte
 # schema.prisma en los tipos que importa TODO el código de persistencia.
 RUN pnpm prisma generate

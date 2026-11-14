@@ -109,6 +109,17 @@ depender de un modelo que se equivoca. Misma tubería que el triage
 con su propio set de evals de comentarios etiquetados y medido antes de
 enseñárselo al agente. ADR propio.
 
+**Después del horario laboral (ADR-0034, 2026-11-13), quedó fuera a propósito:**
+- **Calendario visual** del mes (clic en un día para marcarlo hábil/no hábil,
+  ver cuándo vence cada ticket). El modelo de datos ya lo soporta: es otra
+  pantalla sobre las mismas tablas.
+- Guardia 24/7 solo para urgentes (calendario por prioridad); hoy el modo 24/7
+  es para toda la organización.
+- Horarios por equipo o por agente, turnos partidos, franjas distintas por día.
+- Aviso automático por email o en la conversación (el email es tanda 2).
+- Contrastar los feriados trasladables de 2026/2027 con el decreto anual, y
+  agregar 2028 cuando se publique.
+
 ---
 
 ## 3. Qué mejorar del producto
