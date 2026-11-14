@@ -1,6 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -8,9 +10,19 @@ import {
   IsUUID,
   Length,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
+import { COMMENT_VISIBILITIES } from '../../../domain/comment-visibility';
+import type { CommentVisibility } from '../../../domain/comment-visibility';
 import { SLA_KINDS } from '../../../domain/sla/sla-timer.entity';
+import { TagDto } from './tag.dto';
+import { LowercaseIds } from './transforms';
+import {
+  TRIAGE_CATEGORIES,
+  TRIAGE_LANGUAGES,
+  TRIAGE_SENTIMENTS,
+} from '../../../domain/triage/ticket-triage.entity';
 import {
   TICKET_PRIORITIES,
   TICKET_STATUSES,
@@ -73,6 +85,16 @@ export class AddCommentDto {
   @IsString()
   @Length(1, 10_000)
   body!: string;
+
+  @ApiPropertyOptional({
+    enum: COMMENT_VISIBILITIES,
+    default: 'PUBLIC',
+    description:
+      'INTERNAL = nota del equipo: el cliente no la ve y no cuenta como respuesta para el SLA. Solo AGENT o ADMIN.',
+  })
+  @IsOptional()
+  @IsIn(COMMENT_VISIBILITIES)
+  visibility?: CommentVisibility;
 }
 
 export class ListTicketsQueryDto {
@@ -94,6 +116,19 @@ export class ListTicketsQueryDto {
   @IsUUID()
   requesterId?: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Solo AGENT o superior: tickets en los que la IA sugiere MÁS urgencia que la prioridad actual.',
+  })
+  @IsOptional()
+  // Los query params llegan como string. 'true'/'false' se convierten; cualquier
+  // otra cosa pasa tal cual y la rechaza `@IsBoolean` (mejor un 400 que un "sí").
+  @Transform(({ value }: { value: unknown }) =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @IsBoolean()
+  aiSuggestsHigher?: boolean;
+
   @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 100 })
   @IsOptional()
   // Los query params llegan como string; sin esta conversión `@IsInt` fallaría
@@ -111,6 +146,30 @@ export class ListTicketsQueryDto {
   @IsOptional()
   @IsUUID()
   cursor?: string;
+
+  @ApiPropertyOptional({
+    type: [String],
+    format: 'uuid',
+    maxItems: 10,
+    description:
+      'Solo AGENT o superior: tickets con AL MENOS UNA de estas etiquetas. Repetible (`?tagId=a&tagId=b`). Ids que no existen no dan error: simplemente no coinciden.',
+  })
+  @IsOptional()
+  // Un solo `?tagId=x` llega como string; varios, como array. Y en minúsculas.
+  @LowercaseIds()
+  @ArrayMaxSize(10)
+  @IsUUID('all', { each: true })
+  tagId?: string[];
+
+  @ApiPropertyOptional({
+    maxLength: 200,
+    description:
+      'Texto libre (ADR-0032): asunto, descripción y comentarios (las notas internas solo cuentan para el equipo). `#123` o `123` busca además por número. Cada palabra es un prefijo y todas deben aparecer; sin distinguir acentos.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  q?: string;
 }
 
 // --------------------------------------------------------------- respuestas
@@ -132,6 +191,7 @@ export class TicketCommentDto {
   @ApiProperty() id!: string;
   @ApiProperty() authorId!: string;
   @ApiProperty() body!: string;
+  @ApiProperty({ enum: COMMENT_VISIBILITIES }) visibility!: string;
   @ApiProperty() createdAt!: Date;
 }
 
@@ -142,13 +202,19 @@ export class TicketSlaDto {
   @ApiProperty({ nullable: true }) stoppedAt!: Date | null;
   @ApiProperty({ nullable: true }) breachedAt!: Date | null;
   @ApiProperty({
-    enum: ['running', 'met', 'breached'],
+    nullable: true,
+    description:
+      'Desde cuándo está en pausa (ticket esperando al cliente). Null si no lo está.',
+  })
+  pausedAt!: Date | null;
+  @ApiProperty({
+    enum: ['running', 'paused', 'met', 'breached'],
     description: 'Se deriva de las fechas; no hay un campo de estado guardado.',
   })
   status!: string;
   @ApiProperty({
     description:
-      'Minutos de margen, negativos si se pasó. El reloj en marcha se mide contra ahora; el parado, contra su hora de parada.',
+      'Minutos de margen, negativos si se pasó. El reloj en marcha se mide contra ahora; el parado, contra su hora de parada; el pausado, contra su hora de pausa (queda congelado).',
   })
   remainingMinutes!: number;
 }
@@ -159,10 +225,66 @@ export class TicketDetailDto extends TicketSummaryDto {
   @ApiProperty({ nullable: true }) closedAt!: Date | null;
   @ApiProperty({ type: [TicketCommentDto] }) comments!: TicketCommentDto[];
   @ApiProperty({ type: [TicketSlaDto] }) sla!: TicketSlaDto[];
+  @ApiPropertyOptional({
+    type: [TagDto],
+    description:
+      'Solo para AGENT o superior (para un VIEWER la clave no aparece). ADR-0031.',
+  })
+  tags?: TagDto[];
+}
+
+export class TicketTriageSummaryDto {
+  @ApiProperty() category!: string;
+  @ApiProperty({ enum: TICKET_PRIORITIES }) suggestedPriority!: string;
+}
+
+export class SlaSummaryDto {
+  @ApiProperty({ enum: ['none', 'paused', 'running', 'breached'] })
+  state!: string;
+  @ApiPropertyOptional({ description: 'Vencimiento más próximo (running).' })
+  dueAt?: Date;
+  @ApiPropertyOptional({
+    description: 'Desde cuándo está incumplido (breached).',
+  })
+  since?: Date;
+}
+
+export class TicketCountsDto {
+  @ApiProperty() OPEN!: number;
+  @ApiProperty() IN_PROGRESS!: number;
+  @ApiProperty() WAITING_ON_CUSTOMER!: number;
+  @ApiProperty() RESOLVED!: number;
+  @ApiProperty() CLOSED!: number;
+}
+
+export class TicketListItemDto extends TicketSummaryDto {
+  @ApiPropertyOptional({
+    type: TicketTriageSummaryDto,
+    nullable: true,
+    description:
+      'Solo para AGENT o superior (para un VIEWER la clave no aparece). `null` = sin sugerencia.',
+  })
+  aiTriage?: TicketTriageSummaryDto | null;
+  @ApiPropertyOptional({
+    description:
+      'Solo para AGENT o superior: el email de quien abrió el ticket.',
+  })
+  requesterEmail?: string;
+  @ApiPropertyOptional({
+    type: SlaSummaryDto,
+    description: 'Solo para AGENT o superior: el reloj de SLA que más apura.',
+  })
+  slaSummary?: SlaSummaryDto;
+  @ApiPropertyOptional({
+    type: [TagDto],
+    description:
+      'Solo para AGENT o superior (para un VIEWER la clave no aparece). ADR-0031.',
+  })
+  tags?: TagDto[];
 }
 
 export class TicketPageDto {
-  @ApiProperty({ type: [TicketSummaryDto] }) items!: TicketSummaryDto[];
+  @ApiProperty({ type: [TicketListItemDto] }) items!: TicketListItemDto[];
   @ApiProperty({
     nullable: true,
     description: 'Cursor de la página siguiente; `null` si no hay más.',
@@ -176,4 +298,24 @@ export class AuditEntryDto {
   @ApiProperty({ example: 'ticket.status_changed' }) action!: string;
   @ApiProperty({ nullable: true, type: Object }) metadata!: unknown;
   @ApiProperty() occurredAt!: Date;
+}
+
+/**
+ * Sugerencia de la IA para un ticket (ADR-0027). `pending` mientras el worker no
+ * la haya producido —o si el servicio de IA está desactivado—: la pantalla
+ * distingue "todavía no" de "no existe el ticket" sin un 404 que parezca error.
+ */
+export class TicketTriageDto {
+  @ApiProperty({
+    enum: ['pending', 'ready', 'disabled'],
+    description: '`disabled`: el servicio de IA no está configurado.',
+  })
+  status!: 'pending' | 'ready' | 'disabled';
+  @ApiPropertyOptional({ enum: TRIAGE_CATEGORIES }) category?: string;
+  @ApiPropertyOptional({ enum: TICKET_PRIORITIES }) suggestedPriority?: string;
+  @ApiPropertyOptional({ enum: TRIAGE_SENTIMENTS }) sentiment?: string;
+  @ApiPropertyOptional({ enum: TRIAGE_LANGUAGES }) language?: string;
+  @ApiPropertyOptional({ example: 'qwen2.5:3b-instruct' }) model?: string;
+  @ApiPropertyOptional({ example: 'triage-v1' }) promptVersion?: string;
+  @ApiPropertyOptional() triagedAt?: Date;
 }

@@ -12,6 +12,7 @@ import { TicketRepository } from '../domain/ports/ticket.repository';
 import { TicketStatus } from '../domain/ticket-status';
 import { AuditRecorder } from './audit-recorder';
 import { EventRecorder } from './event-recorder';
+import { SlaPauseCoordinator } from './sla/sla-pause-coordinator';
 import { runTransactional } from './transactional';
 
 export interface ChangeTicketStatusInput {
@@ -35,6 +36,7 @@ export class ChangeTicketStatus {
     private readonly audit: AuditRecorder,
     private readonly events: EventRecorder,
     private readonly clock: Clock,
+    private readonly slaPause: SlaPauseCoordinator,
   ) {}
 
   async execute(
@@ -43,7 +45,7 @@ export class ChangeTicketStatus {
     const now = this.clock.now();
 
     return runTransactional(this.transactions, input.tenantId, async () => {
-      const ticket = await this.tickets.findById(
+      const ticket = await this.tickets.findByIdForUpdate(
         input.tenantId,
         input.ticketId,
       );
@@ -71,6 +73,15 @@ export class ChangeTicketStatus {
         entityType: 'ticket',
         entityId: ticket.id,
         metadata: { from, to: input.status },
+        now,
+      });
+      // Pausar/reanudar el SLA va en ESTA transacción, con este `now`
+      // (ADR-0029): si el caso de uso falla, el reloj tampoco cambia.
+      await this.slaPause.onStatusChange({
+        tenantId: input.tenantId,
+        ticketId: ticket.id,
+        from,
+        to: input.status,
         now,
       });
       await this.events.record(ticket);

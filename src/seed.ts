@@ -37,8 +37,17 @@ import { Password } from './modules/iam/domain/value-objects/password.vo';
 import { PrismaOrganizationRepository } from './modules/iam/infrastructure/persistence/prisma-organization.repository';
 import { AddComment } from './modules/ticketing/application/add-comment.use-case';
 import { ChangeTicketStatus } from './modules/ticketing/application/change-ticket-status.use-case';
+import { CreateCannedResponse } from './modules/ticketing/application/canned-responses/create-canned-response.use-case';
+import { CreateTag } from './modules/ticketing/application/tags/create-tag.use-case';
+import { LoadNationalHolidays } from './modules/ticketing/application/business-hours/business-hours.use-cases';
+import { SetTicketTags } from './modules/ticketing/application/tags/set-ticket-tags.use-case';
 import { CreateTicket } from './modules/ticketing/application/create-ticket.use-case';
-import { TenantId, TicketId, UserId } from './modules/ticketing/domain/ids';
+import {
+  TagId,
+  TenantId,
+  TicketId,
+  UserId,
+} from './modules/ticketing/domain/ids';
 import type { TicketPriority } from './modules/ticketing/domain/ticket-status';
 
 const ORGANIZATION_NAME = 'Acme Support';
@@ -51,24 +60,51 @@ const ADMIN_EMAIL = 'admin@acme.test';
 const AGENT_EMAIL = 'agent@acme.test';
 const VIEWER_EMAIL = 'viewer@acme.test';
 
+/** Respuestas predefinidas de demo (ADR-0030). Usan las variables a propósito. */
+/** Etiquetas de demo (ADR-0031). */
+const TAGS: { name: string; color: string }[] = [
+  { name: 'bug', color: 'red' },
+  { name: 'facturación', color: 'green' },
+  { name: 'vip', color: 'purple' },
+];
+
+const CANNED_RESPONSES: { title: string; body: string }[] = [
+  {
+    title: 'Saludo inicial',
+    body: 'Hola! Gracias por escribirnos. Ya estamos revisando el ticket {{ticket.numero}}.',
+  },
+  {
+    title: 'Pedir más datos',
+    body: 'Para avanzar con "{{ticket.asunto}}" necesitamos un poco más de información: ¿nos pasás una captura de pantalla y los pasos para reproducirlo?',
+  },
+  {
+    title: 'Cierre',
+    body: 'Damos por resuelto el ticket {{ticket.numero}}. Si vuelve a pasar, respondé a este mensaje. Saludos, {{agente.email}}',
+  },
+];
+
 interface SeedTicket {
   subject: string;
   description: string;
   priority: TicketPriority;
   /** Comentarios a añadir, en orden. `staff` decide quién los firma. */
-  comments?: { staff: boolean; body: string }[];
+  /** `internal`: nota del equipo que el cliente no ve (ADR-0028). */
+  comments?: { staff: boolean; internal?: boolean; body: string }[];
   /** Estado final; se alcanza pasando por las transiciones legales. */
-  moveTo?: ('IN_PROGRESS' | 'RESOLVED' | 'CLOSED')[];
+  moveTo?: ('IN_PROGRESS' | 'WAITING_ON_CUSTOMER' | 'RESOLVED' | 'CLOSED')[];
+  /** Nombres de etiquetas (ADR-0031); se aplican antes de moverlo de estado. */
+  tags?: string[];
 }
 
 /**
- * Los tickets cubren a propósito las cuatro prioridades y los cuatro estados: la
+ * Los tickets cubren a propósito las cuatro prioridades y los cinco estados: la
  * pantalla de detalle muestra un reloj de SLA por prioridad, y sin variedad la
  * demo enseñaría siempre el mismo caso.
  */
 const TICKETS: SeedTicket[] = [
   {
     subject: 'No puedo iniciar sesión desde la app móvil',
+    tags: ['bug', 'vip'],
     description:
       'Desde la actualización de ayer, la app se queda en la pantalla de carga después de meter la contraseña. En el navegador entro sin problema.',
     priority: 'URGENT',
@@ -77,12 +113,18 @@ const TICKETS: SeedTicket[] = [
         staff: true,
         body: '¿Qué versión de la app tenés? Estamos viendo un problema con la 4.2.0 en Android.',
       },
+      {
+        staff: true,
+        internal: true,
+        body: 'Pinta el mismo crash de la 4.2.0 que ya reportó mobile. Si confirma la versión, lo escalo y le ofrecemos la 4.1.3 mientras tanto.',
+      },
       { staff: false, body: 'La 4.2.0, sí. Android 14.' },
     ],
     moveTo: ['IN_PROGRESS'],
   },
   {
     subject: 'La exportación a CSV se corta en 1000 filas',
+    tags: ['bug'],
     description:
       'Al exportar el informe mensual solo bajan las primeras 1000 filas. El informe tiene 4300.',
     priority: 'HIGH',
@@ -95,7 +137,26 @@ const TICKETS: SeedTicket[] = [
     moveTo: ['IN_PROGRESS', 'RESOLVED'],
   },
   {
+    // Esperando al cliente (ADR-0029). El seed no drena el outbox, así que el
+    // reloj de resolución nace YA pausado cuando el worker procesa el
+    // `ticket.created` (StartSlaTimers mira el estado actual del ticket). Si el
+    // cliente comenta, vuelve solo a En curso.
+    subject: 'El PDF de la factura de octubre sale en blanco',
+    tags: ['facturación', 'bug'],
+    description:
+      'Descargo la factura desde el panel y el PDF abre con todas las páginas vacías.',
+    priority: 'HIGH',
+    comments: [
+      {
+        staff: true,
+        body: '¿Desde qué navegador lo descargás? ¿Nos pasás una captura de la pantalla de descarga?',
+      },
+    ],
+    moveTo: ['IN_PROGRESS', 'WAITING_ON_CUSTOMER'],
+  },
+  {
     subject: 'Pedido de acceso al panel de facturación',
+    tags: ['facturación'],
     description:
       'Necesito permisos de lectura sobre facturación para cerrar el trimestre.',
     priority: 'NORMAL',
@@ -209,10 +270,40 @@ async function main(): Promise<void> {
       },
     );
 
+    // --- 2b. Horario laboral (ADR-0034): rige el de fábrica (L–V 8–18,
+    // Argentina) y se precargan los feriados nacionales del año, por el mismo
+    // caso de uso que el botón de la pantalla.
+    const feriados = await app.get(LoadNationalHolidays).execute({
+      tenantId,
+      actorId: adminId,
+      year: clock.now().getUTCFullYear(),
+    });
+    if (feriados.isErr()) {
+      // Un año sin lista cargada no es motivo para no tener demo.
+      console.warn(`Sin feriados precargados: ${feriados.error.message}`);
+    }
+
     // --- 3. Tickets, comentarios y transiciones, por sus casos de uso ---
     const createTicket = app.get(CreateTicket);
     const addComment = app.get(AddComment);
     const changeStatus = app.get(ChangeTicketStatus);
+    const setTicketTags = app.get(SetTicketTags);
+
+    // Las etiquetas antes que los tickets: se aplican por nombre.
+    const createTag = app.get(CreateTag);
+    const tagIdPorNombre = new Map<string, TagId>();
+    for (const tag of TAGS) {
+      const result = await createTag.execute({
+        tenantId,
+        actorId: adminId,
+        name: tag.name,
+        color: tag.color,
+      });
+      if (result.isErr()) {
+        throw new Error(`No se pudo crear la etiqueta: ${result.error.code}`);
+      }
+      tagIdPorNombre.set(tag.name, result.value.id);
+    }
 
     for (const spec of TICKETS) {
       // Los abre el VIEWER: es quien hace de solicitante en el modelo de roles.
@@ -237,9 +328,27 @@ async function main(): Promise<void> {
           actorRole: comment.staff ? 'AGENT' : 'VIEWER',
           ticketId,
           body: comment.body,
+          visibility: comment.internal === true ? 'INTERNAL' : 'PUBLIC',
         });
         if (result.isErr()) {
           throw new Error(`No se pudo comentar: ${result.error.code}`);
+        }
+      }
+
+      if (spec.tags !== undefined) {
+        const result = await setTicketTags.execute({
+          tenantId,
+          actorId: adminId,
+          ticketId,
+          tagIds: spec.tags.map((nombre) => {
+            const id = tagIdPorNombre.get(nombre);
+            if (id === undefined)
+              throw new Error(`Etiqueta de demo desconocida: ${nombre}`);
+            return id;
+          }),
+        });
+        if (result.isErr()) {
+          throw new Error(`No se pudo etiquetar: ${result.error.code}`);
         }
       }
 
@@ -256,11 +365,26 @@ async function main(): Promise<void> {
       }
     }
 
+    // --- 4. Respuestas predefinidas (ADR-0030), por su caso de uso ---
+    const createCanned = app.get(CreateCannedResponse);
+    for (const plantilla of CANNED_RESPONSES) {
+      const result = await createCanned.execute({
+        tenantId,
+        actorId: adminId,
+        title: plantilla.title,
+        body: plantilla.body,
+      });
+      if (result.isErr()) {
+        throw new Error(`No se pudo crear la plantilla: ${result.error.code}`);
+      }
+    }
+
     console.log(
       [
         '',
         `Organización sembrada: ${ORGANIZATION_NAME} (slug: ${ORGANIZATION_SLUG})`,
         `  ${TICKETS.length} tickets con comentarios e historial.`,
+        `  ${CANNED_RESPONSES.length} respuestas predefinidas y ${TAGS.length} etiquetas.`,
         '',
         'Entrar con cualquiera de estos (el slug hace falta para el login):',
         `  ADMIN   ${ADMIN_EMAIL}`,

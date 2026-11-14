@@ -1,4 +1,5 @@
 import { AggregateRoot, Result, err, ok } from '../../../../shared-kernel';
+import { CommentVisibility } from '../comment-visibility';
 import {
   InvalidTicketDescriptionError,
   InvalidTicketSubjectError,
@@ -12,10 +13,12 @@ import {
   TicketAssigned,
   TicketCreated,
   TicketStatusChanged,
+  TicketTagsChanged,
   TicketUnassigned,
   TicketingEvent,
 } from '../events/ticketing.events';
-import { CommentId, TenantId, TicketId, UserId } from '../ids';
+import { CommentId, TagId, TenantId, TicketId, UserId } from '../ids';
+import { isResponder } from '../sla/responder-role';
 import {
   TicketPriority,
   TicketStatus,
@@ -181,6 +184,23 @@ export class Ticket extends AggregateRoot<TicketId, TicketingEvent> {
     return ok(undefined);
   }
 
+  /**
+   * Registra que cambiaron las etiquetas (ADR-0031). Las etiquetas no son estado
+   * del agregado —viven en `ticket_tags`—, pero etiquetar ES actividad sobre el
+   * ticket: actualiza `updatedAt` y el evento sale desde la raíz, como todos.
+   * Sin cambios no hace nada: un `PUT` idéntico no debe avisar a nadie.
+   */
+  recordTagsChanged(added: TagId[], removed: TagId[], now: Date): void {
+    if (added.length === 0 && removed.length === 0) return;
+    this.touch(now);
+    this.addDomainEvent(
+      new TicketTagsChanged(this.id, this.props.tenantId, now, {
+        added: [...added],
+        removed: [...removed],
+      }),
+    );
+  }
+
   /** ¿Admite todavía comentarios? Un ticket cerrado no. */
   acceptsComments(): boolean {
     return !isTerminal(this.props.status);
@@ -200,6 +220,7 @@ export class Ticket extends AggregateRoot<TicketId, TicketingEvent> {
     authorId: UserId,
     /** Rol del autor EN EL MOMENTO de comentar; lo usa el SLA (ADR-0020). */
     authorRole: string,
+    visibility: CommentVisibility,
     now: Date,
   ): Result<void, TicketingError> {
     if (!this.acceptsComments()) {
@@ -211,8 +232,23 @@ export class Ticket extends AggregateRoot<TicketId, TicketingEvent> {
         commentId,
         authorId,
         authorRole,
+        visibility,
       }),
     );
+
+    // Vuelta automática desde la espera (ADR-0029): si estábamos esperando al
+    // cliente y el que habla es él —alguien que no responde en nombre de la
+    // organización, en un comentario que se ve—, la pelota vuelve al equipo.
+    // La decide el agregado y pasa por `changeStatus`, así emite el mismo
+    // `ticket.status_changed` que un cambio a mano y nadie aguas abajo necesita
+    // una regla propia para comentarios.
+    if (
+      this.props.status === 'WAITING_ON_CUSTOMER' &&
+      visibility === 'PUBLIC' &&
+      !isResponder(authorRole)
+    ) {
+      return this.changeStatus('IN_PROGRESS', now);
+    }
     return ok(undefined);
   }
 
@@ -258,6 +294,10 @@ export class Ticket extends AggregateRoot<TicketId, TicketingEvent> {
         break;
       case 'OPEN':
       case 'IN_PROGRESS':
+      case 'WAITING_ON_CUSTOMER':
+        // Esperar al cliente solo se alcanza desde IN_PROGRESS, así que no hay
+        // nada que limpiar; se agrupa aquí para que el switch siga cubriendo
+        // todos los estados.
         this.props.resolvedAt = null;
         this.props.closedAt = null;
         break;

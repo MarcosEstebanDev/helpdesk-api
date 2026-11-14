@@ -9,7 +9,9 @@ import { EventRecorder } from '../event-recorder';
 import {
   ACTOR,
   TENANT,
+  calendars24x7,
   fakeAuditLogRepository,
+  fakeBusinessCalendars,
   fakeOutbox,
   fakeProcessedMessages,
   fakeSlaPolicies,
@@ -51,17 +53,25 @@ const nuevoTicket = (): Ticket => {
 
 describe('StartSlaTimers', () => {
   const build = (
-    opciones: { overrides?: Parameters<typeof fakeSlaPolicies>[0] } = {},
+    opciones: {
+      overrides?: Parameters<typeof fakeSlaPolicies>[0];
+      ticket?: Ticket;
+      calendars?: ReturnType<typeof fakeBusinessCalendars>;
+    } = {},
   ) => {
     const transactions = fakeTransactions();
     const timers = fakeSlaTimers();
     const processed = fakeProcessedMessages();
+    const tickets = fakeTicketRepository();
+    tickets.seed(opciones.ticket ?? nuevoTicket());
     const sut = new StartSlaTimers(
       transactions.manager,
       fakeSlaPolicies(opciones.overrides),
       timers,
       processed,
       sequentialIds(),
+      tickets,
+      opciones.calendars ?? calendars24x7(),
     );
     return { sut, transactions, timers, processed };
   };
@@ -74,6 +84,65 @@ describe('StartSlaTimers', () => {
       priority: 'HIGH',
       occurredAt: CREADO,
     });
+
+  it('si el ticket ya espera al cliente, el reloj de resolución nace pausado (ADR-0029)', async () => {
+    // La pausa es síncrona pero el arranque es diferido: si el ticket llegó a
+    // la espera antes de que el worker procesara `ticket.created`, el
+    // coordinador no encontró reloj que pausar. Sin esto, el ticket esperaría
+    // con el reloj corriendo hasta incumplir (le pasaba al seed siempre).
+    const ticket = nuevoTicket();
+    const enEspera = new Date('2026-09-09T10:20:00.000Z');
+    ticket.changeStatus('IN_PROGRESS', new Date('2026-09-09T10:10:00.000Z'));
+    ticket.changeStatus('WAITING_ON_CUSTOMER', enEspera);
+    const { sut, timers } = build({ ticket });
+
+    await ejecutar(sut);
+
+    const resolucion = timers.saved.find((t) => t.kind === 'RESOLUTION');
+    const respuesta = timers.saved.find((t) => t.kind === 'RESPONSE');
+    expect(resolucion?.isPaused()).toBe(true);
+    expect(resolucion?.pausedAt).toEqual(enEspera);
+    // Cuenta desde la creación igual que siempre; solo el de resolución pausa.
+    expect(resolucion?.startedAt).toEqual(CREADO);
+    expect(respuesta?.isRunning()).toBe(true);
+  });
+
+  it('con horario laboral los relojes cuentan solo las horas hábiles (ADR-0034)', async () => {
+    // Viernes 13/11/2026 17:00 en Argentina, ticket URGENT (15 min / 4 h).
+    const viernes17 = new Date('2026-11-13T20:00:00.000Z');
+    const { sut, timers } = build({ calendars: fakeBusinessCalendars() });
+
+    await sut.execute({
+      eventId: EVENT_ID,
+      tenantId: TENANT,
+      ticketId: TICKET_ID,
+      priority: 'URGENT',
+      occurredAt: viernes17,
+    });
+
+    const due = (kind: string) =>
+      timers.saved.find((t) => t.kind === kind)?.dueAt;
+    expect(due('RESPONSE')).toEqual(new Date('2026-11-13T20:15:00.000Z'));
+    // 1 h el viernes (17–18) y 3 h el lunes desde las 8: lunes 11:00.
+    expect(due('RESOLUTION')).toEqual(new Date('2026-11-16T14:00:00.000Z'));
+  });
+
+  it('en 24/7 usa los valores de fábrica de reloj: NORMAL resuelve en 24 h', async () => {
+    const { sut, timers } = build();
+
+    await sut.execute({
+      eventId: EVENT_ID,
+      tenantId: TENANT,
+      ticketId: TICKET_ID,
+      priority: 'NORMAL',
+      occurredAt: CREADO,
+    });
+
+    const resolucion = timers.saved.find((t) => t.kind === 'RESOLUTION');
+    expect(resolucion?.dueAt).toEqual(
+      new Date(CREADO.getTime() + 24 * 3_600_000),
+    );
+  });
 
   it('arranca los dos relojes con los objetivos por defecto', async () => {
     const { sut, timers } = build();
@@ -146,26 +215,27 @@ describe('StartSlaTimers', () => {
 describe('StopSlaTimer', () => {
   const RESPUESTA = new Date('2026-09-09T10:20:00.000Z');
 
-  const build = (opciones: { conReloj?: boolean } = {}) => {
+  const build = (opciones: { conReloj?: boolean; pausadoA?: Date } = {}) => {
     const transactions = fakeTransactions();
     const timers = fakeSlaTimers();
     if (opciones.conReloj !== false) {
-      timers.seed(
-        SlaTimer.start({
-          id: TIMER_ID,
-          tenantId: TENANT,
-          ticketId: TICKET_ID,
-          kind: 'RESPONSE',
-          minutes: 60,
-          calendar: CALENDAR_24_7,
-          now: CREADO,
-        }),
-      );
+      const timer = SlaTimer.start({
+        id: TIMER_ID,
+        tenantId: TENANT,
+        ticketId: TICKET_ID,
+        kind: 'RESPONSE',
+        minutes: 60,
+        calendar: CALENDAR_24_7,
+        now: CREADO,
+      });
+      if (opciones.pausadoA !== undefined) timer.pause(opciones.pausadoA);
+      timers.seed(timer);
     }
     const sut = new StopSlaTimer(
       transactions.manager,
       timers,
       fakeProcessedMessages(),
+      calendars24x7(),
     );
     return { sut, transactions, timers };
   };
@@ -178,6 +248,42 @@ describe('StopSlaTimer', () => {
       kind: 'RESPONSE',
       occurredAt: RESPUESTA,
     });
+
+  it('parar un reloj en pausa lo reanuda con el horario del tenant (ADR-0034)', async () => {
+    // Pausado el viernes 13/11 17:30 con vencimiento 19:30: 30 min hábiles.
+    const timers = fakeSlaTimers();
+    const timer = SlaTimer.start({
+      id: TIMER_ID,
+      tenantId: TENANT,
+      ticketId: TICKET_ID,
+      kind: 'RESOLUTION',
+      minutes: 120,
+      calendar: CALENDAR_24_7,
+      now: new Date('2026-11-13T20:30:00.000Z'),
+    });
+    timer.pause(new Date('2026-11-13T20:30:00.000Z'));
+    timers.seed(timer);
+    const sut = new StopSlaTimer(
+      fakeTransactions().manager,
+      timers,
+      fakeProcessedMessages(),
+      fakeBusinessCalendars(),
+    );
+
+    // Se resuelve desde la espera el lunes 16/11 a las 08:10.
+    await sut.execute({
+      eventId: EVENT_ID,
+      tenantId: TENANT,
+      ticketId: TICKET_ID,
+      kind: 'RESOLUTION',
+      occurredAt: new Date('2026-11-16T11:10:00.000Z'),
+    });
+
+    // Reanudado a las 08:10 con 30 min hábiles: vence 08:40 (en 24/7, 10:10).
+    expect(timers.stored(TIMER_ID)?.dueAt).toEqual(
+      new Date('2026-11-16T11:40:00.000Z'),
+    );
+  });
 
   it('para el reloj y devuelve el margen que quedaba', async () => {
     const { sut, timers } = build();
@@ -226,6 +332,39 @@ describe('StopSlaTimer', () => {
     }
     expect(timers.saved).toHaveLength(1);
   });
+
+  it('para un reloj en pausa y el margen descuenta la pausa (ADR-0029)', async () => {
+    // Pausado a las 10:10 con 50 min de margen; se para a las 10:20. Los diez
+    // minutos de espera no cuentan: el margen sigue siendo 50.
+    const { sut, timers } = build({
+      pausadoA: new Date('2026-09-09T10:10:00.000Z'),
+    });
+
+    const result = await ejecutar(sut);
+
+    if (result.isOk() && result.value.status === 'stopped') {
+      expect(result.value.remainingMinutes).toBe(50);
+    } else {
+      throw new Error('debería haberse parado');
+    }
+    const guardado = timers.stored(TIMER_ID);
+    expect(guardado?.stoppedAt).toEqual(RESPUESTA);
+    expect(guardado?.pausedAt).toBeNull();
+  });
+
+  it('si otra escritura gana la carrera, no da el reloj por parado', async () => {
+    const { sut, timers } = build();
+    timers.loseNextTransition();
+
+    const result = await ejecutar(sut);
+
+    if (result.isOk() && result.value.status === 'skipped') {
+      expect(result.value.reason).toBe('no_running_timer');
+    } else {
+      throw new Error('debería haberse saltado');
+    }
+    expect(timers.stored(TIMER_ID)?.stoppedAt).toBeNull();
+  });
 });
 
 // ------------------------------------------------------------- MarkSlaBreached
@@ -234,7 +373,12 @@ describe('MarkSlaBreached', () => {
   const AHORA = new Date('2026-09-09T12:00:00.000Z');
 
   const build = (
-    opciones: { parado?: boolean; vencido?: boolean; ticket?: boolean } = {},
+    opciones: {
+      parado?: boolean;
+      vencido?: boolean;
+      ticket?: boolean;
+      pausado?: boolean;
+    } = {},
   ) => {
     const transactions = fakeTransactions();
     const timers = fakeSlaTimers();
@@ -252,7 +396,9 @@ describe('MarkSlaBreached', () => {
       now: CREADO,
     });
     if (opciones.parado === true)
-      timer.stop(new Date('2026-09-09T10:30:00.000Z'));
+      timer.stop(new Date('2026-09-09T10:30:00.000Z'), CALENDAR_24_7);
+    if (opciones.pausado === true)
+      timer.pause(new Date('2026-09-09T10:30:00.000Z'));
     timers.seed(timer);
 
     const auditLogs = fakeAuditLogRepository();
@@ -338,5 +484,38 @@ describe('MarkSlaBreached', () => {
       throw new Error('debería haberse saltado');
     }
     expect(timers.saved).toHaveLength(0);
+  });
+
+  it('un reloj en pausa no incumple aunque haya pasado su hora (ADR-0029)', async () => {
+    const { sut, timers, auditLogs, outbox } = build({ pausado: true });
+
+    const result = await ejecutar(sut);
+
+    if (result.isOk() && result.value.status === 'skipped') {
+      expect(result.value.reason).toBe('paused');
+    } else {
+      throw new Error('debería haberse saltado');
+    }
+    expect(timers.saved).toHaveLength(0);
+    expect(auditLogs.entries).toHaveLength(0);
+    expect(outbox.records).toHaveLength(0);
+  });
+
+  it('si una pausa gana la carrera, ni audita ni publica', async () => {
+    // El agente pausó entre la lectura y la escritura del barrido: el UPDATE
+    // condicionado no toca la fila y el incumplimiento no existió.
+    const { sut, timers, auditLogs, outbox } = build();
+    timers.loseNextTransition();
+
+    const result = await ejecutar(sut);
+
+    if (result.isOk() && result.value.status === 'skipped') {
+      expect(result.value.reason).toBe('not_running');
+    } else {
+      throw new Error('debería haberse saltado');
+    }
+    expect(timers.stored(TIMER_ID)?.isBreached()).toBe(false);
+    expect(auditLogs.entries).toHaveLength(0);
+    expect(outbox.records).toHaveLength(0);
   });
 });

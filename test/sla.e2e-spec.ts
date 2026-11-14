@@ -11,11 +11,13 @@ import type { EventJobData } from '../src/infrastructure/outbox/outbox-publisher
 import { OutboxPublisher } from '../src/infrastructure/outbox/outbox-publisher.service';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 import {
+  AI_TRIAGE_QUEUE,
   SLA_QUEUE,
   TICKET_ROUTING_QUEUE,
 } from '../src/infrastructure/queue/queues';
 import { Role } from '../src/modules/iam/domain/role';
-import { DEFAULT_SLA_POLICY } from '../src/modules/ticketing/domain/sla/sla-policy';
+// Esta suite corre en 24/7: los valores de fábrica son los de reloj (ADR-0034).
+import { DEFAULT_SLA_POLICY_24_7 as DEFAULT_SLA_POLICY } from '../src/modules/ticketing/domain/sla/sla-policy';
 import { SlaProcessor } from '../src/modules/ticketing/infrastructure/queue/sla.processor';
 import { SlaSweeper } from '../src/modules/ticketing/infrastructure/sla/sla-sweeper.service';
 import { CLOCK, Clock } from '../src/shared-kernel';
@@ -188,6 +190,21 @@ describe('SLA (e2e)', () => {
     ) as { sub: string; tenantId: string };
     tenantId = claims.tenantId;
     userId = claims.sub;
+
+    // Esta suite prueba el motor de SLA con horas de reloj (24/7); el horario
+    // laboral (ADR-0034) tiene la suya. Sin esto regiría el L–V 8–18 por
+    // defecto y los vencimientos calculados acá no coincidirían.
+    await request(app.getHttpServer())
+      .put('/business-hours')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        mode: '24_7',
+        timeZone: 'America/Argentina/Buenos_Aires',
+        weekdays: [1, 2, 3, 4, 5],
+        opensAt: '08:00',
+        closesAt: '18:00',
+      })
+      .expect(200);
   });
 
   afterAll(async () => {
@@ -195,6 +212,10 @@ describe('SLA (e2e)', () => {
     for (const id of mensajesEncolados) {
       await slaQueue.remove(id).catch(() => undefined);
       await routingQueue.remove(id).catch(() => undefined);
+      await app
+        .get<Queue>(getQueueToken(AI_TRIAGE_QUEUE))
+        .remove(id)
+        .catch(() => undefined);
     }
     await prisma.withTenant(tenantId, (tx) =>
       tx.organization.deleteMany({ where: { id: tenantId } }),
@@ -322,6 +343,27 @@ describe('SLA (e2e)', () => {
       const resultado = await procesarSla(ticketId, 'comment.added');
 
       expect(resultado.action).toBe('ignored');
+      const timers = await timersDe(ticketId);
+      expect(timers.find((t) => t.kind === 'RESPONSE')?.stoppedAt).toBeNull();
+    });
+
+    it('una nota interna del equipo NO para el reloj de respuesta (ADR-0028)', async () => {
+      // El hueco que abriría la funcionalidad sin este cambio: el agente escribe
+      // "lo miro mañana" como nota, el cliente no recibe nada y el SLA se da
+      // por cumplido.
+      token = await tokenConRol('ADMIN');
+      // `procesarSla` toma el último `comment.added` por `occurredAt`: con el
+      // reloj quieto empataría con el comentario del cliente del test anterior.
+      reloj.avanzarMinutos(1);
+      await request(app.getHttpServer())
+        .post(`/tickets/${ticketId}/comments`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ body: 'Lo miro mañana.', visibility: 'INTERNAL' })
+        .expect(201);
+
+      const resultado = await procesarSla(ticketId, 'comment.added');
+
+      expect(resultado).toEqual({ action: 'ignored', detail: 'nota interna' });
       const timers = await timersDe(ticketId);
       expect(timers.find((t) => t.kind === 'RESPONSE')?.stoppedAt).toBeNull();
     });

@@ -11,7 +11,7 @@ ADR explica el contexto, la decisión y las consecuencias.
 
 ## Índice de ADRs
 
-24 decisiones. Cada una registra el contexto, la alternativa descartada y
+29 decisiones. Cada una registra el contexto, la alternativa descartada y
 lo que costaría revertirla.
 
 **Fundaciones** — Cómo está partido el código y qué reglas obedece.
@@ -37,6 +37,13 @@ lo que costaría revertirla.
 - [ADR-0015](#adr-0015--ciclo-de-vida-del-ticket-como-máquina-de-estados-en-el-dominio) — Ciclo de vida del ticket como máquina de estados en el dominio
 - [ADR-0016](#adr-0016--unidad-de-trabajo-explícita-el-auditlog-en-la-misma-transacción) — Unidad de trabajo explícita: el AuditLog en la misma transacción
 - [ADR-0017](#adr-0017--numeración-visible-correlativa-por-tenant) — Numeración visible correlativa por tenant
+- [ADR-0028](#adr-0028--notas-internas-visibilidad-del-comentario-sla-y-sala-del-equipo) — Notas internas: visibilidad del comentario, SLA y sala del equipo
+- [ADR-0029](#adr-0029--pausa-del-sla-reloj-pausable-vencimiento-corrido-y-pausa-en-la-transacción-del-cambio) — Pausa del SLA: reloj pausable, vencimiento corrido y pausa en la transacción del cambio
+- [ADR-0030](#adr-0030--respuestas-predefinidas-solo-texto-variables-cerradas-y-relleno-en-el-cliente) — Respuestas predefinidas: solo texto, variables cerradas y relleno en el cliente
+- [ADR-0031](#adr-0031--etiquetas-catálogo-por-organización-clasificación-interna-y-fuera-del-agregado) — Etiquetas: catálogo por organización, clasificación interna y fuera del agregado
+- [ADR-0032](#adr-0032--búsqueda-texto-completo-de-postgres-con-columnas-generadas) — Búsqueda: texto completo de Postgres con columnas generadas
+- [ADR-0033](#adr-0033--vistas-guardadas-filtros-versionados-personales-y-compartidas) — Vistas guardadas: filtros versionados, personales y compartidas
+- [ADR-0034](#adr-0034--horario-laboral-calendario-de-días-hábiles-por-organización) — Horario laboral: calendario de días hábiles por organización
 
 **Trabajo asíncrono** — Cómo un cambio se convierte en efectos, sin perder eventos.
 
@@ -56,7 +63,11 @@ lo que costaría revertirla.
 
 - [ADR-0004](#adr-0004--contratos-vía-openapi) — Contratos vía OpenAPI
 - [ADR-0024](#adr-0024--observabilidad-logs-estructurados-correlación-hasta-el-worker-y-sondas-separadas) — Observabilidad: logs estructurados, correlación hasta el worker y sondas separadas
-- [ADR-0026](#adr-0026--despliegue-gestionado-rol-dueño-propio-prisma-en-la-imagen-y-rotación-de-credenciales) — Despliegue gestionado: rol dueño propio, Prisma en la imagen y rotación de credenciales
+- [ADR-0026](#adr-0026--despliegue-gestionado-rol-dueño-propio-prisma-en-la-imagen-y-rotación-de-credenciales) — Despliegue gestionado: rol dueño propio, Prisma en la imagen y rotación de credenciales (adenda: Postgres sin superusuario y despliegue gratis)
+
+**IA** — Dónde entra un modelo de lenguaje y qué puede tocar.
+
+- [ADR-0027](#adr-0027--triage-con-ia-servicio-externo-sin-estado-y-la-ia-sugiere-no-decide) — Triage con IA: servicio externo sin estado, y la IA sugiere, no decide
 
 ---
 
@@ -361,6 +372,17 @@ migración.
 **Revisar si.** Aparecen estados dependientes de configuración por tenant (workflows
 personalizables) → la tabla dejaría de ser una constante y pasaría a ser datos.
 
+**Adenda (2026-11-12, ADR-0029).** Estado nuevo `WAITING_ON_CUSTOMER`:
+
+| Desde | Hacia |
+| --- | --- |
+| `IN_PROGRESS` | `RESOLVED`, `OPEN`, **`WAITING_ON_CUSTOMER`** |
+| `WAITING_ON_CUSTOMER` | `IN_PROGRESS`, `RESOLVED` |
+
+Solo se entra con alguien trabajando el ticket; no se sale a `OPEN` (primero se
+retoma) ni a `CLOSED` (solo se cierra lo resuelto). Es la primera transición que
+ocurre sin que nadie la pida: la decide el agregado cuando el cliente comenta.
+
 ---
 
 ## ADR-0016 — Unidad de trabajo explícita: el AuditLog en la misma transacción
@@ -619,11 +641,28 @@ un SLA no debe permitir. Por lo mismo, el estado del reloj se **deriva** de las 
 (`stopped_at`, `breached_at`) en vez de guardarse en un campo `status` que podría
 contradecirlas.
 
+> **Revocada en parte por el ADR-0029 (2026-11-12).** `due_at` sigue siendo
+> inmutable frente a cambios de **política**, que era el motivo de esta
+> decisión. Pero ahora lo mueve una pausa del propio ticket (esperando al
+> cliente): al reanudar se corre lo que duró la pausa, porque ese tiempo no
+> cuenta. Ya no guarda el objetivo original; el estado del reloj, en cambio,
+> se sigue derivando de las fechas (ahora también de `paused_at`).
+
 **Decisión 5 — El calendario es una interfaz, hoy con una sola implementación.** Los
 minutos se cuentan sobre `SlaCalendar`; existe `CALENDAR_24_7` y nada más. La interfaz
 no es especulación: es la costura por la que entrará el horario laboral por tenant con
 su zona horaria. Aislar hoy lo que sabemos que va a cambiar cuesta una interfaz; no
 aislarlo cuesta reescribir cada sitio donde se sumó tiempo a mano.
+
+> **Ampliada por el ADR-0034 (2026-11-13).** La costura sirvió: el horario
+> laboral entró como otro `SlaCalendar` (`toBusinessCalendar`) sin tocar el
+> motor ni el barrido. `CALENDAR_24_7` queda para el modo "atención 24/7". Los
+> **valores por defecto** pasan a pensarse en horas HÁBILES: NORMAL resuelve
+> en 10 h (antes 24 h) y LOW en 30 h (antes 72 h); URGENT y HIGH no cambian.
+> En modo 24/7 rigen los de siempre (`DEFAULT_SLA_POLICY_24_7`, 24 h y 72 h):
+> el ajuste es para días de 10 h, y aplicarlo en horas de reloj habría
+> endurecido en silencio el SLA de quien tiene guardia (`defaultPolicyFor`).
+> Las políticas pactadas por cada organización no se tocan.
 
 **Decisión 6 — La política se configura POR PRIORIDAD, y leerla ya es cosa de
 `ADMIN`.** `GET /sla-policy` devuelve siempre las cuatro prioridades diciendo si cada
@@ -748,6 +787,14 @@ con cada ticket y hoy nadie la purga.
 barrido, conservándolo como red), el barrido no llega a tiempo con el volumen (→ lotes
 más grandes o varias instancias, que ya son seguras), o aparecen avisos previos al
 vencimiento del tipo "queda el 20%" (→ un segundo umbral en la misma tabla).
+
+**Adenda (2026-11-12, ADR-0029).** La "idempotencia por condición" se cumplía al
+LEER pero no al ESCRIBIR: parar e incumplir guardaban con un upsert sin
+condición, y una pausa concurrente con el barrido se pisaba. Las transiciones
+del reloj pasan a `SlaTimerRepository.transition(timer, expected)`, un
+`UPDATE ... WHERE` condicionado al estado leído que devuelve si escribió; `save`
+queda solo para el alta. `sla_due_timers` ignora los relojes en pausa
+(`paused_at IS NULL`) y el rol del barrido tiene `GRANT SELECT (paused_at)`.
 
 ---
 
@@ -1190,3 +1237,802 @@ mismo con `psql` y una variable enlazada (`:'pw'`), porque ahí sí hay cliente.
   Pre-Deploy, nunca la API, que sigue con el rol restringido sin BYPASSRLS
   (ADR-0010).
 - (−) La imagen de producción carga con el CLI de Prisma.
+
+**Adenda (2026-11-07) — Postgres gestionado SIN superusuario (Neon) y despliegue gratis.**
+El despliegue preferido pasa a ser gratis: Vercel (front), Render Free (API con
+los workers en el mismo proceso), Render Key Value (Redis) y Neon (Postgres).
+Neon no da SUPERUSER: su rol más alto tiene CREATEROLE. Ensayado contra un
+Postgres 17 local con esa forma (dueño `helpdesk` con CREATEROLE y CREATEDB,
+nada más), aparecieron tres cosas:
+
+1. `CREATE ROLE helpdesk ... SUPERUSER` falla ("Only roles with the SUPERUSER
+   attribute may create roles with the SUPERUSER attribute"). Esperado.
+2. **Peor: si `helpdesk` ya existe, el paso `owner` NO falla.** Cae en la rama
+   `ALTER ROLE helpdesk PASSWORD` (cambiarse la propia contraseña está
+   permitido) y pisa en silencio la contraseña que dio la consola.
+3. **La segunda migración falla** con `42501 permission denied for schema
+   public`. Sin superusuario, `ALTER FUNCTION ... OWNER TO x` exige que `x`
+   tenga CREATE en el esquema de la función, y los roles dueños de las
+   funciones `SECURITY DEFINER` (ADR-0012, 0019, 0021) solo tienen USAGE. Un
+   superusuario se salta ese chequeo: por eso local y CI nunca lo vieron.
+
+**Decisión.** `DATABASE_OWNER_MODE=create|external` en `prepare-database.ts`
+(`create` por defecto, lo de siempre):
+- `external`: `helpdesk` se crea a mano en la consola del proveedor. `owner`
+  solo comprueba que `MIGRATION_DATABASE_URL` entre como `helpdesk` con
+  CREATEROLE, y crea los tres roles NOLOGIN (idénticos a como los crean las
+  migraciones, que los saltan si existen) con **CREATE temporal en `public`**.
+  `app` corre con la misma conexión —desde Postgres 16 el creador de un rol
+  tiene ADMIN OPTION sobre él— y retira ese CREATE.
+- `create` ahora exige que la conexión sea SUPERUSER de verdad antes de tocar
+  nada, y si no lo es sugiere `external`. Cierra el punto 2.
+- Paso nuevo `verify`, para los dos modos: falla si `helpdesk_app` es SUPERUSER
+  o tiene BYPASSRLS, si alguna tabla no tiene RLS con FORCE o es de
+  `helpdesk_app`, o si algún rol conserva CREATE en `public`. En un Postgres
+  gestionado no se puede dar por hecho que los roles salgan como en local.
+- Render Free no tiene Pre-Deploy: la secuencia `owner → migrate deploy → app →
+  verify` se corre desde la PC contra la conexión **directa** de Neon (no la del
+  pooler). Detalle en `docs/DEPLOY.md`.
+
+**Alternativas descartadas.**
+- *Editar las migraciones* para que no cambien dueños o den el GRANT ellas: son
+  historia aplicada (cambia el checksum, Decisión 1).
+- *Dar CREATE en `public` a esos roles para siempre*: es más privilegio del que
+  necesitan; solo hace falta en el instante del `ALTER ... OWNER`.
+- *Pooler de Neon para la API*: `set_config(..., true)` es transaccional y
+  funcionaría en modo transacción, pero Prisma pediría `pgbouncer=true` y no se
+  ensayó. Directa, que es lo probado.
+
+**Memoria (la duda que bloqueaba Render Free, 512 MB).** Imagen de producción
+con `--memory=512m`, API + workers en un proceso, 25 WebSockets y ~900
+peticiones: pico de RSS 216 MiB, estable en ~160 MB. Entra. Se fija igual
+`NODE_OPTIONS=--max-old-space-size=256` en `render.yaml`. Lo que aprieta es la
+CPU: con 0.1 CPU el arranque en frío tardó 77 s y un login 0.6–1.6 s.
+
+**Consecuencias.**
+- (+) El mismo código y las mismas migraciones sirven con y sin superusuario;
+  ensayado de punta a punta dos veces seguidas (idempotente): 7 migraciones, 12
+  tablas con RLS + FORCE, `helpdesk_app` sin BYPASSRLS, funciones `SECURITY
+  DEFINER` de sus roles, contraseña pública rechazada. Contra esa misma base, con
+  la app entrando como `helpdesk_app`: seed OK y 75/75 e2e de RLS, auth,
+  tickets, outbox, colas y SLA (el de SLA necesitó `--testTimeout=180000` por el
+  disco lento de la PC; con 30 s caían los `beforeAll`, sin errores de permisos).
+- (+) `verify` convierte el ADR-0010 en una comprobación ejecutable del
+  despliegue, no solo de los e2e.
+- (−) Las migraciones en producción son un paso manual desde la PC: hay que
+  correrlas antes de que se despliegue el código que las necesita.
+- (−) Render Free duerme sin tráfico y con él los workers (los eventos esperan
+  en el outbox y los vencimientos en `sla_timers`), y el Key Value Free no
+  persiste: un reinicio pierde los jobs en cola. Aceptable para una demo.
+
+
+## ADR-0027 — Triage con IA: servicio externo sin estado, y la IA sugiere, no decide
+
+**Estado:** aceptado (2026-11-09). Primera fase de la capa de IA: clasificación.
+La respuesta sugerida con RAG queda para una fase posterior.
+
+### Contexto
+
+Un agente abre cada ticket nuevo sin contexto: tiene que leerlo para saber de
+qué va y cuán urgente es de verdad. Un modelo de lenguaje puede adelantar ese
+trabajo —categoría, prioridad sugerida, tono del cliente, idioma— en cuanto el
+ticket entra. Pero meter un LLM en el sistema abre tres problemas que este ADR
+resuelve de forma explícita:
+
+1. **El texto del ticket es input no confiable.** Lo escribe el cliente, y un
+   LLM puede ser manipulado por instrucciones escondidas en ese texto (prompt
+   injection).
+2. **El modelo se equivoca**, y de forma no determinista. Las evals del servicio
+   (`helpdesk-ai/evals`) lo cuantifican: con un modelo local de 3B, la categoría
+   acierta el 63% y la prioridad exacta el 36% (95% a un paso o menos).
+3. **Es lento y puede no estar.** En CPU tarda ~3 s por ticket y ~90 s en el
+   primero tras arrancar; un proveedor externo puede caerse o limitar.
+
+### Decisión 1 — Servicio Python aparte, sin base de datos ni tenant
+
+`helpdesk-ai` es un repo propio (coherente con el ADR-0001) en Python/FastAPI,
+donde vive el ecosistema de IA. Es **sin estado**: recibe asunto y descripción y
+devuelve un JSON validado. No conoce ids, ni tenants, ni tiene credenciales de
+Postgres.
+
+Es la defensa principal contra el prompt injection: lo peor que consigue un
+ticket malicioso es una etiqueta equivocada, porque al otro lado no hay nada que
+leer ni que escribir. Las capas del prompt (texto delimitado, etiquetas de
+cierre neutralizadas, salida restringida a enums) reducen la probabilidad; esta
+decisión acota el daño.
+
+Alternativas descartadas:
+- *Python consume de BullMQ directamente*: acopla un segundo lenguaje al formato
+  interno de los jobs en Redis.
+- *Python escribe en Postgres*: necesitaría un rol con acceso a datos de todos
+  los tenants, justo lo que el ADR-0010 evita.
+
+### Decisión 2 — Un consumidor más del outbox, con la llamada FUERA de la transacción
+
+`ticket.created` va también a la cola `ai-triage`. El consumidor
+(`AiTriageProcessor` → `TriageTicket`) trabaja en tres pasos:
+
+1. Comprobaciones baratas sin transacción (¿existe el ticket?, ¿ya tiene
+   triage?), para no pagar una llamada al modelo en vano.
+2. La llamada HTTP al servicio, **sin transacción abierta**: con un modelo lento,
+   una transacción que lo espere retiene una conexión del pool por cada ticket
+   en curso.
+3. Una transacción corta: marca en `processed_messages`, sugerencia, auditoría
+   (`ticket.triaged`, actor sistema) y evento `ticket.triaged` al outbox.
+
+El precio: dos entregas simultáneas del mismo evento pagan dos llamadas y solo
+una guarda. Es raro y acotado; a cambio, la base de datos nunca espera a la IA.
+
+`lockDuration` del worker en 180 s: con el valor por defecto de BullMQ (30 s),
+un job que espera al modelo se daría por colgado y se entregaría a otro worker
+mientras el primero sigue esperando — dos llamadas por el mismo ticket.
+
+### Decisión 3 — La IA sugiere, no decide
+
+La sugerencia vive en su propia tabla, `ticket_triages` (una fila por ticket,
+RLS como el resto), y **no modifica el ticket**. Si la prioridad sugerida se
+escribiera en `tickets.priority`, una salida del modelo cambiaría los relojes de
+SLA sin que nadie la aceptara. La prioridad real solo la cambia una persona.
+
+Se guardan `model` y `prompt_version`: es lo que permitirá medir con datos
+reales cuánto acierta cada versión contra lo que el agente terminó eligiendo.
+
+### Decisión 4 — Errores: transitorio reintenta, permanente a la DLQ
+
+El adapter (`HttpTicketClassifier`) traduce el contrato HTTP del servicio:
+
+| Respuesta | Error | Qué hace la cola |
+|---|---|---|
+| red caída, timeout, 429, 5xx (salvo 502) | `TriageUnavailableError` | reintenta con backoff |
+| 4xx, 502, o respuesta que no valida | `TriageRejectedError` | DLQ (`dlq-ai-<eventId>`) |
+
+La respuesta se **revalida** contra los valores del dominio aunque el servicio
+ya valide la suya: es un sistema externo, y lo que entra en nuestra base lo
+decide esta frontera.
+
+### Decisión 5 — Solo el equipo ve la sugerencia
+
+`GET /tickets/:id/triage` exige AGENT (regla del ADR-0025: el rango se decide
+por lo que se revela). Incluye el sentimiento que la IA atribuye al cliente, y
+el cliente es el VIEWER. Por el mismo motivo `ticket.triaged` va solo a la sala
+`staff` del WebSocket. La vista no expone tokens ni latencia: eso es telemetría.
+
+### Decisión 6 — La IA es opcional
+
+Sin `AI_SERVICE_URL`, el consumidor descarta los eventos como `disabled` (no se
+acumulan en Redis) y el endpoint responde `pending`. El sistema arranca y
+funciona igual. Entre servicios autentica un secreto compartido
+(`AI_SERVICE_TOKEN` → cabecera `X-Internal-Token`).
+
+### Consecuencias
+
+- (+) El aislamiento entre tenants no depende del comportamiento del modelo.
+- (+) Cambiar de modelo o de proveedor (Ollama local ↔ API de Anthropic) es una
+  variable de entorno del servicio, y las evals comparan ambos con el mismo
+  dataset.
+- (+) Un fallo de la IA nunca bloquea crear, asignar o atender un ticket.
+- (−) Un servicio más que desplegar y vigilar.
+- (−) La lista de categorías está duplicada (dominio TS y `schema.py`). Es
+  deliberado —cada lado decide qué acepta—: si divergen, el adapter rechaza la
+  categoría desconocida y el job va a la DLQ, en vez de guardarla en silencio.
+- (−) Con el modelo de 3B, el prompt injection consigue subir la prioridad
+  sugerida (0/6 en ese subconjunto de las evals). Como la sugerencia no se
+  aplica sola, el efecto es una etiqueta engañosa para el agente; mejorarlo es
+  trabajo de prompt y de modelo, medible con las evals.
+
+## ADR-0028 — Notas internas: visibilidad del comentario, SLA y sala del equipo
+
+**Estado:** aceptado (2026-11-11). Primera funcionalidad de la "tanda 1" de
+producto, tras comparar con Zendesk, Freshdesk, Help Scout y Zammad: todos
+tienen notas que el cliente no ve, y el resto de la tanda (portal del cliente,
+email) no se puede abrir sin ellas.
+
+### Contexto
+
+Hasta ahora todo comentario era conversación con el cliente. El equipo no tenía
+dónde coordinarse ("parece el bug de la 4.2.0, lo escalo") sin que lo leyera el
+solicitante, que en el modelo de roles es el VIEWER (ADR-0014, ADR-0025).
+
+Sumarlo como "una columna más" tenía un hueco serio: el SLA de primera respuesta
+se para con el primer comentario de un AGENT o ADMIN (ADR-0020). Una nota
+interna lo habría parado, y el SLA se daría por cumplido sin que el cliente
+recibiera una sola palabra.
+
+### Decisión 1 — Visibilidad en el comentario, no una tabla aparte
+
+`comments.visibility` (`PUBLIC` | `INTERNAL`, `PUBLIC` por defecto). La migración
+deja todos los comentarios existentes como `PUBLIC`, que es lo que eran. Es la
+misma conversación, en el mismo orden, con la misma inmutabilidad: dos tablas
+obligarían a mezclar dos listas para mostrar un hilo.
+
+La visibilidad es **inmutable** como el resto del comentario: una nota no se
+"publica" después. Si se pudiera, lo que vio el cliente y lo que cuenta la
+auditoría dejarían de coincidir.
+
+### Decisión 2 — Solo el equipo escribe notas, y lo decide el dominio
+
+`Comment.write` recibe el rol del autor (del JWT verificado, nunca del body) y
+devuelve `InternalNoteForbiddenError` (403) si un VIEWER intenta una nota. El
+"equipo" es la misma pregunta que ya se hacía el SLA, `isResponder` (AGENT y
+ADMIN), expuesta como `isStaff`: si un rol pudiera leer notas pero su comentario
+no contara como respuesta, o al revés, las dos reglas acabarían
+contradiciéndose.
+
+### Decisión 3 — La lectura filtra en el WHERE, no en memoria
+
+`TicketReadModel.detail` recibe el rol de quien mira y filtra con
+`visibility IN (visibleTo(role))`. Una nota que el cliente no puede ver ni
+siquiera sale de la base. El historial de auditoría no necesita filtro: ya es
+solo para AGENT.
+
+**No hay RLS por rol, y es deliberado.** Las policies filtran por tenant, no por
+rol. Sumar `app.current_role` a la transacción y una policy sobre `comments`
+daría defensa en profundidad, pero toca el `TransactionManager` y todos los
+roles de base de datos, y es exactamente el trabajo que trae el rol CLIENTE del
+portal (donde además hay que filtrar "solo sus tickets"). Entra ahí. Hasta
+entonces, la garantía la dan este WHERE y su e2e.
+
+### Decisión 4 — `comment.added` v3, y v2 se lee como público
+
+El evento suma `visibility`. El consumidor del SLA usa la regla de dominio
+`countsAsResponse({ authorRole, visibility })`: cuenta solo lo que escribe el
+equipo **y** ve el cliente. Una nota interna se ignora con `detail: 'nota
+interna'`.
+
+Un v2 en vuelo no se descarta: se lee como `PUBLIC`. No es una suposición, es lo
+que pasó: antes de este ADR todos los comentarios lo eran. Es la diferencia con
+el v1 del ADR-0020, que se descartaba porque le faltaba un dato imposible de
+deducir. Un valor de visibilidad desconocido, en cambio, no se adivina: fallo
+permanente, a la DLQ.
+
+### Decisión 5 — El aviso de una nota va a la sala del equipo
+
+`BroadcastTicketEvent` manda el `comment.added` de una nota a `staff`, no a la
+sala del ticket. El aviso no lleva el cuerpo (ADR-0023), pero en la sala del
+ticket está el cliente que lo tiene abierto: sabría que el equipo escribió algo,
+y cuándo. Es la regla del ADR-0022, "el filtrado por rol es una sala, no un
+`if`". Falla cerrado: un v2 sin el campo va al ticket (era público), un valor
+desconocido va al equipo. El cliente web no cambia: invalida el detalle por
+`ticketId`, venga de la sala que venga.
+
+### Consecuencias
+
+- (+) El equipo coordina dentro del ticket sin abrir otro canal.
+- (+) El SLA sigue midiendo lo que promete: cuánto tarda el cliente en recibir
+  una respuesta.
+- (+) Prepara el portal del cliente y el canal de email: lo que se le manda al
+  cliente es exactamente lo `PUBLIC`.
+- (−) La confidencialidad de las notas depende de la aplicación, no de la base,
+  hasta que entre el RLS por rol.
+- (−) El contrato del WebSocket y los tipos del frontend se siguen manteniendo a
+  mano (deuda conocida del ADR-0004): `visibility` se agregó en los dos lados.
+
+---
+
+## ADR-0029 — Pausa del SLA: reloj pausable, vencimiento corrido y pausa en la transacción del cambio
+
+**Estado:** aceptado (2026-11-12). Segunda pieza de la "tanda 1" de producto:
+el estado "esperando al cliente" de Zendesk, Freshdesk y Zammad. Diseño en
+`docs/superpowers/specs/2026-11-12-esperando-al-cliente-design.md`.
+
+### Contexto
+
+Cuando un agente necesita algo del solicitante (un dato, una captura, que pruebe
+algo), el ticket seguía en `IN_PROGRESS` y el reloj de resolución seguía
+corriendo: el SLA penalizaba al equipo por un tiempo que depende del cliente, y
+el agente no tenía forma de decir "la pelota está del otro lado".
+
+Lo difícil no es el estado sino el reloj. `due_at` se calculaba una vez y era
+inmutable (ADR-0020, decisión 4), y lo lee un barrido que marca incumplimientos
+irreversibles (ADR-0021). Pausar sin tocar `due_at`, o sin que el barrido se
+entere, convierte la pausa en un incumplimiento seguro.
+
+### Decisión 1 — Estado `WAITING_ON_CUSTOMER`
+
+Se entra solo desde `IN_PROGRESS` (alguien trabaja el ticket) y se sale a
+`IN_PROGRESS` o a `RESOLVED`. No a `OPEN` ni a `CLOSED`. Ver la adenda del
+ADR-0015.
+
+### Decisión 2 — Vuelve solo cuando contesta el cliente, y lo decide el agregado
+
+Un comentario **público** de alguien que **no es del equipo**
+(`!isResponder(authorRole)`, la misma frontera que `countsAsResponse`) sobre un
+ticket en espera lo devuelve a `IN_PROGRESS`. Lo decide `Ticket.registerComment`
+llamando a `changeStatus`, así que se emite el `ticket.status_changed` normal y
+nadie aguas abajo necesita una regla propia para comentarios. Una nota interna o
+un comentario del equipo no lo sacan.
+
+El cambio lo audita `AddComment` como **sistema** (`SYSTEM_ACTOR_ID`,
+`automatic: true`, `trigger: 'customer_reply'`, `commentId`): nadie lo pidió, es
+una consecuencia. El autor queda en la entrada del comentario.
+
+### Decisión 3 — El reloj es pausable y el vencimiento se corre
+
+`sla_timers.paused_at`. El estado sigue **derivado** de fechas, ahora con cuatro
+valores: corriendo, **en pausa**, cumplido, incumplido. Al reanudar,
+`due_at = calendario.dueAt(ahora, calendario.workingMinutesBetween(paused_at, due_at))`:
+el margen se mide en el CALENDARIO y no restando fechas, para que el horario
+laboral no obligue a reescribir la pausa. Parar un reloj pausado (resolver desde
+la espera) lo reanuda primero, así que el margen descuenta la pausa. La vista
+mide el margen de un reloj pausado contra `paused_at`: queda congelado.
+
+Solo se pausa el reloj de **resolución**. El de respuesta casi siempre está
+parado (para pedirle algo al cliente hubo que responderle), y si no lo está,
+sigue corriendo: pedir algo es responder.
+
+`sla_due_timers` filtra `paused_at IS NULL`, y el rol del barrido recibe
+`GRANT SELECT (paused_at)`: sus privilegios son por columna y no alcanzan a las
+columnas nuevas (el mismo fallo que dejó sin drenar el outbox en la fase 8).
+
+### Decisión 4 — Pausar y reanudar van en la transacción del cambio de estado
+
+`SlaPauseCoordinator`, llamado por `ChangeTicketStatus` y `AddComment` dentro de
+su transacción, con el mismo `now`. **Es la única excepción** al patrón "los
+relojes los mueve el consumidor del outbox": arrancar y parar siguen en
+diferido.
+
+La razón: arrancar y parar toleran retraso (se fechan con `occurredAt` y nadie
+decide nada con el reloj mientras tanto). Pausar no, porque el barrido usa ese
+dato para decidir un incumplimiento irreversible.
+
+Como el arranque sigue siendo diferido, un ticket puede llegar a la espera
+**antes** de tener relojes (worker atrasado; el seed, siempre). Por eso
+`StartSlaTimers` mira el estado actual del ticket y, si ya espera al cliente,
+el reloj de resolución nace pausado desde `updatedAt` (aproximación que, si
+falla, cuenta de más contra el equipo, nunca de menos). Y un reloj ya vencido
+que el barrido aún no marcó **no se pausa**: pausarlo le borraría el retraso.
+Los dos huecos los encontró la revisión final de la rama.
+
+### Decisión 5 — Las transiciones del reloj son escrituras condicionadas
+
+`SlaTimerRepository.transition(timer, expected)` hace un `UPDATE ... WHERE`
+condicionado al estado en que se leyó la fila (`running` o `paused`) y devuelve
+si escribió. `save` queda solo para el alta. Antes, parar e incumplir usaban un
+upsert sin condición, y una pausa y el barrido simultáneos se pisaban. Si
+`transition` pierde, el caso de uso no actúa como si su cambio hubiera ocurrido
+(el barrido no audita ni publica un incumplimiento que no se escribió). Ver la
+adenda del ADR-0021.
+
+### Alternativas descartadas
+
+- *Pausa en diferido, reconciliando contra el estado actual del ticket.* Pausar
+  "si el ticket sigue en espera" y reanudar "si ya no lo está". Falla con espera
+  → retomar → espera antes de que el worker procese: la primera pausa se aplica,
+  la reanudación se salta (el ticket vuelve a estar en espera) y la segunda pausa
+  no hace nada. El tramo trabajado cuenta como pausa: el error favorece al
+  equipo, justo al revés de lo que promete un SLA. Además, una pausa procesada
+  tarde llegaba después de que el barrido marcara el incumplimiento.
+- *Pausa en diferido, blindada.* Columnas extra para saber qué transición se
+  aplicó la última y un `MarkSlaBreached` que consulta el ticket. Mantiene un
+  único patrón, pero con más piezas, más casos borde y alguna carrera que sigue
+  abierta.
+- *Pausar también el reloj de respuesta.* Abriría la puerta a "pausar" un ticket
+  sin haberle contestado al cliente.
+- *Que la IA decida la pausa.* El SLA es un compromiso con el cliente; no puede
+  depender de un modelo que se equivoca. La IA podrá **sugerir** pasar a la
+  espera (ROADMAP §2), nunca hacerlo.
+
+### Consecuencias
+
+- (+) El SLA deja de penalizar el tiempo que depende del cliente, y el agente
+  puede decirlo con un estado en vez de con una nota.
+- (+) La pausa no tiene carreras con el barrido ni con el orden de los eventos.
+- (+) `transition` cumple de verdad la "idempotencia por condición" que el
+  ADR-0021 prometía al leer y no cumplía al escribir.
+- (+) La costura del horario laboral (`workingMinutesBetween`) queda puesta.
+- (−) Dos patrones para mover relojes: el síncrono (pausa) y el diferido
+  (arrancar, parar, incumplir). Está acotado y explicado aquí.
+- (−) `due_at` ya no guarda el objetivo original. Se reconstruye desde el
+  AuditLog (las transiciones a y desde la espera quedan fechadas); si los
+  reportes de la tanda 3 lo necesitan seguido, se añadirá la columna entonces.
+- (−) Carrera aceptada: si el barrido incumple en el mismo instante en que el
+  agente pausa, gana quien escribe primero. Si gana el barrido es porque el
+  reloj de verdad había vencido antes de la pausa.
+- (−) Un ticket en espera queda así sin límite: el auto-resolver a los N días
+  llega con las automatizaciones de la tanda 3.
+
+> **Resuelto por el ADR-0034 (2026-11-13).** La reanudación (y la parada de un
+> reloj en pausa) usa el calendario ACTUAL de la organización del ticket, no
+> uno global ni una foto del que había al arrancar. Efecto aceptado: si el
+> horario cambia durante una pausa, el margen se mide con el nuevo.
+
+**Revisar si.** Llega el horario laboral (→ comprobar que la reanudación usa el
+calendario del reloj y no uno global), o aparecen más estados que pausan el SLA
+(p. ej. "esperando a un tercero") → la regla del coordinador pasaría a ser una
+propiedad del estado en la tabla del ADR-0015.
+
+---
+
+## ADR-0030 — Respuestas predefinidas: solo texto, variables cerradas y relleno en el cliente
+
+**Estado:** aceptado (2026-11-12). Tercera pieza de la "tanda 1" de producto.
+Diseño en `docs/superpowers/specs/2026-11-12-respuestas-predefinidas-design.md`.
+
+### Contexto
+
+El agente escribe muchas veces por día lo mismo ("Gracias, lo estamos
+revisando", "¿Nos pasás una captura?"). Zendesk, Freshdesk, Help Scout y Zammad
+lo resuelven con plantillas; aquí no existían.
+
+### Decisión 1 — Solo texto, no "macros"
+
+Insertar una respuesta no cambia estado, prioridad ni asignación. Las macros de
+Zendesk sí lo hacen, pero eso es un motor de reglas con efectos sobre el
+agregado `Ticket` (tanda 3, automatización), y mezclarlo aquí haría que una
+plantilla de texto tuviera que pasar por la máquina de estados del ADR-0015.
+
+### Decisión 2 — Compartidas por organización; leer pide AGENT
+
+Las crea, edita y borra el ADMIN; el AGENT las lista y usa. **El VIEWER no las
+ve (403)**: cuentan cómo trabaja el equipo por dentro, y el VIEWER es el cliente
+final. Es la regla del ADR-0025 aplicada otra vez: el rango se decide por lo que
+se revela, no por si el verbo es de lectura. Plantillas personales quedan fuera;
+sumarlas sería una columna `owner_id` nullable, aditiva.
+
+### Decisión 3 — Variables cerradas, validadas al guardar
+
+Cuatro: `{{ticket.numero}}`, `{{ticket.asunto}}`, `{{cliente.email}}`,
+`{{agente.email}}` (sensibles a mayúsculas, espacio interno tolerado). El cuerpo
+es válido solo si, tras quitar las válidas, no queda ningún `{{` ni `}}`; así
+una variable mal escrita, una llave sin cerrar, `{{}}` o `{{{x}}}` son un 400
+que nombra el fragmento. El fallo que se evita es concreto: una variable que
+nadie rellena le llega literal al cliente.
+
+### Decisión 4 — El relleno es del CLIENTE, no del servidor
+
+El backend guarda y valida plantillas; el front las rellena al insertarlas y el
+agente puede editar el resultado antes de mandarlo, que sale como un
+`POST /tickets/:id/comments` normal. Se descartó que el servidor enviara la
+plantilla directamente: el agente no podría ajustarla, y "mandar sin ver" es
+justo lo que no se quiere. **Coste aceptado:** el sistema no sabe qué plantilla
+originó un comentario, así que no hay métricas de uso. Si hicieran falta, sería
+un `canned_response_id` opcional en el comentario.
+
+La regla de variables vive DOS veces —dominio del api y `fill.ts` del web—
+porque son repos separados (ADR-0001). Las dos tienen tests con los mismos
+casos.
+
+### Decisión 5 — Unicidad del título con una columna normalizada
+
+"Saludo" y " saludo " no pueden convivir: confunden al elegir. Se guarda
+`title_key` (recortado y en minúsculas, lo calcula el dominio) con
+`@@unique([tenant_id, title_key])`. Se descartó un índice único sobre
+`lower(title)`: Prisma no modela índices de expresión y `migrate diff` marcaría
+drift para siempre. La comprobación del caso de uso da el error claro; la
+restricción de la base cubre la carrera entre dos ADMIN, y el borde traduce su
+`P2002` al mismo 409.
+
+### Decisión 6 — Borrado físico, auditado con el contenido
+
+Ningún comentario apunta a una plantilla (Decisión 4), así que borrarla no deja
+nada colgando. `canned_response.created|updated|deleted` se auditan en la misma
+transacción (ADR-0016); el borrado guarda título y cuerpo, y la edición el antes
+y el después. Sin evento de outbox ni realtime: ningún consumidor necesita
+enterarse.
+
+### Consecuencias
+
+- Tabla `canned_responses` con RLS como todo lo demás (migración
+  `20261112130000_canned_responses`). Sin roles nuevos.
+- Endpoints `GET|POST /canned-responses`, `PUT|DELETE /canned-responses/:id`.
+- La sesión del web vuelve a leer el email de `/auth/me` al restaurarse: sin él,
+  `{{agente.email}}` quedaba sin rellenar tras cada recarga.
+
+- `created_by` NO tiene FK a `users`, a propósito: es un dato de autoría,
+  como `audit_logs.actor_id`, y si mañana se borra un usuario la plantilla
+  tiene que seguir existiendo y diciendo quién la creó. Una FK obligaría a
+  elegir entre borrar la plantilla en cascada o dejar la columna en `NULL`.
+
+**Revisar si.** Se piden métricas de uso (→ id opcional en el comentario), o
+llegan las automatizaciones (→ una "macro" sería una regla que además inserta
+una plantilla, no una plantilla con efectos).
+
+---
+
+## ADR-0031 — Etiquetas: catálogo por organización, clasificación interna y fuera del agregado
+
+**Estado:** aceptado (2026-11-12). Entrega 1 de 3 de "etiquetas + búsqueda +
+vistas guardadas" (tanda 1). Diseño en
+`docs/superpowers/specs/2026-11-12-etiquetas-design.md`.
+
+### Contexto
+
+El equipo necesita clasificar tickets con criterios propios ("facturación",
+"bug", "vip") para encontrarlos y repartirlos, y las vistas guardadas
+(ADR-0033) van a filtrar por eso.
+
+### Decisión 1 — Catálogo + tabla de relación, no texto libre
+
+`tags` (por organización) y `ticket_tags`. Zendesk usa texto libre por ticket;
+es más simple, pero renombrar obliga a reescribir miles de filas y los typos
+("factura" / "facturas") se multiplican. Con catálogo, renombrar es una fila y
+el color vive en un solo sitio. `ticket_tags` lleva `tenant_id` propio para
+que su policy de RLS sea idéntica a la del resto del esquema.
+
+### Decisión 2 — El agente crea al vuelo; el ADMIN administra
+
+`GET`/`POST /tags` y `PUT /tickets/:id/tags` piden AGENT: pedirle a un ADMIN
+que cree la etiqueta antes de usarla frena al agente en pleno trabajo.
+Renombrar, recolorear y borrar piden ADMIN, porque afectan a todos los
+tickets que la usan.
+
+### Decisión 3 — Clasificación INTERNA: el cliente no la ve
+
+Para un VIEWER la clave `tags` no existe en ninguna respuesta (se omite, no
+`[]`, para no insinuar nada), el read model ni siquiera la lee, el aviso en
+vivo va solo a la sala `staff` y filtrar por `tagId` le da 403. Es el mismo
+criterio que la sugerencia de la IA (ADR-0027).
+
+### Decisión 4 — Fuera del agregado `Ticket`; reglas en una función pura
+
+Las etiquetas no son estado del agregado: cargar un ticket no carga sus
+etiquetas, y cambiarlas pasa por `TicketTagRepository`. Las reglas del
+conjunto (deduplicar, máximo 10, qué se añadió y qué se quitó) viven en
+`diffTagSets`, una función pura del dominio, y no repartidas en el caso de
+uso. Etiquetar SÍ es actividad sobre el ticket: `Ticket.recordTagsChanged`
+actualiza `updatedAt` y emite `ticket.tags_changed` desde la raíz, como todos
+los eventos (ADR-0018). Un `PUT` sin cambios no audita ni emite.
+
+### Decisión 5 — Nombre único sin mayúsculas, paleta cerrada de colores
+
+`name_key` (recortado y en minúsculas) con `@@unique([tenant_id, name_key])`,
+el mismo patrón que `title_key` del ADR-0030. Ocho colores con nombre
+(`gray`…`purple`), no hex libre: con nombres, el front elige el tono legible
+en cada tema.
+
+### Decisión 6 — Historial con nombres; filtro tolerante
+
+La auditoría `ticket.tags_changed` guarda `{added, removed}` con id Y nombre,
+así el historial se lee aunque la etiqueta se renombre o se borre después.
+`GET /tickets?tagId=a&tagId=b` trae los tickets con al menos una, y un id que
+no existe simplemente no coincide (200): una vista guardada que apunta a una
+etiqueta borrada no queda rota.
+
+### Consecuencias
+
+- Migración `20261112140000_tags` (RLS en las dos tablas). Borrar una
+  etiqueta la quita de sus tickets por cascada, sin un evento por ticket (sería
+  una tormenta): el front invalida su caché al borrar.
+- Concurrencia: `SetTicketTags` lee el ticket con `findByIdForUpdate`
+  (`SELECT ... FOR UPDATE`). El spec decía "gana el último, sin bloquear",
+  pero la revisión final encontró dos fallos de no bloquear: dos `PUT` a la
+  vez que comparten una etiqueta chocaban en la PK de `ticket_tags` (500), y
+  como el caso de uso guarda el ticket ENTERO, etiquetar mientras otro lo
+  cerraba lo reabría en silencio. Con el bloqueo sigue ganando el último, pero
+  el segundo espera y calcula su diff sobre lo que dejó el primero. Hay un e2e
+  con seis `PUT` simultáneos. `AddComment` tiene el mismo patrón de leer y
+  guardar entero sin bloquear: anotado, no tocado en esta entrega.
+
+**Revisar si.** Llegan las reglas de automatización (etiquetar solo, tanda 3),
+o se piden etiquetas visibles para el cliente (→ una columna `public` en el
+catálogo, no una regla en el front).
+
+---
+
+## ADR-0032 — Búsqueda: texto completo de Postgres con columnas generadas
+
+**Estado:** aceptado (2026-11-13). Entrega 2 de 3 de "etiquetas + búsqueda +
+vistas guardadas". Diseño en `docs/superpowers/specs/2026-11-13-busqueda-design.md`.
+
+### Contexto
+
+La bandeja filtraba por campos, pero no por lo que uno recuerda de un ticket:
+"el del PDF en blanco". Y eso suele estar en la conversación, no solo en el
+asunto.
+
+### Decisión 1 — Postgres, no un motor aparte
+
+Búsqueda de texto completo de Postgres en español, con índice GIN.
+Elasticsearch o Meilisearch serían otro servicio que levantar y pagar, y
+copiar los tickets fuera de la base los saca de la protección de RLS
+(ADR-0003): habría que reimplementar el aislamiento por tenant en el índice.
+Para este volumen, Postgres alcanza de sobra.
+
+### Decisión 2 — Columnas GENERADAS, no triggers ni código de la app
+
+`tickets.search_vector` (asunto con peso A, descripción con peso B) y
+`comments.search_vector` son `GENERATED ALWAYS AS … STORED`: Postgres las
+recalcula en cada escritura. No hay un trigger que mantener ni un caso de uso
+que pueda olvidarse de actualizarlas, y los tickets existentes quedaron
+indexados al aplicar la migración.
+
+### Decisión 3 — Sin acentos, con una función inmutable propia
+
+`unaccent()` es STABLE (depende del diccionario configurado) y una columna
+generada exige IMMUTABLE. `helpdesk_unaccent(text)` fija diccionario y
+esquema, que es lo que la hace segura de marcar como inmutable. La misma
+función se aplica al indexar y al consultar, así "facturacion" encuentra
+"facturación". `CREATE EXTENSION unaccent` no necesita superusuario
+(extensión "trusted" desde PG13): sirve igual en Neon (ADR-0026).
+
+### Decisión 4 — Prisma sin drift
+
+Prisma no modela columnas generadas. Van en el schema como
+`Unsupported("tsvector")?` con `@default(dbgenerated("<expresión>"))` — la
+expresión EXACTA que devuelve Postgres, sacada con `prisma db pull` — y
+`@@index([searchVector], type: Gin)`. Sin el `dbgenerated`, `migrate diff`
+pedía `DROP DEFAULT` para siempre. Se verificó con una base descartable antes
+de diseñar el resto.
+
+### Decisión 5 — El texto del usuario nunca es sintaxis
+
+`parseSearch` (dominio) reduce el texto a palabras de letras y números
+Unicode (máx. 8), cada una como prefijo, unidas con AND. `&`, `|`, `!`, `:*` o
+paréntesis se descartan: una búsqueda rara nunca es un 500 ni una consulta
+distinta de la que el usuario cree estar haciendo. `#123` o `123` buscan
+además por número.
+
+### Decisión 6 — Las notas internas solo cuentan para el equipo
+
+Un comentario coincide solo si su visibilidad está en `visibleTo(rol)`
+(ADR-0028). Sin esto, un cliente podría adivinar el contenido de una nota
+interna probando palabras y viendo si su ticket aparece.
+
+### Decisión 7 — Un filtro más, con un tope de 1000 coincidencias
+
+`?q=` se combina con los demás filtros y conserva el orden por fecha y el
+cursor. Prisma no admite `@@` en `where`, así que una consulta SQL devuelve
+los ids que coinciden — las **1000 más recientes** — y el `findMany` de
+siempre los usa como `id IN (…)`. Los filtros simples (estado, asignado,
+solicitante, etiquetas) van DENTRO de esa consulta, antes del tope: la
+primera versión los aplicaba después, y `q=factura&status=CLOSED` podía salir
+vacía si las 1000 coincidencias más recientes estaban abiertas (lo encontró la
+revisión final; hay un e2e con 1001 tickets). **Coste aceptado:** con más de
+1000 coincidencias que pasan esos filtros, solo se ven las 1000 más recientes;
+y "la IA sugiere más urgencia" se aplica después del tope. La alternativa
+(toda la página en SQL a mano) duplicaría cada filtro y su mantenimiento.
+
+Además, la `tsquery` se arma en SQL palabra por palabra: `helpdesk_unaccent` y
+DESPUÉS se descarta lo que no sea letra o número, porque `unaccent` convierte
+algunas letras en sintaxis (`ʼ` → `'`, `⑴` → `(1)`) y eso daba 500. Buscar
+`123` también encuentra textos con "1234…" (el número se busca además como
+prefijo): aceptado.
+
+**Revisar si.** Hace falta ordenar por relevancia, buscar con errores de
+tipeo (`pg_trgm`), o un tenant supera el volumen en el que 1000 coincidencias
+dejan de ser "las que importan" → entonces la página entera en SQL, o un
+motor dedicado con el aislamiento resuelto.
+
+---
+
+## ADR-0033 — Vistas guardadas: filtros versionados, personales y compartidas
+
+**Estado:** aceptado (2026-11-13). Entrega 3 de 3 de "etiquetas + búsqueda +
+vistas guardadas". Diseño en
+`docs/superpowers/specs/2026-11-13-vistas-guardadas-design.md`.
+
+### Contexto
+
+Un agente arma siempre las mismas combinaciones de filtros, y el equipo
+necesita colas comunes ("urgentes sin asignar"). Rearmarlas a mano cada vez
+es fricción.
+
+### Decisión 1 — Filtros como JSON validado y VERSIONADO
+
+`saved_views.filters` es `jsonb`, pero no es un cajón libre: `parseViewFilters`
+(dominio) acepta una lista CERRADA de claves (`status`, `assignee`, `tagIds`,
+`q`, `aiSuggestsHigher`) y exige `version: 1`. Una clave desconocida es un 400
+que la nombra: una vista que dice filtrar algo y no lo hace es peor que un
+error al guardarla. La versión es la puerta para cambiar la forma: una v2 se
+traduciría en esa función, no en cada lector. Las etiquetas borradas después
+no rompen una vista: el filtro de la bandeja ya tolera ids inexistentes
+(ADR-0031).
+
+### Decisión 2 — "Asignados a mí" se guarda como "yo"
+
+`assignee: 'me'`, no un id. Una vista compartida "mis urgentes" le muestra a
+cada agente lo suyo; con un id fijo, le mostraría a todos lo de quien la creó.
+
+### Decisión 3 — Personales y compartidas; solo el ADMIN comparte
+
+`owner_id` NULL = compartida. Cada uno ve las compartidas y las suyas; la
+personal de otro es invisible (404, también para un ADMIN: es configuración
+personal, no un dato de la organización). Una compartida solo la crea, edita
+y borra un ADMIN; un agente recibe 403. Todo pide AGENT: las vistas organizan
+la bandeja del equipo (el VIEWER, 403, como con etiquetas).
+
+### Decisión 4 — Unicidad del nombre por ámbito con una columna sin NULL
+
+Dos personas pueden tener una vista personal "Mis urgentes"; dos compartidas
+no pueden llamarse igual. Postgres no trata los NULL como iguales en un índice
+único, así que `owner_id` no sirve para la restricción: `scope_key` ('shared'
+o el id del dueño) + `name_key`, con `@@unique([tenant_id, scope_key,
+name_key])`.
+
+### Decisión 5 — Sin auditoría ni eventos
+
+Una vista es configuración de la interfaz, no un dato del negocio: no se
+audita ni avisa en vivo (a diferencia de las respuestas predefinidas, que le
+llegan al cliente). El front invalida su consulta al guardar.
+
+### Decisión 6 — En el front, la vista monta la bandeja
+
+La bandeja lee `?vista=<id>` y se monta con `key` por vista, así sus filtros
+arrancan de la vista sin un efecto que sincronice estado. "Guardar vista"
+aparece cuando hay filtros; "Actualizar vista" solo si cambiaron. Una vista
+que ya no existe muestra la bandeja entera con un aviso.
+
+**Revisar si.** Se piden contadores (una consulta por vista o un read model
+de conteos), vistas por defecto al entrar, o compartir con personas puntuales
+(→ tabla de destinatarios en vez de `owner_id` nulo).
+
+---
+
+## ADR-0034 — Horario laboral: calendario de días hábiles por organización
+
+**Fecha:** 2026-11-13 · **Estado:** aceptado · **Spec:**
+`docs/superpowers/specs/2026-11-13-horario-laboral-design.md`
+
+**Contexto.** El SLA contaba 24/7: un ticket urgente del viernes a las 17:00
+con 4 h de resolución vencía a las 21:00, con el equipo en su casa. Una
+organización de soporte trabaja con una franja (en Argentina, típicamente
+08:00–18:00 de lunes a viernes, sin feriados).
+
+### Decisión 1 — Semana tipo + excepciones por fecha, por organización
+
+`business_calendars` (una fila por tenant: modo, zona IANA, días ISO, apertura
+y cierre en minutos) y `business_calendar_exceptions` (fecha LOCAL, hábil o
+no, nombre; única por tenant y fecha), las dos con RLS ENABLE+FORCE. Una
+excepción pisa la semana: un feriado en martes es no hábil, un sábado de
+cierre de mes es hábil con la franja de la semana. Es el dato completo que
+necesitará un calendario visual: esa pantalla vendrá después, sin migración.
+
+### Decisión 2 — Sin fila = horario por defecto, con interruptor 24/7
+
+Los valores por defecto viven en el dominio (`DEFAULT_BUSINESS_HOURS`), igual
+que la política de SLA: no hay backfill ni filas sembradas al registrar. Quien
+tiene guardia activa el modo `24_7` (= `CALENDAR_24_7`); la semana y las
+excepciones se conservan para cuando se vuelva.
+
+### Decisión 3 — El cálculo es del dominio, en la zona guardada
+
+`toBusinessCalendar(config)` implementa `SlaCalendar` recorriendo días
+hábiles; convierte "fecha local + minuto" a instante con `Intl.DateTimeFormat`
+calculando el desfase de ESE instante (sirve para zonas con horario de
+verano, sin dependencia nueva). Nunca usa la zona del proceso. Un calendario
+sin días hábiles en 730 días falla fuerte en vez de colgarse, y no se puede
+guardar una semana sin días hábiles. Si vence al cierre, vence ese día.
+
+### Decisión 4 — Los objetivos se cuentan en horas hábiles
+
+Ver la adenda al ADR-0020: NORMAL resuelve en 10 h (un día hábil) y LOW en
+30 h. `due_at` se sigue persistiendo y el barrido no cambia.
+
+### Decisión 5 — El calendario actual, no una foto; sin recalcular relojes vivos
+
+Arrancar, parar y reanudar piden el calendario del tenant en ese momento.
+Cambiar el horario no toca `due_at` de relojes en marcha (como la política,
+ADR-0020 decisión 4), pero una reanudación posterior mide el margen con el
+calendario nuevo (adenda al ADR-0029).
+
+### Decisión 6 — Configurar es del ADMIN; el cliente solo ve "abierto o cerrado"
+
+`GET|PUT /business-hours`, `POST|DELETE /business-hours/exceptions`, `POST
+/business-hours/holidays/:year` (año actual y siguiente) son ADMIN y auditan
+`business_hours.changed` en la misma transacción. `GET /business-hours/status`
+es para cualquier rol y devuelve solo `{ open, nextOpening, timeZone }`: el web
+le muestra al cliente que escribe fuera de horario cuándo lo van a ver (un
+aviso en pantalla, no un mensaje en la conversación).
+
+### Decisión 7 — Feriados nacionales como lista en el código
+
+`argentina-holidays.ts` con 2026 y 2027: inamovibles + trasladables ya movidos
+según la Ley 27.399, sin "no laborables turísticos" ni 24/31 de diciembre.
+Una lista y no una API externa: el SLA no debe depender de un tercero. La
+precarga no pisa lo que el ADMIN cargó a mano.
+
+### Consecuencias
+
+- (+) Los incumplimientos vuelven a ser del equipo, no del calendario.
+- (+) La costura de la fase 6 rindió: ni el motor ni el barrido cambiaron.
+- (−) Las fechas trasladables se calcularon con la ley, sin contrastar con el
+  decreto anual: si el Ejecutivo fija otra fecha, hay que corregir la lista
+  (el ADMIN puede editarla mientras tanto).
+- (−) Un reloj creado en 24/7 y pausado fuera de horario al momento del
+  despliegue puede quedar con menos margen al reanudar. Ventana de transición.
+- (−) La bandeja formatea vencimientos lejanos en la zona del navegador (no
+  conoce la de la organización).
+
+**Revisar si.** Se piden franjas por día de la semana o turnos partidos (→ la
+semana pasa a ser una lista de franjas por día), horarios por equipo, o
+guardia solo para urgentes (→ calendario por prioridad).

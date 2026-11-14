@@ -38,17 +38,24 @@ model Organization {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  users         User[]
-  memberships   Membership[]
-  refreshTokens RefreshToken[]
-  tickets       Ticket[]
-  comments      Comment[]
-  auditLogs     AuditLog[]
-  ticketCounter TicketCounter?
-  outbox        OutboxMessage[]
-  processed     ProcessedMessage[]
-  slaPolicies   SlaPolicy[]
-  slaTimers     SlaTimer[]
+  users                      User[]
+  memberships                Membership[]
+  refreshTokens              RefreshToken[]
+  tickets                    Ticket[]
+  comments                   Comment[]
+  auditLogs                  AuditLog[]
+  ticketCounter              TicketCounter?
+  outbox                     OutboxMessage[]
+  processed                  ProcessedMessage[]
+  slaPolicies                SlaPolicy[]
+  slaTimers                  SlaTimer[]
+  ticketTriages              TicketTriage[]
+  cannedResponses            CannedResponse[]
+  tags                       Tag[]
+  ticketTags                 TicketTag[]
+  savedViews                 SavedView[]
+  businessCalendar           BusinessCalendar?
+  businessCalendarExceptions BusinessCalendarException[]
 
   @@map("organizations")
 }
@@ -122,6 +129,7 @@ model RefreshToken {
 enum TicketStatus {
   OPEN
   IN_PROGRESS
+  WAITING_ON_CUSTOMER
   RESOLVED
   CLOSED
 
@@ -159,37 +167,58 @@ model Ticket {
   resolvedAt  DateTime?      @map("resolved_at")
   closedAt    DateTime?      @map("closed_at")
 
-  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  requester    User         @relation("TicketRequester", fields: [requesterId], references: [id], onDelete: Cascade)
-  assignee     User?        @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  organization Organization  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  requester    User          @relation("TicketRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  assignee     User?         @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
   comments     Comment[]
   slaTimers    SlaTimer[]
+  triage       TicketTriage?
 
   // El número es único DENTRO del tenant, nunca global.
+  tags TicketTag[]
+
+  /// Búsqueda (ADR-0032): columna GENERADA por Postgres; Prisma no la escribe.
+  searchVector Unsupported("tsvector")? @default(dbgenerated("(setweight(to_tsvector('spanish'::regconfig, helpdesk_unaccent(COALESCE(subject, ''::text))), 'A'::\"char\") || setweight(to_tsvector('spanish'::regconfig, helpdesk_unaccent(COALESCE(description, ''::text))), 'B'::\"char\"))")) @map("search_vector")
+
   @@unique([tenantId, number])
   // Listado por defecto: filtrar por estado dentro del tenant, más reciente primero.
   @@index([tenantId, status, createdAt])
   // "Mis tickets": bandeja de un agente.
   @@index([tenantId, assigneeId, status])
+  @@index([searchVector], type: Gin)
   @@map("tickets")
+}
+
+/// Respuesta al cliente o nota del equipo (ADR-0028). El cliente (VIEWER) no
+/// ve las INTERNAL; hoy lo garantiza el read model, no una policy de RLS.
+enum CommentVisibility {
+  PUBLIC
+  INTERNAL
+
+  @@map("comment_visibility")
 }
 
 /// Comentario en un ticket. Parte del agregado Ticket a efectos de negocio, pero
 /// tabla propia: una conversación crece sin límite y no tiene sentido cargarla
 /// entera cada vez que se toca el ticket.
 model Comment {
-  id        String   @id @default(uuid()) @db.Uuid
-  tenantId  String   @map("tenant_id") @db.Uuid
-  ticketId  String   @map("ticket_id") @db.Uuid
-  authorId  String   @map("author_id") @db.Uuid
-  body      String
-  createdAt DateTime @default(now()) @map("created_at")
+  id         String            @id @default(uuid()) @db.Uuid
+  tenantId   String            @map("tenant_id") @db.Uuid
+  ticketId   String            @map("ticket_id") @db.Uuid
+  authorId   String            @map("author_id") @db.Uuid
+  body       String
+  visibility CommentVisibility @default(PUBLIC)
+  createdAt  DateTime          @default(now()) @map("created_at")
 
   organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   ticket       Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   author       User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
 
+  /// Búsqueda (ADR-0032): columna GENERADA por Postgres; Prisma no la escribe.
+  searchVector Unsupported("tsvector")? @default(dbgenerated("to_tsvector('spanish'::regconfig, helpdesk_unaccent(COALESCE(body, ''::text)))")) @map("search_vector")
+
   @@index([tenantId, ticketId, createdAt])
+  @@index([searchVector], type: Gin)
   @@map("comments")
 }
 
@@ -343,6 +372,9 @@ model SlaTimer {
   dueAt      DateTime  @map("due_at")
   stoppedAt  DateTime? @map("stopped_at")
   breachedAt DateTime? @map("breached_at")
+  // En pausa mientras el ticket espera al cliente (ADR-0029). El barrido ignora
+  // los pausados; ver `sla_due_timers` en la migración 20261112120000.
+  pausedAt   DateTime? @map("paused_at")
 
   organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   ticket       Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
@@ -356,4 +388,156 @@ model SlaTimer {
   @@index([dueAt])
   @@index([tenantId, ticketId])
   @@map("sla_timers")
+}
+
+/// Sugerencia de triage de la IA para un ticket (ADR-0027).
+///
+/// Tabla aparte y NO columnas en `tickets`: la IA sugiere, no decide. La
+/// prioridad real del ticket (y con ella los relojes de SLA) solo la cambia una
+/// persona; aquí queda lo que el modelo propuso, para mostrarlo y, más adelante,
+/// medir cuánto acierta contra lo que el agente terminó eligiendo.
+///
+/// `ticket_id` es la clave primaria: como mucho una sugerencia por ticket, y esa
+/// restricción es también la garantía de idempotencia al guardarla.
+///
+/// `category`, `sentiment` y `language` son texto y no enums de Postgres: la
+/// lista la valida el dominio, y cambiarla no debería exigir una migración que
+/// bloquee la tabla. `model` y `prompt_version` permiten comparar sugerencias
+/// por su origen.
+model TicketTriage {
+  ticketId          String         @id @map("ticket_id") @db.Uuid
+  tenantId          String         @map("tenant_id") @db.Uuid
+  category          String
+  suggestedPriority TicketPriority @map("suggested_priority")
+  sentiment         String
+  language          String
+  provider          String
+  model             String
+  promptVersion     String         @map("prompt_version")
+  latencyMs         Int            @map("latency_ms")
+  inputTokens       Int?           @map("input_tokens")
+  outputTokens      Int?           @map("output_tokens")
+  triagedAt         DateTime       @map("triaged_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ticket       Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  // Métricas por categoría dentro del tenant.
+  @@index([tenantId, category])
+  @@map("ticket_triages")
+}
+
+/// Respuesta predefinida de la organización (ADR-0030). Solo texto: insertarla
+/// no cambia nada del ticket. `title_key` es el título recortado y en
+/// minúsculas, para que la unicidad no distinga mayúsculas sin un índice de
+/// expresión (que Prisma no modela y daría drift).
+model CannedResponse {
+  id        String   @id @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  title     String
+  titleKey  String   @map("title_key")
+  body      String
+  createdBy String   @map("created_by") @db.Uuid
+  createdAt DateTime @map("created_at")
+  updatedAt DateTime @map("updated_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Unicidad del título por tenant; su btree además sirve el listado ordenado.
+  @@unique([tenantId, titleKey])
+  @@map("canned_responses")
+}
+
+/// Etiqueta del catálogo de la organización (ADR-0031). `name_key` = nombre
+/// recortado y en minúsculas, para la unicidad sin índice de expresión.
+model Tag {
+  id        String   @id @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  name      String
+  nameKey   String   @map("name_key")
+  color     String
+  createdAt DateTime @map("created_at")
+  updatedAt DateTime @map("updated_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tickets      TicketTag[]
+
+  @@unique([tenantId, nameKey])
+  @@map("tags")
+}
+
+/// Qué etiquetas tiene cada ticket (ADR-0031). Lleva `tenant_id` propio para
+/// que la policy de RLS sea la misma que en el resto del esquema.
+model TicketTag {
+  ticketId String @map("ticket_id") @db.Uuid
+  tagId    String @map("tag_id") @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ticket       Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  tag          Tag          @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([ticketId, tagId])
+  // El filtro de la bandeja va de la etiqueta a sus tickets.
+  @@index([tenantId, tagId])
+  @@map("ticket_tags")
+}
+
+/// Vista guardada de la bandeja (ADR-0033). `owner_id` null = compartida (solo
+/// un ADMIN la escribe). `scope_key` = 'shared' o el id del dueño: Postgres no
+/// trata los NULL como iguales en un índice único, así que la unicidad del
+/// nombre por ámbito necesita una columna sin NULL.
+model SavedView {
+  id        String   @id @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  ownerId   String?  @map("owner_id") @db.Uuid
+  scopeKey  String   @map("scope_key")
+  name      String
+  nameKey   String   @map("name_key")
+  filters   Json
+  createdBy String   @map("created_by") @db.Uuid
+  createdAt DateTime @map("created_at")
+  updatedAt DateTime @map("updated_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, scopeKey, nameKey])
+  @@map("saved_views")
+}
+
+/// Horario laboral (ADR-0034). Sin fila = valores por defecto del dominio
+/// (L–V 08:00–18:00, Argentina): no hay backfill para las organizaciones.
+enum BusinessCalendarMode {
+  BUSINESS_HOURS
+  TWENTY_FOUR_SEVEN
+}
+
+model BusinessCalendar {
+  tenantId       String               @id @map("tenant_id") @db.Uuid
+  mode           BusinessCalendarMode
+  timeZone       String               @map("time_zone")
+  /// Días ISO (1 = lunes … 7 = domingo).
+  weekdays       Int[]                @db.SmallInt
+  opensAtMinute  Int                  @map("opens_at_minute") @db.SmallInt
+  closesAtMinute Int                  @map("closes_at_minute") @db.SmallInt
+  updatedAt      DateTime             @map("updated_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("business_calendars")
+}
+
+model BusinessCalendarException {
+  id        String   @id @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  /// Fecha LOCAL de la organización.
+  date      DateTime @db.Date
+  working   Boolean
+  name      String
+  createdAt DateTime @map("created_at")
+
+  organization Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, date])
+  @@map("business_calendar_exceptions")
 }

@@ -1,10 +1,13 @@
 /**
  * Ciclo de vida de un ticket (ADR-0015).
  *
- *   OPEN        -> IN_PROGRESS | RESOLVED
- *   IN_PROGRESS -> RESOLVED    | OPEN      (vuelve a la cola al desasignarse)
- *   RESOLVED    -> CLOSED      | OPEN      (el cliente dice que no estaba arreglado)
- *   CLOSED      -> (terminal)
+ *   OPEN                -> IN_PROGRESS | RESOLVED
+ *   IN_PROGRESS         -> RESOLVED    | OPEN | WAITING_ON_CUSTOMER
+ *                          (OPEN: vuelve a la cola al desasignarse)
+ *   WAITING_ON_CUSTOMER -> IN_PROGRESS | RESOLVED
+ *                          (la pelota está del lado del cliente; ADR-0029)
+ *   RESOLVED            -> CLOSED      | OPEN  (el cliente dice que no estaba arreglado)
+ *   CLOSED              -> (terminal)
  *
  * Las transiciones se declaran como DATOS y no como cadenas de `if`. Así el
  * conjunto de transiciones legales se puede leer de un vistazo, testear
@@ -14,6 +17,7 @@
 export const TICKET_STATUSES = [
   'OPEN',
   'IN_PROGRESS',
+  'WAITING_ON_CUSTOMER',
   'RESOLVED',
   'CLOSED',
 ] as const;
@@ -42,7 +46,12 @@ export const isTicketPriority = (value: string): value is TicketPriority =>
  */
 const ALLOWED_TRANSITIONS: Record<TicketStatus, readonly TicketStatus[]> = {
   OPEN: ['IN_PROGRESS', 'RESOLVED'],
-  IN_PROGRESS: ['RESOLVED', 'OPEN'],
+  IN_PROGRESS: ['RESOLVED', 'OPEN', 'WAITING_ON_CUSTOMER'],
+  // Solo se entra con alguien trabajando el ticket, y se sale a seguir
+  // trabajándolo o a darlo por resuelto. Ni a OPEN (devolverlo a la cola es
+  // decisión de quien lo tiene, primero lo retoma) ni a CLOSED (ADR-0015: solo
+  // se cierra lo que se resolvió).
+  WAITING_ON_CUSTOMER: ['IN_PROGRESS', 'RESOLVED'],
   RESOLVED: ['CLOSED', 'OPEN'],
   CLOSED: [],
 };

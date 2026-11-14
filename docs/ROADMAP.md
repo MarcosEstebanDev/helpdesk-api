@@ -93,6 +93,33 @@ Preguntas de diseño abiertas, a resolver antes de codear:
 - ¿Qué se muestra de alguien que se dio de baja pero sigue en la conversación?
 - ¿Va dentro de cada comentario o como un mapa `participants` a nivel del ticket?
 
+**Siguiente pieza de IA (anotada el 2026-11-12, después de "esperando al
+cliente"): clasificador de intención del comentario.** Un solo clasificador en
+`helpdesk-ai` (`/v1/comment-intent`) con tres etiquetas:
+- `pide_info` en un comentario público de un AGENTE → sugerir "¿pasar a
+  *esperando al cliente*?" (si el agente se olvida del estado, el SLA lo penaliza).
+- `confirma_resolucion` en el comentario del cliente que saca el ticket de la
+  espera → sugerir "¿resolver?" (hoy un "gracias, ya funciona" lo reabre).
+- `otro` → nada.
+
+Regla de fondo (ADR-0027): **la IA sugiere, no decide — y en particular NUNCA
+pausa ni reanuda el SLA**, que es un compromiso con el cliente y no puede
+depender de un modelo que se equivoca. Misma tubería que el triage
+(`comment.added` → cola `ai-intent` → tabla con RLS → realtime solo a `staff`),
+con su propio set de evals de comentarios etiquetados y medido antes de
+enseñárselo al agente. ADR propio.
+
+**Después del horario laboral (ADR-0034, 2026-11-13), quedó fuera a propósito:**
+- **Calendario visual** del mes (clic en un día para marcarlo hábil/no hábil,
+  ver cuándo vence cada ticket). El modelo de datos ya lo soporta: es otra
+  pantalla sobre las mismas tablas.
+- Guardia 24/7 solo para urgentes (calendario por prioridad); hoy el modo 24/7
+  es para toda la organización.
+- Horarios por equipo o por agente, turnos partidos, franjas distintas por día.
+- Aviso automático por email o en la conversación (el email es tanda 2).
+- Contrastar los feriados trasladables de 2026/2027 con el decreto anual, y
+  agregar 2028 cuando se publique.
+
 ---
 
 ## 3. Qué mejorar del producto
@@ -172,6 +199,24 @@ demuestra nada nuevo), métricas (esperan a tener datos de verdad) y billing
 
 ## 4. Despliegue
 
+> **Actualización 2026-11-07 — el plan pasa a ser GRATIS:** Vercel (web) +
+> Render Free (API con los workers en el mismo proceso) + Neon (Postgres) +
+> Render Key Value (Redis) + is-a.dev. Preparado y ensayado en local, nada
+> creado todavía en ninguna plataforma:
+> - `render.yaml` (Blueprint: web free + Key Value free con `noeviction`).
+> - `prepare-database.ts` con `DATABASE_OWNER_MODE=external` para Postgres sin
+>   SUPERUSER y paso nuevo `verify` (adenda del ADR-0026). Ensayado contra un
+>   Postgres 17 con dueño solo-CREATEROLE: destapó que la 2.ª migración fallaba
+>   (`ALTER ... OWNER TO` exige CREATE en el esquema sin superusuario) y que el
+>   modo viejo pisaba en silencio la contraseña del dueño. Los dos, resueltos.
+> - Memoria medida con `--memory=512m`: pico 216 MiB. Entra en Render Free; lo
+>   justo es la CPU (0.1: arranque en frío ~77 s).
+> - Web: `packageManager` + `engines` para que Vercel use pnpm 11 y Node 24.
+>
+> Pasos manuales (cuentas, roles en Neon, migraciones desde la PC, registros
+> de is-a.dev) en [`DEPLOY.md`](DEPLOY.md#despliegue-gratis-vercel--render--neon).
+> Railway queda como plan B.
+>
 > **Actualización 2026-09-30:** preparado para Railway (`railway.json` en los dos
 > repos, ADR-0026, adenda del ADR-0013) y para una VPS (`infra/docker-compose.prod.yml`).
 > Paso a paso en [`DEPLOY.md`](DEPLOY.md). Lo de abajo es el análisis original,
@@ -227,7 +272,8 @@ el deploy es corto.
 
 - [x] ¿Mergear `dev` → `main` en los dos repos? Hecho el 2026-09-30, primero el
       api y después el web, con los e2e en verde.
-- [ ] ¿Desplegar, o seguir con features?
+- [x] ¿Desplegar, o seguir con features? Desplegar, gratis (2026-11-07):
+      falta lo manual de `DEPLOY.md` (Neon, Render, Vercel, PR a is-a.dev).
 - [ ] ¿Endurecer `AssignTicket` a AGENT+, o dejarlo mitigado por la interfaz?
 - [ ] Los ADRs están en español y el README en inglés. Ahora que el api es
       público, un párrafo en inglés al principio del índice de ADRs explicando

@@ -15,6 +15,7 @@ import { OutboxPublisher } from '../src/infrastructure/outbox/outbox-publisher.s
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 import { attachRealtimeAdapter } from '../src/infrastructure/realtime/redis-io.adapter';
 import {
+  AI_TRIAGE_QUEUE,
   REALTIME_QUEUE,
   SLA_QUEUE,
   TICKET_ROUTING_QUEUE,
@@ -239,6 +240,10 @@ describe('Realtime (e2e)', () => {
       await realtimeQueue.remove(id).catch(() => undefined);
       await slaQueue.remove(id).catch(() => undefined);
       await routingQueue.remove(id).catch(() => undefined);
+      await app
+        .get<Queue>(getQueueToken(AI_TRIAGE_QUEUE))
+        .remove(id)
+        .catch(() => undefined);
     }
     for (const org of [acme, otra]) {
       await prisma.withTenant(org.tenantId, (tx) =>

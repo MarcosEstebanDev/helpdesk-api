@@ -68,6 +68,16 @@ export const envSchema = z.object({
   // vuelve global. Un número y no `true`: con `true` Express cree la cabecera
   // entera, y un cliente se inventa una IP por intento.
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
+  // Servicio de triage con IA (ADR-0027). OPCIONAL: sin URL, el consumidor de
+  // la cola `ai-triage` descarta los eventos como "desactivado" y el resto del
+  // sistema funciona igual. La IA es una mejora, no una dependencia de arranque.
+  AI_SERVICE_URL: z.url().optional(),
+  // Secreto compartido (cabecera X-Internal-Token). En producción el servicio
+  // de IA no debe quedar abierto: cualquiera podría gastar tokens a nuestra costa.
+  AI_SERVICE_TOKEN: z.string().min(16).optional(),
+  // Un modelo local en CPU tarda: el primer ticket tras arrancar incluye cargar
+  // el modelo en memoria (~90 s medidos en desarrollo).
+  AI_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   // Orígenes del navegador autorizados, separados por coma.
   //
   // El frontend manda `credentials: 'include'` para que viaje la cookie httpOnly

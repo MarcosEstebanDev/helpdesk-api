@@ -21,6 +21,9 @@ describe('máquina de estados del ticket', () => {
     ['OPEN', 'RESOLVED'],
     ['IN_PROGRESS', 'RESOLVED'],
     ['IN_PROGRESS', 'OPEN'],
+    ['IN_PROGRESS', 'WAITING_ON_CUSTOMER'],
+    ['WAITING_ON_CUSTOMER', 'IN_PROGRESS'],
+    ['WAITING_ON_CUSTOMER', 'RESOLVED'],
     ['RESOLVED', 'CLOSED'],
     ['RESOLVED', 'OPEN'],
   ];
@@ -65,6 +68,28 @@ describe('máquina de estados del ticket', () => {
   it('un ticket resuelto se puede reabrir, uno cerrado no', () => {
     expect(canTransition('RESOLVED', 'OPEN')).toBe(true);
     expect(canTransition('CLOSED', 'OPEN')).toBe(false);
+  });
+
+  describe('esperando al cliente (ADR-0029)', () => {
+    it('es un estado reconocido y no terminal', () => {
+      expect(isTicketStatus('WAITING_ON_CUSTOMER')).toBe(true);
+      expect(isTerminal('WAITING_ON_CUSTOMER')).toBe(false);
+    });
+
+    it('solo se entra desde IN_PROGRESS: hay alguien trabajando el ticket', () => {
+      expect(canTransition('IN_PROGRESS', 'WAITING_ON_CUSTOMER')).toBe(true);
+      expect(canTransition('OPEN', 'WAITING_ON_CUSTOMER')).toBe(false);
+      expect(canTransition('RESOLVED', 'WAITING_ON_CUSTOMER')).toBe(false);
+    });
+
+    it('se sale a IN_PROGRESS o a RESOLVED, nunca a OPEN ni a CLOSED', () => {
+      expect(allowedTransitionsFrom('WAITING_ON_CUSTOMER')).toEqual([
+        'IN_PROGRESS',
+        'RESOLVED',
+      ]);
+      expect(canTransition('WAITING_ON_CUSTOMER', 'OPEN')).toBe(false);
+      expect(canTransition('WAITING_ON_CUSTOMER', 'CLOSED')).toBe(false);
+    });
   });
 
   describe('type guards', () => {

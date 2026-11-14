@@ -36,14 +36,33 @@ export interface SlaPolicyRepository {
 export const SLA_POLICY_REPOSITORY = Symbol('ticketing.SlaPolicyRepository');
 
 export interface SlaTimerRepository {
+  /**
+   * Da de alta un reloj recién arrancado. Solo crea: los cambios de un reloj ya
+   * existente van por `transition`, que es condicionado.
+   */
   save(timer: SlaTimer): Promise<void>;
   findByTicket(tenantId: TenantId, ticketId: TicketId): Promise<SlaTimer[]>;
-  findRunning(
+  /**
+   * El reloj ABIERTO de ese tipo: corriendo o en pausa (ADR-0029). Ni los
+   * cumplidos ni los incumplidos.
+   */
+  findOpen(
     tenantId: TenantId,
     ticketId: TicketId,
     kind: SlaKind,
   ): Promise<SlaTimer | null>;
   findById(tenantId: TenantId, id: string): Promise<SlaTimer | null>;
+  /**
+   * Persiste una transición del reloj (pausar, reanudar, parar, incumplir) SOLO
+   * si la fila sigue en el estado `expected` en el que se leyó: un
+   * `UPDATE ... WHERE` condicionado, no un upsert. Devuelve si escribió.
+   *
+   * `false` significa que otra escritura ganó la carrera (el barrido incumplió
+   * el reloj mientras el agente lo pausaba, o al revés) y que el llamador NO
+   * debe actuar como si su cambio hubiera ocurrido. Es la "idempotencia por
+   * condición, no por bloqueo" del ADR-0021, ahora cumplida también al escribir.
+   */
+  transition(timer: SlaTimer, expected: 'running' | 'paused'): Promise<boolean>;
 }
 
 export const SLA_TIMER_REPOSITORY = Symbol('ticketing.SlaTimerRepository');

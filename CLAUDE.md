@@ -108,6 +108,26 @@ uso dependen de la interfaz, nunca del adapter.
   es la fuente de verdad, rol `helpdesk_sla_sweeper` + `sla_due_timers`
   (SECURITY DEFINER, devuelve solo `id` y `tenant_id`), idempotencia por condición
   —no por bloqueo—, y todo fechado con el `occurredAt` del evento.
+- ADR-0028 **Notas internas**: `comments.visibility` (PUBLIC|INTERNAL, inmutable),
+  solo el equipo las escribe (regla en `Comment.write`), el read model las filtra
+  en el WHERE para el VIEWER, `comment.added` v3 (v2 se lee como PUBLIC) y el SLA
+  usa `countsAsResponse` (equipo Y público). El aviso de una nota va a la sala
+  `staff`. **Sin RLS por rol todavía**: entra con el rol CLIENTE del portal.
+- ADR-0029 **Pausa del SLA**: estado `WAITING_ON_CUSTOMER`, `sla_timers.paused_at`,
+  `due_at` corrido al reanudar, pausa/reanudación en la MISMA transacción del
+  cambio de estado (única excepción al consumidor del outbox) y transiciones
+  del reloj como `UPDATE ... WHERE` condicionados.
+
+- ADR-0030 **Respuestas predefinidas**: solo texto (no macros), compartidas
+  por organización (escribe ADMIN, lee AGENT, el VIEWER no las ve), variables
+  cerradas validadas al guardar (`{{ticket.numero}}`, `{{ticket.asunto}}`,
+  `{{cliente.email}}`, `{{agente.email}}`), relleno en el FRONT y unicidad del
+  título con `title_key`.
+
+- ADR-0031 **Etiquetas**: catálogo `tags` + `ticket_tags` (RLS en las dos),
+  el AGENT crea al vuelo y el ADMIN renombra/borra, **clasificación interna**
+  (el VIEWER no recibe la clave `tags` ni puede filtrar), fuera del agregado
+  con las reglas en `diffTagSets`, y `ticket.tags_changed` solo a `staff`.
 
 ## Seguridad (modelo, "portfolio-pragmático")
 
@@ -159,7 +179,227 @@ salen del propio código, y las decisiones que están esperando tu OK.
 Dominio objetivo: Organization (tenant), User, Membership (ADMIN/AGENT/VIEWER),
 Ticket, Comment, SlaPolicy, SlaTimer, AuditLog, InboundEmail.
 
-## Estado actual (2026-09-10) — Directorio de miembros (ADR-0025)
+## Estado actual (2026-11-13) — Horario laboral (ADR-0034), cierra la tanda 1
+
+Rama `feat/horario-laboral` (api y web). Spec y plan en `docs/superpowers/`.
+
+- Dominio `ticketing/domain/sla/business-calendar.ts`: `toBusinessCalendar`
+  (implementa `SlaCalendar` + `isOpenAt`/`nextOpeningAfter`),
+  `DEFAULT_BUSINESS_HOURS` (L–V 08:00–18:00 Argentina), `makeBusinessHours`.
+  Zona con `Intl` (desfase del instante, no fijo), tope `MAX_SEARCH_DAYS`.
+- `argentina-holidays.ts` 2026/2027, calculados con la Ley 27.399 SIN
+  contrastar con el decreto anual (dicho en el archivo).
+- Tablas `business_calendars` + `business_calendar_exceptions` (RLS),
+  migración `20261113160000_business_hours`. Sin fila = defaults.
+- `StartSlaTimers`, `StopSlaTimer` y `SlaPauseCoordinator` reciben
+  `BusinessCalendarRepository` y usan el calendario ACTUAL del tenant.
+- `DEFAULT_SLA_POLICY`: NORMAL resolución 10 h, LOW 30 h (horas hábiles).
+- HTTP `BusinessHoursController` (`/business-hours…`), `/status` para VIEWER.
+- **Gotcha de tests:** los e2e de SLA anteriores (`sla`, `sla-pause`) fijan
+  `mode: '24_7'` en su `beforeAll`; un e2e nuevo que mida vencimientos tiene
+  que decidir su calendario o va a heredar L–V 8–18. En los unit,
+  `calendars24x7()` de los test-doubles.
+
+## Estado anterior (2026-11-13) — UX de bandeja y detalle
+
+Rama `feat/ux-bandeja-detalle`. Mockup aprobado por el usuario
+(https://claude.ai/artifact/CCx4Szw574hwuz7xzrGL6b). Backend: el listado
+trae para el equipo `requesterEmail` y `slaSummary` (`summarizeSla`, dominio);
+`GET /tickets/counts` con los filtros del listado salvo el estado (el `where`
+vive en `whereDelListado`, compartido); el triage dice `disabled` sin
+`AI_SERVICE_URL`. **Gotcha:** `GET /tickets/counts` tiene que declararse ANTES
+de `GET /tickets/:id` (el `ParseUUIDPipe` de `:id` rechazaría "counts").
+
+## PENDIENTE (al retomar, 2026-11-12)
+
+Todo lo de hoy está en `dev` y pusheado (nada en `main`): esperando al
+cliente (0029), respuestas predefinidas (0030), etiquetas (0031) y la rama
+de menores. Sigue, en este orden:
+
+1. ~~Búsqueda (ADR-0032)~~ — HECHA en `feat/busqueda` (2026-11-13): columnas
+   `search_vector` generadas + GIN, `helpdesk_unaccent`, `parseSearch` en el
+   dominio, tope de 1000 coincidencias. **Gotcha:** una columna generada va en
+   Prisma como `Unsupported("tsvector")?` con `@default(dbgenerated("…"))` y
+   la expresión EXACTA de `prisma db pull`; sin eso, drift permanente.
+2. ~~Vistas guardadas (ADR-0033)~~ — HECHAS en `feat/vistas-guardadas`
+   (2026-11-13): `saved_views` con `scope_key` para la unicidad por ámbito,
+   `parseViewFilters` (lista cerrada + `version`), sin auditoría.
+3. **Horario laboral** (diseño propio; el hueco es `SlaCalendar`).
+4. Clasificador de intención con IA (ROADMAP §2).
+
+Proponer el spec de la entrega 2 y esperar OK antes de codear. Rama nueva
+desde `dev`.
+
+## Estado actual (2026-11-12) — Tanda 1: etiquetas (ADR-0031)
+
+Rama `feat/etiquetas-busqueda-vistas` (sale de `dev` con ADR-0030 ya
+mergeado). Entrega 1 de 3: etiquetas → búsqueda (ADR-0032) → vistas
+guardadas (ADR-0033). Las 13 decisiones de las tres entregas las aprobó el
+usuario; spec y plan de etiquetas en `docs/superpowers/` (2026-11-12).
+
+- Dominio `ticketing/domain/tag/` (`Tag`, `diffTagSets`), casos de uso en
+  `application/tags/`, `TagController` + `PUT /tickets/:id/tags`.
+- Read model: `withTags` en el listado, por rol en el detalle; filtro
+  `tagId` repetible con `some` (un ticket con dos etiquetas sale una vez).
+- Migración `20261112140000_tags`. Seed: 3 etiquetas en 4 tickets.
+
+## Estado anterior (2026-11-12) — Tanda 1: respuestas predefinidas (ADR-0030)
+
+Rama `feat/respuestas-predefinidas` (sale de `dev`, sin mergear). Spec y plan
+en `docs/superpowers/` (2026-11-12). "Esperando al cliente" ya está en `dev`
+(154/154 e2e).
+
+- `CannedResponse` en `ticketing/domain/canned-response/` con la regla de
+  variables en `template-variables.ts` (el web la repite en `fill.ts`).
+- Casos de uso Create/Update/Delete/List con auditoría
+  `canned_response.created|updated|deleted`; controller propio.
+- Migración `20261112130000_canned_responses` (RLS, `title_key` único por
+  tenant). Seed con 3 plantillas.
+- Sigue en la tanda 1: etiquetas + búsqueda + vistas guardadas, y después
+  horario laboral (el usuario lo dejó para el final).
+
+**Gotcha nuevo:** `prisma migrate diff --from-migrations` falla con P3015 si
+existe la carpeta de la migración nueva todavía vacía: generar el SQL primero y
+crear la carpeta después.
+
+## Estado anterior (2026-11-12) — Tanda 1: esperando al cliente (ADR-0029)
+
+Rama `feat/esperando-al-cliente` (sale de `dev`, sin mergear ni pushear). Spec
+y plan en `docs/superpowers/specs/` y `docs/superpowers/plans/` (2026-11-12).
+
+- **Estado `WAITING_ON_CUSTOMER`** (desde `IN_PROGRESS`; sale a `IN_PROGRESS` o
+  `RESOLVED`). El comentario PÚBLICO de alguien que no es del equipo lo devuelve
+  solo a `IN_PROGRESS`: lo decide `Ticket.registerComment`; `AddComment` lo
+  audita como sistema (`automatic`, `trigger: 'customer_reply'`).
+- **Reloj pausable**: `sla_timers.paused_at`, estado derivado `paused`, al
+  reanudar `due_at` se corre lo que duró la pausa (vía
+  `SlaCalendar.workingMinutesBetween`). Solo el reloj de RESOLUCIÓN.
+- **Pausa SÍNCRONA** (`SlaPauseCoordinator`, en la transacción de
+  `ChangeTicketStatus` y `AddComment`): única excepción al patrón del consumidor
+  del outbox. Elegida por el usuario tras la revisión del diseño.
+- **`SlaTimerRepository.transition(timer, expected)`**: `UPDATE ... WHERE`
+  condicionado; `save` solo da de alta. `findRunning` → `findOpen` (incluye
+  pausados).
+- Migración `20261112120000_waiting_on_customer` (`ADD VALUE ... AFTER
+  'IN_PROGRESS'`, `paused_at`, `GRANT SELECT (paused_at)` al barrido,
+  `sla_due_timers` ignora pausados). Seed con un ticket en espera.
+- ADR-0029 + adendas a 0015, 0020 (revocación parcial de "`due_at`
+  inmutable") y 0021. Total 29.
+
+**Gotchas nuevos:**
+- El repo tiene `core.autocrlf=true`: los archivos del árbol están en CRLF. Un
+  `str.replace` de Python con anclas de varias líneas en `\n` NO coincide y
+  falla en silencio; usar la herramienta Edit, o leer en modo texto (que
+  normaliza) y comprobar que cada ancla aparece una vez.
+- Un doble de repositorio que devuelve la MISMA instancia que guarda no puede
+  probar escrituras condicionadas: el caso de uso la muta antes de `transition`.
+  `fakeSlaTimers` guarda copias.
+
+## Estado anterior (2026-11-11) — Tanda 1 de producto: notas internas (ADR-0028)
+
+Se comparó con Zendesk, Freshdesk, Help Scout y Zammad y se acordó con el
+usuario un plan en tres tandas. **Tanda 1** (lo que un agente extraña el primer
+día): notas internas ✅, estado "esperando al cliente" que pausa el SLA ✅ + horario
+laboral, respuestas predefinidas, etiquetas + búsqueda + vistas guardadas.
+**Tanda 2**: rol CLIENTE con portal (acá entra el RLS por rol), email, adjuntos,
+CSAT. **Tanda 3**: reglas de automatización, reportes (read models), base de
+conocimiento (+ RAG de helpdesk-ai).
+
+- `feat/ai-triage` se mergeó a `dev` (`65de8af`, web `b107d8c`).
+- Rama `feat/notas-internas` en los dos repos. Migración
+  `20261111120000_internal_notes`. ADR-0028 (total 28).
+- **Hallazgo:** sin el cambio del SLA, una nota interna habría parado el reloj de
+  primera respuesta (el SLA se cumpliría sin responderle al cliente).
+- **Verificado:** typecheck, lint:ci, 249 unit, **145/145 e2e**, `migrate diff`
+  vacío. Web: 96 tests, eslint y tsc limpios.
+- El README decía que `GET /tickets/:id/history` era VIEWER; es AGENT. Corregido.
+
+**Gotcha nuevo:** el helper `procesarSla` del e2e toma el último evento por
+`occurredAt`; con el reloj inyectado quieto, dos comentarios seguidos empatan y
+procesa el anterior. Avanzar el reloj entre comentarios.
+
+**Gotcha de herramientas (Windows):** `python - <<EOF` decodifica stdin en
+cp1252; los acentos de los anclajes no coinciden. Usar `PYTHONUTF8=1`.
+
+## Estado anterior (2026-11-09) — Triage con IA, fase 1 (ADR-0027)
+
+Rama `feat/ai-triage` (sale de `dev`, sin mergear ni pushear). Nuevo repo
+hermano **`helpdesk-ai`** (Python/FastAPI, en `../helpdesk-ai`; PÚBLICO en https://github.com/MarcosEstebanDev/helpdesk-ai desde el 2026-11-12):
+servicio sin estado que clasifica el texto de un ticket con un LLM.
+
+- **Flujo:** `ticket.created` → cola `ai-triage` → `AiTriageProcessor` →
+  `TriageTicket` → `HttpTicketClassifier` (POST `/v1/classify`) → tabla
+  `ticket_triages` (RLS) + auditoría `ticket.triaged` + evento `ticket.triaged`
+  (→ realtime, solo sala staff). `GET /tickets/:id/triage` (AGENT) devuelve
+  `pending` o la sugerencia.
+- **La IA sugiere, no decide:** nunca toca `tickets.priority` (cambiaría los SLA).
+- **Llamada al modelo FUERA de la transacción** (puede tardar 90 s en CPU);
+  transacción corta después con `processed_messages` + sugerencia + audit + evento.
+- **`lockDuration: 180_000`** en el worker: con los 30 s por defecto BullMQ
+  re-entregaría el job mientras el primero espera al modelo.
+- Errores: red/timeout/429/5xx≠502 → `TriageUnavailableError` (reintenta);
+  4xx/502/respuesta inválida → `TriageRejectedError` (DLQ `dlq-ai-<eventId>`).
+- **Opcional:** sin `AI_SERVICE_URL` el consumidor descarta como `disabled`.
+  Env nuevas: `AI_SERVICE_URL`, `AI_SERVICE_TOKEN` (≥16), `AI_TIMEOUT_MS`.
+- Migración `20261109120000_ai_triage`. ADR-0027 (total 27).
+- **Verificado:** typecheck, lint:ci, 237 unit, e2e completos (7 nuevos en
+  `ai-triage.e2e-spec.ts` con un servidor HTTP falso que hace de helpdesk-ai).
+
+**Gotchas nuevos:**
+- `ConfigModule.forRoot` valida `process.env` AL IMPORTAR `AppModule`: para que
+  una suite e2e cambie el entorno hay que fijarlo en un módulo importado PRIMERO
+  (`test/support/ai-triage-env.ts`). `import()` dinámico no sirve: con
+  `moduleResolution: nodenext` exige extensión `.js`.
+- **El e2e del barrido de SLA depende del estado global de la BD**: `sla_due_timers`
+  devuelve los 100 relojes vencidos MÁS ANTIGUOS de todos los tenants, y el test
+  adelanta el reloj 25 h. Con >100 relojes viejos corriendo en la BD de desarrollo
+  (pasó: 341 de `acme-support` tras la prueba de carga del 7/11), el barrido no
+  llega a los del test y fallan 4-5 tests sin relación con el cambio. Correr los
+  e2e los drena (y marca esos relojes de demo como incumplidos). Arreglo pendiente:
+  que el test barra hasta agotar, o que filtre por su tenant.
+- `ticket.created` va ahora a CUATRO colas con el mismo jobId: las suites que
+  limpian jobs borran también de `ai-triage`.
+
+## Estado anterior (2026-11-07) — Despliegue gratis (adenda del ADR-0026)
+
+Plan elegido por el usuario: **Vercel + Render Free + Neon + Render Key Value +
+is-a.dev**. Todo preparado y ensayado en LOCAL; nada creado en las plataformas.
+Paso a paso manual en `docs/DEPLOY.md` ("Despliegue gratis").
+
+- **`render.yaml`**: web `helpdesk-api` (docker, free, `WORKER_ENABLED=1`,
+  `/health/ready`, `NODE_OPTIONS=--max-old-space-size=256`) + Key Value free con
+  `maxmemoryPolicy: noeviction` (BullMQ). Render Free no tiene Pre-Deploy ni
+  Background Workers: migraciones desde la PC, workers en el proceso de la API.
+- **`src/deploy/prepare-database.ts`**: `DATABASE_OWNER_MODE=create|external` y
+  paso nuevo `verify`. `external` = Neon: `helpdesk` creado en la consola, todo
+  corre con `MIGRATION_DATABASE_URL`.
+- **Web**: `packageManager: pnpm@11.13.1` + `engines.node: 24.x` (Vercel con
+  `ENABLE_EXPERIMENTAL_COREPACK=1`); el CI ya no pasa `version` a
+  `pnpm/action-setup` (falla si hay las dos).
+- **Medido**: imagen de prod con `--memory=512m`, API+workers, 25 sockets y
+  ~900 peticiones → pico de RSS 216 MiB. Con `--cpus=0.1`: arranque 77 s, login
+  0.6–1.6 s.
+
+**Gotchas caros (ensayo tipo Neon, Postgres 17 con dueño solo-CREATEROLE):**
+- **Sin superusuario, `ALTER FUNCTION ... OWNER TO x` exige que `x` tenga CREATE
+  en el esquema.** La 2.ª migración fallaba con `42501 permission denied for
+  schema public`. Local y CI nunca lo vieron porque el dueño es SUPERUSER. Modo
+  `external`: CREATE temporal a los 3 roles NOLOGIN en `owner`, revocado en `app`,
+  y `verify` falla si alguno lo conserva. **Toda migración futura que cambie el
+  dueño de una función a un rol nuevo necesita ese rol en `DEFINER_ROLES`.**
+- **El modo `create` "funcionaba" contra Neon si `helpdesk` ya existía**: caía
+  en `ALTER ROLE helpdesk PASSWORD` y le pisaba la contraseña de la consola.
+  Ahora exige SUPERUSER real antes de tocar nada.
+- En la imagen oficial de Postgres, `127.0.0.1` DENTRO del contenedor es `trust`:
+  para probar una contraseña hay que conectar por la IP de red del contenedor.
+- En este HDD el Postgres desechable tardó minutos en el `initdb` y Prisma agotó
+  su `connect_timeout` de 5 s (P1001): usar `connect_timeout=120` en las URLs.
+- La carga local dio P2028 (transacción interactiva > 5 s) por el disco lento,
+  no por memoria.
+- El `Dockerfile` hace `corepack enable` sin `packageManager` en `package.json`:
+  el build de hoy usó **pnpm 12.18.0**. Funcionó, pero no está fijado.
+
+## Estado anterior (2026-09-10) — Directorio de miembros (ADR-0025)
 
 Rama `feat/members-endpoint`. Cierra la carencia que bloqueaba tres pantallas del
 frontend a la vez.

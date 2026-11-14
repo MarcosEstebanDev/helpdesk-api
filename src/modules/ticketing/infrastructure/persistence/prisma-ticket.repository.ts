@@ -65,4 +65,22 @@ export class PrismaTicketRepository
       return row === null ? null : toTicket(row);
     });
   }
+
+  /**
+   * `SELECT ... FOR UPDATE` y DESPUÉS la lectura normal: Prisma no expone el
+   * bloqueo en `findFirst`. Las dos van en la misma transacción, así que lo
+   * que se lee es la versión ya confirmada por quien tuviera la fila (READ
+   * COMMITTED relee tras esperar el bloqueo). RLS sigue aplicando: una fila de
+   * otro tenant no se bloquea ni se lee.
+   */
+  async findByIdForUpdate(
+    tenantId: TenantId,
+    id: TicketId,
+  ): Promise<Ticket | null> {
+    return this.runInTenant(tenantId, async (tx) => {
+      await tx.$queryRaw`SELECT id FROM tickets WHERE id = ${id}::uuid AND tenant_id = ${tenantId}::uuid FOR UPDATE`;
+      const row = await tx.ticket.findFirst({ where: { id, tenantId } });
+      return row === null ? null : toTicket(row);
+    });
+  }
 }

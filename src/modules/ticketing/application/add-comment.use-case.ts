@@ -6,6 +6,7 @@ import {
   err,
   ok,
 } from '../../../shared-kernel';
+import { CommentVisibility } from '../domain/comment-visibility';
 import { Comment } from '../domain/entities/comment.entity';
 import {
   TicketClosedError,
@@ -15,8 +16,10 @@ import {
 import { CommentId, TenantId, TicketId, UserId } from '../domain/ids';
 import { CommentRepository } from '../domain/ports/comment.repository';
 import { TicketRepository } from '../domain/ports/ticket.repository';
+import { SYSTEM_ACTOR_ID } from '../domain/system-actor';
 import { AuditRecorder } from './audit-recorder';
 import { EventRecorder } from './event-recorder';
+import { SlaPauseCoordinator } from './sla/sla-pause-coordinator';
 import { runTransactional } from './transactional';
 
 export interface AddCommentInput {
@@ -26,6 +29,8 @@ export interface AddCommentInput {
   actorRole: string;
   ticketId: TicketId;
   body: string;
+  /** Respuesta al cliente o nota del equipo (ADR-0028). */
+  visibility: CommentVisibility;
 }
 
 /**
@@ -45,6 +50,7 @@ export class AddComment {
     private readonly events: EventRecorder,
     private readonly ids: IdGenerator,
     private readonly clock: Clock,
+    private readonly slaPause: SlaPauseCoordinator,
   ) {}
 
   async execute(
@@ -53,7 +59,7 @@ export class AddComment {
     const now = this.clock.now();
 
     return runTransactional(this.transactions, input.tenantId, async () => {
-      const ticket = await this.tickets.findById(
+      const ticket = await this.tickets.findByIdForUpdate(
         input.tenantId,
         input.ticketId,
       );
@@ -69,7 +75,9 @@ export class AddComment {
         tenantId: input.tenantId,
         ticketId: input.ticketId,
         authorId: input.actorId,
+        authorRole: input.actorRole,
         body: input.body,
+        visibility: input.visibility,
         now,
       });
       if (written.isErr()) {
@@ -82,10 +90,12 @@ export class AddComment {
       // actualiza su `updatedAt` y emite el evento. Vuelve a comprobar que el
       // ticket admite comentarios —de ahí que se maneje su `Result`— aunque a
       // estas alturas ya sabemos que sí; la entidad no confía en el llamador.
+      const estadoAntes = ticket.status;
       const registered = ticket.registerComment(
         comment.id,
         input.actorId,
         input.actorRole,
+        comment.visibility,
         now,
       );
       if (registered.isErr()) {
@@ -100,9 +110,38 @@ export class AddComment {
         action: 'comment.added',
         entityType: 'ticket',
         entityId: ticket.id,
-        metadata: { commentId: comment.id },
+        metadata: { commentId: comment.id, visibility: comment.visibility },
         now,
       });
+
+      // El comentario del cliente sacó al ticket de la espera (lo decide el
+      // agregado, ADR-0029). La auditoría la escribe el caso de uso, así que
+      // el cambio de estado se registra aquí, como SISTEMA: no lo pidió nadie,
+      // es una consecuencia. Y el reloj se reanuda en esta misma transacción.
+      if (ticket.status !== estadoAntes) {
+        await this.audit.record({
+          tenantId: input.tenantId,
+          actorId: SYSTEM_ACTOR_ID,
+          action: 'ticket.status_changed',
+          entityType: 'ticket',
+          entityId: ticket.id,
+          metadata: {
+            from: estadoAntes,
+            to: ticket.status,
+            automatic: true,
+            trigger: 'customer_reply',
+            commentId: comment.id,
+          },
+          now,
+        });
+        await this.slaPause.onStatusChange({
+          tenantId: input.tenantId,
+          ticketId: ticket.id,
+          from: estadoAntes,
+          to: ticket.status,
+          now,
+        });
+      }
       await this.events.record(ticket);
 
       return ok(comment);

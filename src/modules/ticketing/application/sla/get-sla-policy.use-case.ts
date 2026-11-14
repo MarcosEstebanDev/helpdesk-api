@@ -2,8 +2,10 @@ import { TenantId } from '../../domain/ids';
 import { SlaPolicyRepository } from '../../domain/ports/sla.repository';
 import {
   EffectiveSlaTarget,
+  defaultPolicyFor,
   effectivePolicy,
 } from '../../domain/sla/sla-policy';
+import { BusinessCalendarRepository } from '../../domain/ports/business-calendar.repository';
 
 /**
  * Devuelve la política de SLA vigente de la organización: las cuatro
@@ -16,10 +18,14 @@ import {
  * `DEFAULT_SLA_POLICY` es una regla del dominio.
  */
 export class GetSlaPolicy {
-  constructor(private readonly policies: SlaPolicyRepository) {}
+  constructor(
+    private readonly policies: SlaPolicyRepository,
+    private readonly calendars: BusinessCalendarRepository,
+  ) {}
 
   async execute(input: { tenantId: TenantId }): Promise<EffectiveSlaTarget[]> {
     const overrides = await this.policies.overridesOf(input.tenantId);
-    return effectivePolicy(overrides);
+    const { mode } = await this.calendars.configOf(input.tenantId);
+    return effectivePolicy(overrides, defaultPolicyFor(mode));
   }
 }

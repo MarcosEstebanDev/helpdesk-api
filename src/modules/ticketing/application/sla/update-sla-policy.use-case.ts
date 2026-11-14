@@ -10,9 +10,11 @@ import { TenantId, UserId } from '../../domain/ids';
 import { SlaPolicyRepository } from '../../domain/ports/sla.repository';
 import {
   EffectiveSlaTarget,
+  defaultPolicyFor,
   effectivePolicy,
   makeSlaTarget,
 } from '../../domain/sla/sla-policy';
+import { BusinessCalendarRepository } from '../../domain/ports/business-calendar.repository';
 import { TicketPriority } from '../../domain/ticket-status';
 import { AuditRecorder } from '../audit-recorder';
 import { runTransactional } from '../transactional';
@@ -47,6 +49,7 @@ export class UpdateSlaPolicy {
     private readonly policies: SlaPolicyRepository,
     private readonly audit: AuditRecorder,
     private readonly clock: Clock,
+    private readonly calendars: BusinessCalendarRepository,
   ) {}
 
   async execute(
@@ -66,7 +69,10 @@ export class UpdateSlaPolicy {
       input.tenantId,
       async () => {
         const overrides = await this.policies.overridesOf(input.tenantId);
-        const antes = effectivePolicy(overrides).find(
+        const defaults = defaultPolicyFor(
+          (await this.calendars.configOf(input.tenantId)).mode,
+        );
+        const antes = effectivePolicy(overrides, defaults).find(
           (t) => t.priority === input.priority,
         );
 
@@ -98,7 +104,10 @@ export class UpdateSlaPolicy {
         });
 
         return ok(
-          effectivePolicy({ ...overrides, [input.priority]: target.value }),
+          effectivePolicy(
+            { ...overrides, [input.priority]: target.value },
+            defaults,
+          ),
         );
       },
     );

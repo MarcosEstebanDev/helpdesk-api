@@ -4,12 +4,14 @@ import {
   Delete,
   Get,
   HttpCode,
+  ForbiddenException,
   HttpStatus,
   NotFoundException,
   Param,
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -20,6 +22,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import type { TenantContext } from '../../../../infrastructure/tenant/tenant-context';
+import { hasAtLeastRole, isRole } from '../../../iam/domain/role';
 import { CurrentUser } from '../../../iam/infrastructure/auth/current-user.decorator';
 import { JwtAuthGuard } from '../../../iam/infrastructure/auth/jwt-auth.guard';
 import { MinRole } from '../../../iam/infrastructure/auth/min-role.decorator';
@@ -27,7 +30,11 @@ import { AddComment } from '../../application/add-comment.use-case';
 import { AssignTicket } from '../../application/assign-ticket.use-case';
 import { ChangeTicketStatus } from '../../application/change-ticket-status.use-case';
 import { CreateTicket } from '../../application/create-ticket.use-case';
-import { TenantId, TicketId, UserId } from '../../domain/ids';
+import { SetTicketTags } from '../../application/tags/set-ticket-tags.use-case';
+import { TagId, TenantId, TicketId, UserId } from '../../domain/ids';
+import { SetTicketTagsDto, TicketTagsDto } from './dto/tag.dto';
+import { carreraComoErrorDeEtiqueta } from './prisma-races';
+import { toTagDto } from './tag.controller';
 import {
   AuditEntryDto,
   AddCommentDto,
@@ -37,10 +44,14 @@ import {
   ListTicketsQueryDto,
   TicketCommentDto,
   TicketDetailDto,
+  TicketCountsDto,
   TicketPageDto,
   TicketSummaryDto,
+  TicketTriageDto,
 } from './dto/ticket.dto';
 import { TicketReadModel } from '../persistence/ticket.read-model';
+import { ConfigService } from '@nestjs/config';
+import type { Env } from '../../../../infrastructure/config/env.schema';
 import { toHttpException } from './ticketing-http.mapper';
 
 const DEFAULT_PAGE_SIZE = 20;
@@ -69,9 +80,11 @@ export class TicketController {
     private readonly assignTicket: AssignTicket,
     private readonly changeStatus: ChangeTicketStatus,
     private readonly addComment: AddComment,
+    private readonly setTags: SetTicketTags,
     // El lado de lectura se inyecta directo (CQRS-lite, ADR-0008): no pasa por
     // un caso de uso porque no hay ninguna decisión de negocio que tomar.
     private readonly tickets: TicketReadModel,
+    private readonly config: ConfigService<Env, true>,
   ) {}
 
   @Post()
@@ -103,13 +116,74 @@ export class TicketController {
     @CurrentUser() user: TenantContext,
     @Query() query: ListTicketsQueryDto,
   ): Promise<TicketPageDto> {
+    const esEquipo = this.filtrosPermitidos(user, query);
     return this.tickets.list(TenantId(user.tenantId), {
+      ...this.filtros(user, query),
       status: query.status,
-      assigneeId: query.assigneeId,
-      requesterId: query.requesterId,
+      withTriage: esEquipo,
+      withTags: esEquipo,
+      // Email del solicitante y resumen de SLA: datos de trabajo del equipo.
+      withStaffDetails: esEquipo,
       limit: query.limit ?? DEFAULT_PAGE_SIZE,
       cursor: query.cursor,
     });
+  }
+
+  @Get('counts')
+  @MinRole('VIEWER')
+  @ApiOperation({
+    summary:
+      'Cuántos tickets hay en cada estado, con los mismos filtros que el listado salvo el estado',
+  })
+  @ApiResponse({ status: 200, type: TicketCountsDto })
+  async counts(
+    @CurrentUser() user: TenantContext,
+    @Query() query: ListTicketsQueryDto,
+  ): Promise<TicketCountsDto> {
+    this.filtrosPermitidos(user, query);
+    return this.tickets.countByStatus(
+      TenantId(user.tenantId),
+      this.filtros(user, query),
+    );
+  }
+
+  /**
+   * Comprueba los filtros que solo puede usar el equipo y dice si quien pide
+   * es del equipo. La sugerencia de la IA (ADR-0027) y las etiquetas
+   * (ADR-0031) son internas: a un VIEWER se le dice que no en vez de ignorar
+   * el parámetro en silencio.
+   */
+  private filtrosPermitidos(
+    user: TenantContext,
+    query: ListTicketsQueryDto,
+  ): boolean {
+    const esEquipo = isRole(user.role) && hasAtLeastRole(user.role, 'AGENT');
+    if (query.aiSuggestsHigher === true && !esEquipo) {
+      throw new ForbiddenException(
+        'Filtrar por la sugerencia de la IA requiere rol AGENT o superior.',
+      );
+    }
+    if (query.tagId !== undefined && !esEquipo) {
+      throw new ForbiddenException(
+        'Filtrar por etiquetas requiere rol AGENT o superior.',
+      );
+    }
+    return esEquipo;
+  }
+
+  /** Los filtros del listado salvo el estado: los comparten `list` y `counts`. */
+  private filtros(user: TenantContext, query: ListTicketsQueryDto) {
+    return {
+      assigneeId: query.assigneeId,
+      requesterId: query.requesterId,
+      aiSuggestsHigher: query.aiSuggestsHigher,
+      tagIds: query.tagId,
+      // Del token verificado: decide si las notas internas cuentan al buscar.
+      search:
+        query.q === undefined
+          ? undefined
+          : { text: query.q, viewerRole: user.role },
+    };
   }
 
   @Get(':id')
@@ -123,6 +197,8 @@ export class TicketController {
     const ticket = await this.tickets.detail(
       TenantId(user.tenantId),
       TicketId(id),
+      // Del token verificado: decide si la conversación trae las notas internas.
+      user.role,
     );
     // Un ticket de otra organización es invisible por RLS, así que aquí llega
     // como "no existe" — que es justo lo que queremos responder: un 403 estaría
@@ -131,6 +207,38 @@ export class TicketController {
       throw new NotFoundException('El ticket no existe.');
     }
     return ticket;
+  }
+
+  /**
+   * AGENT y no VIEWER, por la regla del ADR-0025: el rango se decide por lo que
+   * se revela. La sugerencia incluye el sentimiento que la IA atribuye al
+   * cliente, y el cliente es justamente el VIEWER.
+   */
+  @Get(':id/triage')
+  @MinRole('AGENT')
+  @ApiOperation({ summary: 'Sugerencia de la IA: categoría y prioridad' })
+  @ApiResponse({ status: 200, type: TicketTriageDto })
+  async triage(
+    @CurrentUser() user: TenantContext,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<TicketTriageDto> {
+    const view = await this.tickets.triage(
+      TenantId(user.tenantId),
+      TicketId(id),
+    );
+    if (view === null) {
+      throw new NotFoundException('El ticket no existe.');
+    }
+    // Sin servicio de IA configurado, "pending" sería una promesa que nunca se
+    // cumple: la pantalla quedaba en "Analizando…" para siempre. Una
+    // sugerencia ya guardada (de cuando había IA) se sigue mostrando.
+    if (
+      view.status === 'pending' &&
+      !this.config.get('AI_SERVICE_URL', { infer: true })
+    ) {
+      return { status: 'disabled' };
+    }
+    return view;
   }
 
   @Get(':id/history')
@@ -170,6 +278,34 @@ export class TicketController {
     return this.applyAssignment(user, id, null);
   }
 
+  @Put(':id/tags')
+  @MinRole('AGENT')
+  @ApiOperation({ summary: 'Reemplaza las etiquetas del ticket (ADR-0031)' })
+  @ApiResponse({ status: 200, type: TicketTagsDto })
+  @ApiResponse({ status: 409, description: 'El ticket está cerrado' })
+  async putTags(
+    @CurrentUser() user: TenantContext,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SetTicketTagsDto,
+  ): Promise<TicketTagsDto> {
+    let result: Awaited<ReturnType<SetTicketTags['execute']>>;
+    try {
+      result = await this.setTags.execute({
+        tenantId: TenantId(user.tenantId),
+        actorId: UserId(user.userId),
+        ticketId: TicketId(id),
+        tagIds: dto.tagIds.map(TagId),
+      });
+    } catch (e) {
+      // Un ADMIN borró una de las etiquetas en el mismo milisegundo (P2003).
+      const carrera = carreraComoErrorDeEtiqueta(e);
+      if (carrera !== null) throw toHttpException(carrera);
+      throw e;
+    }
+    if (result.isErr()) throw toHttpException(result.error);
+    return { tags: result.value.map(toTagDto) };
+  }
+
   @Patch(':id/status')
   @MinRole('AGENT')
   @ApiOperation({ summary: 'Mueve el ticket por su máquina de estados' })
@@ -194,6 +330,10 @@ export class TicketController {
   @MinRole('VIEWER')
   @ApiOperation({ summary: 'Añade un comentario al ticket' })
   @ApiResponse({ status: 201, type: TicketCommentDto })
+  @ApiResponse({
+    status: 403,
+    description: 'Un VIEWER no puede escribir notas internas',
+  })
   @ApiResponse({ status: 409, description: 'El ticket está cerrado' })
   async comment(
     @CurrentUser() user: TenantContext,
@@ -208,6 +348,7 @@ export class TicketController {
       actorRole: user.role,
       ticketId: TicketId(id),
       body: dto.body,
+      visibility: dto.visibility ?? 'PUBLIC',
     });
     if (result.isErr()) throw toHttpException(result.error);
 
@@ -216,6 +357,7 @@ export class TicketController {
       id: comment.id,
       authorId: comment.authorId,
       body: comment.body,
+      visibility: comment.visibility,
       createdAt: comment.createdAt,
     };
   }

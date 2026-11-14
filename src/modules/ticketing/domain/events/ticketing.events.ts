@@ -1,4 +1,5 @@
 import { IntegrationEvent } from '../../../../shared-kernel';
+import { CommentVisibility } from '../comment-visibility';
 import { TicketPriority, TicketStatus } from '../ticket-status';
 
 /**
@@ -93,7 +94,7 @@ export class TicketStatusChanged implements IntegrationEvent {
 export class CommentAdded implements IntegrationEvent {
   readonly eventName = 'comment.added';
   readonly aggregateType = AGGREGATE_TYPE;
-  readonly version = 2;
+  readonly version = 3;
 
   constructor(
     readonly aggregateId: string,
@@ -103,6 +104,12 @@ export class CommentAdded implements IntegrationEvent {
       commentId: string;
       authorId: string;
       authorRole: string;
+      /**
+       * v3 (ADR-0028). Una nota interna no es una respuesta al cliente: el SLA
+       * no la cuenta y el tiempo real solo se la avisa al equipo. Un v2 no lo
+       * trae y se lee como `PUBLIC`, que es lo que eran todos los comentarios.
+       */
+      visibility: CommentVisibility;
     },
   ) {}
 }
@@ -127,10 +134,64 @@ export class SlaBreached implements IntegrationEvent {
   ) {}
 }
 
+/**
+ * El clasificador de IA propuso categoría y prioridad para el ticket (ADR-0027).
+ *
+ * Lleva `model` y `promptVersion` para que un consumidor futuro (métricas de
+ * acierto, por ejemplo) pueda separar las sugerencias por su origen.
+ */
+export class TicketTriaged implements IntegrationEvent {
+  readonly eventName = 'ticket.triaged';
+  readonly aggregateType = AGGREGATE_TYPE;
+  readonly version = 1;
+
+  constructor(
+    readonly aggregateId: string,
+    readonly tenantId: string,
+    readonly occurredAt: Date,
+    readonly payload: {
+      category: string;
+      suggestedPriority: TicketPriority;
+      sentiment: string;
+      language: string;
+      model: string;
+      promptVersion: string;
+      /**
+       * Foto del ticket al clasificarlo. Viaja para que el aviso en vivo pueda
+       * decir "#336 sugiere Urgente (actual: Normal)" sin que el cliente tenga
+       * que pedir el ticket. Es la prioridad de ESE instante: si un agente la
+       * cambia despues, este evento no se entera (ni debe).
+       */
+      ticketNumber: number;
+      ticketPriority: TicketPriority;
+    },
+  ) {}
+}
+
+/**
+ * Cambiaron las etiquetas del ticket (ADR-0031). Solo ids: los nombres pueden
+ * cambiar y el único consumidor (realtime, sala del equipo) solo necesita saber
+ * que hay que refrescar.
+ */
+export class TicketTagsChanged implements IntegrationEvent {
+  readonly eventName = 'ticket.tags_changed';
+  readonly aggregateType = AGGREGATE_TYPE;
+  readonly version = 1;
+
+  constructor(
+    readonly aggregateId: string,
+    readonly tenantId: string,
+    readonly occurredAt: Date,
+    readonly payload: { added: string[]; removed: string[] },
+  ) {}
+}
+
 export type TicketingEvent =
   | TicketCreated
   | TicketAssigned
   | TicketUnassigned
   | TicketStatusChanged
   | CommentAdded
-  | SlaBreached;
+  | SlaBreached
+  | TicketTriaged
+  | TicketTagsChanged;

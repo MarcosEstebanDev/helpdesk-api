@@ -22,6 +22,7 @@ export class PrismaCommentRepository
           ticketId: comment.ticketId,
           authorId: comment.authorId,
           body: comment.body,
+          visibility: comment.visibility,
           createdAt: comment.createdAt,
         },
       });

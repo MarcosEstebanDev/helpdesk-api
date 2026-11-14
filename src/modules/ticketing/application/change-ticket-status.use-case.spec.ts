@@ -1,21 +1,27 @@
 import { Ticket } from '../domain/entities/ticket.entity';
-import { TicketId } from '../domain/ids';
+import { SlaTimerId, TicketId } from '../domain/ids';
+import { CALENDAR_24_7 } from '../domain/sla/sla-calendar';
+import { SlaTimer } from '../domain/sla/sla-timer.entity';
 import { AuditRecorder } from './audit-recorder';
 import { ChangeTicketStatus } from './change-ticket-status.use-case';
 import { EventRecorder } from './event-recorder';
+import { SlaPauseCoordinator } from './sla/sla-pause-coordinator';
 import {
   ACTOR,
   AHORA,
   TENANT,
   fakeAuditLogRepository,
   fakeOutbox,
+  fakeSlaTimers,
   fakeTicketRepository,
   fakeTransactions,
   fixedClock,
   sequentialIds,
+  calendars24x7,
 } from './ticketing.test-doubles';
 
 const TICKET_ID = TicketId('44444444-4444-4444-4444-444444444444');
+const RELOJ = SlaTimerId('66666666-6666-6666-6666-666666666666');
 const ANTES = new Date('2026-09-09T08:00:00Z');
 
 const ticketEn = (...transiciones: Parameters<Ticket['changeStatus']>[0][]) => {
@@ -50,18 +56,49 @@ const buildSut = (semilla: Ticket) => {
   const audit = new AuditRecorder(ids, auditLogs);
   const outbox = fakeOutbox();
 
+  // Reloj de resolución del ticket, para ver la pausa síncrona (ADR-0029).
+  const timers = fakeSlaTimers();
+  timers.seed(
+    SlaTimer.start({
+      id: RELOJ,
+      tenantId: TENANT,
+      ticketId: TICKET_ID,
+      kind: 'RESOLUTION',
+      minutes: 24 * 60,
+      calendar: CALENDAR_24_7,
+      now: ANTES,
+    }),
+  );
+
   const sut = new ChangeTicketStatus(
     transactions.manager,
     tickets,
     audit,
     new EventRecorder(ids, outbox),
     fixedClock(),
+    new SlaPauseCoordinator(timers, calendars24x7()),
   );
 
-  return { sut, transactions, tickets, auditLogs, outbox };
+  return { sut, transactions, tickets, auditLogs, outbox, timers };
 };
 
 describe('ChangeTicketStatus', () => {
+  it('lee el ticket bloqueado', async () => {
+    // Lee y vuelve a guardar el ticket ENTERO: sin bloquear la fila, un cambio
+    // concurrente (p. ej. otro agente que lo cierra) se pisaría con el estado
+    // viejo. Mismo hallazgo que en SetTicketTags (ADR-0031).
+    const { sut, tickets } = buildSut(ticketEn());
+
+    await sut.execute({
+      tenantId: TENANT,
+      actorId: ACTOR,
+      ticketId: TICKET_ID,
+      status: 'IN_PROGRESS',
+    });
+
+    expect(tickets.lockedReads).toBe(1);
+  });
+
   it('aplica una transición legal y la audita con el origen y el destino', async () => {
     const { sut, tickets, auditLogs } = buildSut(ticketEn());
 
@@ -186,5 +223,54 @@ describe('ChangeTicketStatus', () => {
     if (result.isErr()) {
       expect(result.error.code).toBe('ticketing.invalid_transition');
     }
+  });
+
+  describe('pausa del SLA en la misma transacción (ADR-0029)', () => {
+    it('pasar a la espera pausa el reloj de resolución con el mismo instante', async () => {
+      const { sut, timers } = buildSut(ticketEn('IN_PROGRESS'));
+
+      const result = await sut.execute({
+        tenantId: TENANT,
+        actorId: ACTOR,
+        ticketId: TICKET_ID,
+        status: 'WAITING_ON_CUSTOMER',
+      });
+
+      expect(result.isOk()).toBe(true);
+      expect(timers.stored(RELOJ)?.pausedAt).toEqual(AHORA);
+    });
+
+    it('retomar desde la espera reanuda el reloj', async () => {
+      const { sut, timers } = buildSut(ticketEn('IN_PROGRESS'));
+      await sut.execute({
+        tenantId: TENANT,
+        actorId: ACTOR,
+        ticketId: TICKET_ID,
+        status: 'WAITING_ON_CUSTOMER',
+      });
+
+      await sut.execute({
+        tenantId: TENANT,
+        actorId: ACTOR,
+        ticketId: TICKET_ID,
+        status: 'IN_PROGRESS',
+      });
+
+      expect(timers.stored(RELOJ)?.isRunning()).toBe(true);
+    });
+
+    it('una transición ilegal no toca el reloj', async () => {
+      const { sut, timers } = buildSut(ticketEn());
+
+      const result = await sut.execute({
+        tenantId: TENANT,
+        actorId: ACTOR,
+        ticketId: TICKET_ID,
+        status: 'WAITING_ON_CUSTOMER',
+      });
+
+      expect(result.isErr()).toBe(true);
+      expect(timers.stored(RELOJ)?.isRunning()).toBe(true);
+    });
   });
 });

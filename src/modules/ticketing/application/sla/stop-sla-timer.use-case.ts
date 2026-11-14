@@ -7,6 +7,8 @@ import {
 import { TicketingError } from '../../domain/errors';
 import { TenantId, TicketId } from '../../domain/ids';
 import { SlaTimerRepository } from '../../domain/ports/sla.repository';
+import { BusinessCalendarRepository } from '../../domain/ports/business-calendar.repository';
+import { toBusinessCalendar } from '../../domain/sla/business-calendar';
 import { SlaKind } from '../../domain/sla/sla-timer.entity';
 import { runTransactional } from '../transactional';
 
@@ -46,6 +48,7 @@ export class StopSlaTimer {
     private readonly transactions: TransactionManager,
     private readonly timers: SlaTimerRepository,
     private readonly processed: ProcessedMessages,
+    private readonly calendars: BusinessCalendarRepository,
   ) {}
 
   async execute(
@@ -69,7 +72,7 @@ export class StopSlaTimer {
           } as const);
         }
 
-        const timer = await this.timers.findRunning(
+        const timer = await this.timers.findOpen(
           input.tenantId,
           input.ticketId,
           input.kind,
@@ -81,9 +84,28 @@ export class StopSlaTimer {
           } as const);
         }
 
+        // Un reloj en pausa también se para (resolver desde la espera, ADR-0029):
+        // `stop` lo reanuda primero, así que el margen se calcula DESPUÉS de
+        // parar, sobre el vencimiento ya corrido. Calcularlo antes contaría la
+        // pausa como tiempo consumido.
+        const expected = timer.isPaused() ? 'paused' : 'running';
+        // El calendario solo importa si el reloj estaba en pausa (`stop` lo
+        // reanuda antes de parar): es el horario ACTUAL del tenant (ADR-0034).
+        const calendar = toBusinessCalendar(
+          (await this.calendars.configOf(input.tenantId)).config,
+        );
+        timer.stop(input.occurredAt, calendar);
         const margen = timer.remainingMinutesAt(input.occurredAt);
-        timer.stop(input.occurredAt);
-        await this.timers.save(timer);
+
+        // Escritura condicionada: si otra llegó antes (el barrido lo incumplió
+        // mientras tanto), este reloj ya no estaba abierto y no se para.
+        const escrito = await this.timers.transition(timer, expected);
+        if (!escrito) {
+          return ok({
+            status: 'skipped',
+            reason: 'no_running_timer',
+          } as const);
+        }
 
         return ok({ status: 'stopped', remainingMinutes: margen } as const);
       },

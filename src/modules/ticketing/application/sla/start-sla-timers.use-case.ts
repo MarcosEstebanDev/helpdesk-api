@@ -11,9 +11,11 @@ import {
   SlaPolicyRepository,
   SlaTimerRepository,
 } from '../../domain/ports/sla.repository';
-import { CALENDAR_24_7 } from '../../domain/sla/sla-calendar';
-import { resolvePolicy } from '../../domain/sla/sla-policy';
+import { BusinessCalendarRepository } from '../../domain/ports/business-calendar.repository';
+import { toBusinessCalendar } from '../../domain/sla/business-calendar';
+import { defaultPolicyFor, resolvePolicy } from '../../domain/sla/sla-policy';
 import { SLA_KINDS, SlaTimer } from '../../domain/sla/sla-timer.entity';
+import { TicketRepository } from '../../domain/ports/ticket.repository';
 import { TicketPriority } from '../../domain/ticket-status';
 import { runTransactional } from '../transactional';
 
@@ -47,6 +49,8 @@ export class StartSlaTimers {
     private readonly timers: SlaTimerRepository,
     private readonly processed: ProcessedMessages,
     private readonly ids: IdGenerator,
+    private readonly tickets: TicketRepository,
+    private readonly calendars: BusinessCalendarRepository,
   ) {}
 
   async execute(
@@ -70,26 +74,49 @@ export class StartSlaTimers {
 
         // Lo que el tenant haya configurado, completado con los valores por
         // defecto del dominio. Una organización sin fila alguna tiene SLA igual.
+        // Los valores de fábrica dependen del modo (horas hábiles o de reloj).
+        const horario = await this.calendars.configOf(input.tenantId);
         const overrides = await this.policies.overridesOf(input.tenantId);
-        const objetivo = resolvePolicy(overrides)[input.priority];
+        const objetivo = resolvePolicy(
+          overrides,
+          defaultPolicyFor(horario.mode),
+        )[input.priority];
 
         const minutosPor = {
           RESPONSE: objetivo.responseMinutes,
           RESOLUTION: objetivo.resolutionMinutes,
         };
 
+        // El arranque es diferido y la pausa síncrona (ADR-0029): si el ticket
+        // llegó a la espera ANTES de que este job corriera, el coordinador no
+        // encontró reloj que pausar. Se mira el estado actual y el de
+        // resolución nace pausado. La hora de la pausa es `updatedAt`, la mejor
+        // aproximación que guarda el ticket: si hubo actividad después de entrar
+        // en la espera es algo posterior a la real, o sea que cuenta de más
+        // contra el equipo y nunca de menos.
+        const ticket = await this.tickets.findById(
+          input.tenantId,
+          input.ticketId,
+        );
+        const enEspera = ticket?.status === 'WAITING_ON_CUSTOMER';
+        // Horario laboral de la organización (ADR-0034): un ticket que entra
+        // con la oficina cerrada empieza a contar en la próxima apertura.
+        const calendar = toBusinessCalendar(horario.config);
+
         for (const kind of SLA_KINDS) {
-          await this.timers.save(
-            SlaTimer.start({
-              id: SlaTimerId(this.ids.uuid()),
-              tenantId: input.tenantId,
-              ticketId: input.ticketId,
-              kind,
-              minutes: minutosPor[kind],
-              calendar: CALENDAR_24_7,
-              now: input.occurredAt,
-            }),
-          );
+          const timer = SlaTimer.start({
+            id: SlaTimerId(this.ids.uuid()),
+            tenantId: input.tenantId,
+            ticketId: input.ticketId,
+            kind,
+            minutes: minutosPor[kind],
+            calendar,
+            now: input.occurredAt,
+          });
+          if (enEspera && kind === 'RESOLUTION') {
+            timer.pause(ticket.updatedAt);
+          }
+          await this.timers.save(timer);
         }
 
         return ok({ status: 'started', timers: SLA_KINDS.length } as const);

@@ -248,6 +248,24 @@ organisation*. That is why `comment.added` is versioned at v2 and carries
 `authorRole`, taken from the verified JWT and never from the request body.
 Without it, a customer sending a follow-up would stop their own response clock.
 
+### Waiting on the customer pauses the SLA — inside the same transaction
+
+When an agent asks the requester for something, the ticket moves to
+`WAITING_ON_CUSTOMER` and the resolution clock **pauses**; when the customer
+replies with a public comment, the aggregate itself moves the ticket back to
+`IN_PROGRESS` and the clock resumes, with `due_at` shifted by exactly the time
+spent waiting. The sweeper ignores paused clocks.
+
+This is the one place where a clock is *not* moved by the outbox consumer.
+Starting and stopping a clock tolerate delay; pausing does not, because the
+sweeper uses it to decide an irreversible breach. Done asynchronously, a
+wait → resume → wait sequence processed late counted worked time as paused, and
+a late pause could arrive after the breach was already recorded. So pause and
+resume run inside the status change's own transaction, and every clock
+transition is a conditional `UPDATE ... WHERE` that reports whether it won.
+
+→ [ADR-0029](docs/ARCHITECTURE.md#adr-0029--pausa-del-sla-reloj-pausable-vencimiento-corrido-y-pausa-en-la-transacción-del-cambio)
+
 → [ADR-0020](docs/ARCHITECTURE.md#adr-0020--modelo-de-sla-dos-relojes-política-por-tenant-y-calendario-enchufable),
 [ADR-0021](docs/ARCHITECTURE.md#adr-0021--temporizadores-durables-en-base-de-datos-y-barrido-no-jobs-retardados)
 
@@ -355,16 +373,36 @@ The full contract, with schemas, is at `/docs`.
 | `GET` | `/auth/me` | any | Current session; `email` is read from the database, `role` comes from the token |
 | `GET` | `/members` | AGENT | Directory of the caller's organization. Not VIEWER, on purpose |
 | `POST` | `/tickets` | VIEWER | |
-| `GET` | `/tickets` | VIEWER | Cursor-paginated; filters by `status`, `assigneeId`, `requesterId` |
-| `GET` | `/tickets/:id` | VIEWER | Includes live SLA clocks |
-| `GET` | `/tickets/:id/history` | VIEWER | Audit trail |
-| `POST` | `/tickets/:id/comments` | VIEWER | |
+| `GET` | `/tickets` | VIEWER | Cursor-paginated; filters by `status`, `assigneeId`, `requesterId`, `tagId` (staff) and `q` — full-text search over subject, description and comments (internal notes only count for staff), accent-insensitive, prefix per word; `#123` matches the number. Staff rows also carry `requesterEmail` and `slaSummary` (the most urgent SLA clock) |
+| `GET` | `/tickets/counts` | VIEWER | Tickets per status with the same filters as the list except `status` — what each inbox tab will show |
+| `GET` | `/tickets/:id` | VIEWER | Includes live SLA clocks. A VIEWER never receives internal notes |
+| `GET` | `/tickets/:id/history` | AGENT | Audit trail |
+| `POST` | `/tickets/:id/comments` | VIEWER | `visibility: INTERNAL` (team-only note, does not count as the SLA response) needs AGENT |
 | `PATCH` | `/tickets/:id/status` | AGENT | Rejects illegal transitions with 409 |
 | `POST` | `/tickets/:id/assign` | AGENT | |
 | `DELETE` | `/tickets/:id/assign` | AGENT | Back to the queue |
 | `GET` | `/sla-policy` | ADMIN | Four priorities, each flagged as agreed or default |
 | `PUT` | `/sla-policy/:priority` | ADMIN | |
 | `DELETE` | `/sla-policy/:priority` | ADMIN | Back to the default |
+| `GET` | `/business-hours` | ADMIN | Working week + date exceptions; Mon–Fri 08:00–18:00 (Argentina) until configured |
+| `PUT` | `/business-hours` | ADMIN | Week and mode (`business_hours` or `24_7`); running clocks are not recalculated |
+| `POST` | `/business-hours/exceptions` | ADMIN | A date that overrides the week (holiday, or an extra working day); 409 if already set |
+| `DELETE` | `/business-hours/exceptions/:id` | ADMIN | |
+| `POST` | `/business-hours/holidays/:year` | ADMIN | Preloads Argentina's national holidays (this year or next); never overwrites |
+| `GET` | `/business-hours/status` | VIEWER | Only `open`, `nextOpening` and `timeZone`: the out-of-hours notice |
+| `GET` | `/canned-responses` | AGENT | Shared reply templates, by title. Not VIEWER, on purpose |
+| `POST` | `/canned-responses` | ADMIN | Unknown `{{variables}}` or stray braces are a 400 |
+| `PUT` | `/canned-responses/:id` | ADMIN | Replaces title and body |
+| `DELETE` | `/canned-responses/:id` | ADMIN | Hard delete, audited with its content |
+| `GET` | `/tags` | AGENT | Tag catalog. Internal: never shown to VIEWER |
+| `POST` | `/tags` | AGENT | Agents create tags on the fly |
+| `PATCH` | `/tags/:id` | ADMIN | Rename / recolor (8-color palette) |
+| `DELETE` | `/tags/:id` | ADMIN | Removes it from every ticket |
+| `PUT` | `/tickets/:id/tags` | AGENT | Replaces the ticket's tags (max 10); `GET /tickets?tagId=` filters by any of them |
+| `GET` | `/views` | AGENT | Saved inbox views: shared ones first, then the caller's own |
+| `POST` | `/views` | AGENT | `{ name, filters, shared? }`; `shared` is ADMIN-only. Filters are versioned JSON validated by the domain |
+| `PUT` | `/views/:id` | AGENT | Owner for personal views, ADMIN for shared ones; someone else's personal view is a 404 |
+| `DELETE` | `/views/:id` | AGENT | Same rules as `PUT` |
 | `GET` | `/health/live` | — | No dependencies, on purpose |
 | `GET` | `/health/ready` | — | Postgres + Redis, via the app's own connections |
 
@@ -448,7 +486,11 @@ Being explicit about the edges is part of the point.
 - **Rate limiting is in-memory**, so it is per-instance. Fine for one node,
   wrong behind a load balancer; it needs the Redis store before scaling out.
 - **SLA calendars are 24/7 only.** `SlaCalendar` is the interface where business
-  hours would go.
+  hours would go; pausing already measures the remaining margin through it
+  (`workingMinutesBetween`), so business hours will not change the pause.
+- **No auto-solve for tickets waiting on the customer.** A ticket in
+  `WAITING_ON_CUSTOMER` stays there until someone replies or resolves it;
+  closing it after N days of silence belongs with automation rules.
 - **`sla_timers` is never purged.** It grows with every ticket.
 
 ---

@@ -75,6 +75,62 @@ describe('BroadcastTicketEvent', () => {
       expect(realtime.para('ticket')).toHaveLength(0);
     });
 
+    it('la sugerencia de la IA va solo al equipo, sin el tono del cliente', async () => {
+      const { sut, realtime } = montar();
+
+      await sut.execute(
+        evento('ticket.triaged', {
+          category: 'bug',
+          suggestedPriority: 'URGENT',
+          sentiment: 'negative',
+          language: 'es',
+          model: 'qwen2.5:3b-instruct',
+          promptVersion: 'triage-v2',
+          ticketNumber: 336,
+          ticketPriority: 'NORMAL',
+        }),
+      );
+
+      expect(realtime.emisiones).toHaveLength(1);
+      expect(realtime.emisiones[0].audience).toEqual({
+        scope: 'staff',
+        tenantId: TENANT,
+      });
+      // Lo justo para el aviso en vivo. El sentimiento que la IA le atribuye al
+      // cliente NO viaja: quien lo necesite lo pide por HTTP, con permisos.
+      expect(realtime.emisiones[0].message.payload).toEqual({
+        ticketId: TICKET_ID,
+        occurredAt: OCURRIO.toISOString(),
+        category: 'bug',
+        suggestedPriority: 'URGENT',
+        number: 336,
+        currentPriority: 'NORMAL',
+      });
+    });
+
+    it('las etiquetas solo las ve el equipo (ADR-0031)', async () => {
+      const { sut, realtime } = montar();
+
+      await sut.execute(
+        evento('ticket.tags_changed', { added: ['t1'], removed: ['t2'] }),
+      );
+
+      expect(realtime.emisiones).toHaveLength(1);
+      expect(realtime.emisiones[0].audience).toEqual({
+        scope: 'staff',
+        tenantId: TENANT,
+      });
+      expect(realtime.emisiones[0].message).toEqual({
+        event: 'ticket.tags_changed',
+        payload: {
+          ticketId: TICKET_ID,
+          occurredAt: OCURRIO.toISOString(),
+          added: ['t1'],
+          removed: ['t2'],
+        },
+      });
+    });
+
     it('a quién le toca un ticket solo lo ve el equipo', async () => {
       const { sut, realtime } = montar();
 
@@ -105,6 +161,28 @@ describe('BroadcastTicketEvent', () => {
         'ticket',
       ]);
     });
+
+    it('pasar a la espera del cliente se difunde como cualquier cambio de estado', async () => {
+      // El cliente tiene que ver que la pelota está de su lado, y el equipo que
+      // el ticket volvió solo cuando el cliente contesta (ADR-0029).
+      const { sut, realtime } = montar();
+
+      await sut.execute(
+        evento('ticket.status_changed', {
+          from: 'IN_PROGRESS',
+          to: 'WAITING_ON_CUSTOMER',
+          assigneeId: 'un-agente',
+        }),
+      );
+
+      expect(realtime.emisiones.map((e) => e.audience.scope).sort()).toEqual([
+        'tenant',
+        'ticket',
+      ]);
+      expect(realtime.emisiones[0].message.payload).toMatchObject({
+        status: 'WAITING_ON_CUSTOMER',
+      });
+    });
   });
 
   describe('qué viaja por el cable', () => {
@@ -128,6 +206,62 @@ describe('BroadcastTicketEvent', () => {
         ticketId: TICKET_ID,
         occurredAt: OCURRIO.toISOString(),
         commentId: 'c-1',
+      });
+    });
+
+    describe('notas internas (ADR-0028)', () => {
+      it('una nota interna se avisa solo a la sala del equipo', async () => {
+        const { sut, realtime } = montar();
+
+        await sut.execute(
+          evento('comment.added', {
+            commentId: 'c-1',
+            authorId: 'agente',
+            authorRole: 'AGENT',
+            visibility: 'INTERNAL',
+          }),
+        );
+
+        expect(realtime.emisiones.map((e) => e.audience.scope)).toEqual([
+          'staff',
+        ]);
+      });
+
+      it('una respuesta pública sigue yendo a la sala del ticket', async () => {
+        const { sut, realtime } = montar();
+
+        await sut.execute(
+          evento('comment.added', {
+            commentId: 'c-1',
+            authorId: 'agente',
+            authorRole: 'AGENT',
+            visibility: 'PUBLIC',
+          }),
+        );
+
+        expect(realtime.emisiones.map((e) => e.audience.scope)).toEqual([
+          'ticket',
+        ]);
+      });
+
+      it('un v2 (sin visibilidad) era público; un valor desconocido falla cerrado', async () => {
+        const { sut, realtime } = montar();
+
+        await sut.execute(
+          evento('comment.added', { commentId: 'c-1', authorRole: 'AGENT' }),
+        );
+        await sut.execute(
+          evento('comment.added', {
+            commentId: 'c-2',
+            authorRole: 'AGENT',
+            visibility: 'PRIVADO',
+          }),
+        );
+
+        expect(realtime.emisiones.map((e) => e.audience.scope)).toEqual([
+          'ticket',
+          'staff',
+        ]);
       });
     });
 
