@@ -659,6 +659,9 @@ aislarlo cuesta reescribir cada sitio donde se sumó tiempo a mano.
 > motor ni el barrido. `CALENDAR_24_7` queda para el modo "atención 24/7". Los
 > **valores por defecto** pasan a pensarse en horas HÁBILES: NORMAL resuelve
 > en 10 h (antes 24 h) y LOW en 30 h (antes 72 h); URGENT y HIGH no cambian.
+> En modo 24/7 rigen los de siempre (`DEFAULT_SLA_POLICY_24_7`, 24 h y 72 h):
+> el ajuste es para días de 10 h, y aplicarlo en horas de reloj habría
+> endurecido en silencio el SLA de quien tiene guardia (`defaultPolicyFor`).
 > Las políticas pactadas por cada organización no se tocan.
 
 **Decisión 6 — La política se configura POR PRIORIDAD, y leerla ya es cosa de

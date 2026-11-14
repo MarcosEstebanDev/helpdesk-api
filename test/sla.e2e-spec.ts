@@ -16,7 +16,8 @@ import {
   TICKET_ROUTING_QUEUE,
 } from '../src/infrastructure/queue/queues';
 import { Role } from '../src/modules/iam/domain/role';
-import { DEFAULT_SLA_POLICY } from '../src/modules/ticketing/domain/sla/sla-policy';
+// Esta suite corre en 24/7: los valores de fábrica son los de reloj (ADR-0034).
+import { DEFAULT_SLA_POLICY_24_7 as DEFAULT_SLA_POLICY } from '../src/modules/ticketing/domain/sla/sla-policy';
 import { SlaProcessor } from '../src/modules/ticketing/infrastructure/queue/sla.processor';
 import { SlaSweeper } from '../src/modules/ticketing/infrastructure/sla/sla-sweeper.service';
 import { CLOCK, Clock } from '../src/shared-kernel';

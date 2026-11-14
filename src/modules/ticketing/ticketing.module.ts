@@ -618,9 +618,11 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
     },
     {
       provide: GetSlaPolicy,
-      inject: [SLA_POLICY_REPOSITORY],
-      useFactory: (policies: SlaPolicyRepository): GetSlaPolicy =>
-        new GetSlaPolicy(policies),
+      inject: [SLA_POLICY_REPOSITORY, BUSINESS_CALENDAR_REPOSITORY],
+      useFactory: (
+        policies: SlaPolicyRepository,
+        calendars: BusinessCalendarRepository,
+      ): GetSlaPolicy => new GetSlaPolicy(policies, calendars),
     },
     {
       provide: UpdateSlaPolicy,
@@ -629,14 +631,16 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
         SLA_POLICY_REPOSITORY,
         AuditRecorder,
         CLOCK,
+        BUSINESS_CALENDAR_REPOSITORY,
       ],
       useFactory: (
         transactions: TransactionManager,
         policies: SlaPolicyRepository,
         audit: AuditRecorder,
         clock: Clock,
+        calendars: BusinessCalendarRepository,
       ): UpdateSlaPolicy =>
-        new UpdateSlaPolicy(transactions, policies, audit, clock),
+        new UpdateSlaPolicy(transactions, policies, audit, clock, calendars),
     },
     {
       provide: ResetSlaPolicy,
@@ -645,14 +649,16 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
         SLA_POLICY_REPOSITORY,
         AuditRecorder,
         CLOCK,
+        BUSINESS_CALENDAR_REPOSITORY,
       ],
       useFactory: (
         transactions: TransactionManager,
         policies: SlaPolicyRepository,
         audit: AuditRecorder,
         clock: Clock,
+        calendars: BusinessCalendarRepository,
       ): ResetSlaPolicy =>
-        new ResetSlaPolicy(transactions, policies, audit, clock),
+        new ResetSlaPolicy(transactions, policies, audit, clock, calendars),
     },
     {
       provide: StopSlaTimer,

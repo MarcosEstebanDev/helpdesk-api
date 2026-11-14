@@ -21,7 +21,8 @@ import {
   TenantId,
   TicketId,
 } from '../src/modules/ticketing/domain/ids';
-import { DEFAULT_SLA_POLICY } from '../src/modules/ticketing/domain/sla/sla-policy';
+// Esta suite corre en 24/7: los valores de fábrica son los de reloj (ADR-0034).
+import { DEFAULT_SLA_POLICY_24_7 as DEFAULT_SLA_POLICY } from '../src/modules/ticketing/domain/sla/sla-policy';
 import { SlaTimer } from '../src/modules/ticketing/domain/sla/sla-timer.entity';
 import { SYSTEM_ACTOR_ID } from '../src/modules/ticketing/domain/system-actor';
 import { PrismaSlaTimerRepository } from '../src/modules/ticketing/infrastructure/persistence/prisma-sla.repository';

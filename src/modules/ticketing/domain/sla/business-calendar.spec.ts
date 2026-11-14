@@ -6,6 +6,7 @@ import {
   toBusinessCalendar,
 } from './business-calendar';
 import { CALENDAR_24_7 } from './sla-calendar';
+import { SLA_MAX_MINUTES } from './sla-policy';
 
 // Instantes en UTC. Argentina es UTC-3 todo el año. 2026-11-13 es viernes.
 const z = (iso: string) => new Date(`${iso}Z`);
@@ -59,6 +60,20 @@ describe('BusinessCalendar (horario laboral)', () => {
       expect(cal.dueAt(z('2026-11-13T16:00:00'), 60)).toEqual(
         z('2026-11-13T17:00:00'),
       );
+    });
+
+    it('el objetivo de SLA más largo permitido entra en el calendario (revisión)', () => {
+      // SLA_MAX_MINUTES son 525.600 minutos HÁBILES: con L–V de 10 h son casi
+      // tres años de calendario. Un tope fijo de 730 días lo rechazaba y el
+      // ticket se quedaba sin relojes.
+      expect(() => ar().dueAt(VIE_17, SLA_MAX_MINUTES)).not.toThrow();
+      const una = toBusinessCalendar({
+        ...DEFAULT_BUSINESS_HOURS,
+        weekdays: [1],
+        opensAtMinute: 600,
+        closesAtMinute: 601,
+      });
+      expect(() => una.dueAt(VIE_17, 1000)).not.toThrow();
     });
 
     it('sin días hábiles alcanzables falla fuerte en vez de colgarse', () => {

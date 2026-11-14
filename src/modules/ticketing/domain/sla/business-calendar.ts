@@ -44,9 +44,10 @@ export const DEFAULT_BUSINESS_HOURS: Extract<
 };
 
 /**
- * Hasta dónde se busca un día hábil. Dos años sobra para cualquier SLA real
- * (`SLA_MAX_MINUTES` es un año de minutos); pasarlo significa un calendario
- * imposible, y se falla fuerte en vez de quedar buscando para siempre.
+ * Margen de búsqueda de días hábiles, además de lo que pide el propio objetivo
+ * (ver `dueAt`). Pasarlo significa un calendario imposible —p. ej. todos los
+ * días hábiles tapados por excepciones—, y se falla fuerte en vez de quedar
+ * buscando para siempre.
  */
 export const MAX_SEARCH_DAYS = 730;
 
@@ -182,7 +183,15 @@ const calendarioHabil = (
       let restante = minutes * MS_MIN;
       const desde = from.getTime();
       const inicio = fechaDe(desde, timeZone);
-      for (let i = 0; i <= MAX_SEARCH_DAYS; i++) {
+      // El tope escala con el objetivo (revisión de la rama): un plazo largo
+      // pero válido necesita más calendario que uno corto. Con la capacidad
+      // de la semana tipo se sabe cuántas semanas hacen falta; MAX_SEARCH_DAYS
+      // es el margen para feriados. Pasarlo sí es un calendario imposible.
+      const porSemana = semana.size * (closesAtMinute - opensAtMinute);
+      const tope =
+        MAX_SEARCH_DAYS +
+        (porSemana > 0 ? Math.ceil(minutes / porSemana) * 7 : 0);
+      for (let i = 0; i <= tope; i++) {
         const dia = sumarDias(inicio, i);
         if (!esHabil(dia)) continue;
         const [abre, cierra] = franja(dia);

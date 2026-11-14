@@ -127,6 +127,23 @@ describe('StartSlaTimers', () => {
     expect(due('RESOLUTION')).toEqual(new Date('2026-11-16T14:00:00.000Z'));
   });
 
+  it('en 24/7 usa los valores de fábrica de reloj: NORMAL resuelve en 24 h', async () => {
+    const { sut, timers } = build();
+
+    await sut.execute({
+      eventId: EVENT_ID,
+      tenantId: TENANT,
+      ticketId: TICKET_ID,
+      priority: 'NORMAL',
+      occurredAt: CREADO,
+    });
+
+    const resolucion = timers.saved.find((t) => t.kind === 'RESOLUTION');
+    expect(resolucion?.dueAt).toEqual(
+      new Date(CREADO.getTime() + 24 * 3_600_000),
+    );
+  });
+
   it('arranca los dos relojes con los objetivos por defecto', async () => {
     const { sut, timers } = build();
 

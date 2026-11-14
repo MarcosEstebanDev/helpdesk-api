@@ -39,6 +39,22 @@ export const DEFAULT_SLA_POLICY: SlaPolicy = {
 };
 
 /**
+ * Valores de fábrica para una organización en atención 24/7: los de antes del
+ * horario laboral, en horas de RELOJ. El ajuste a 10 h / 30 h se pensó para
+ * días hábiles de 10 h; aplicarlo en 24/7 habría endurecido en silencio el SLA
+ * de quien tiene guardia (revisión de la rama, ADR-0034).
+ */
+export const DEFAULT_SLA_POLICY_24_7: SlaPolicy = {
+  ...DEFAULT_SLA_POLICY,
+  NORMAL: { responseMinutes: 4 * 60, resolutionMinutes: 24 * 60 },
+  LOW: { responseMinutes: 8 * 60, resolutionMinutes: 72 * 60 },
+};
+
+/** Los valores de fábrica según cómo cuenta el tiempo la organización. */
+export const defaultPolicyFor = (mode: '24_7' | 'business_hours'): SlaPolicy =>
+  mode === '24_7' ? DEFAULT_SLA_POLICY_24_7 : DEFAULT_SLA_POLICY;
+
+/**
  * Combina lo que el tenant haya configurado con los valores por defecto.
  *
  * El merge es POR PRIORIDAD: una organización puede endurecer solo `URGENT` y
@@ -46,11 +62,12 @@ export const DEFAULT_SLA_POLICY: SlaPolicy = {
  */
 export const resolvePolicy = (
   overrides: Partial<Record<TicketPriority, SlaTarget>>,
+  defaults: SlaPolicy = DEFAULT_SLA_POLICY,
 ): SlaPolicy => ({
-  URGENT: overrides.URGENT ?? DEFAULT_SLA_POLICY.URGENT,
-  HIGH: overrides.HIGH ?? DEFAULT_SLA_POLICY.HIGH,
-  NORMAL: overrides.NORMAL ?? DEFAULT_SLA_POLICY.NORMAL,
-  LOW: overrides.LOW ?? DEFAULT_SLA_POLICY.LOW,
+  URGENT: overrides.URGENT ?? defaults.URGENT,
+  HIGH: overrides.HIGH ?? defaults.HIGH,
+  NORMAL: overrides.NORMAL ?? defaults.NORMAL,
+  LOW: overrides.LOW ?? defaults.LOW,
 });
 
 /**
@@ -127,10 +144,11 @@ export interface EffectiveSlaTarget extends SlaTarget {
  */
 export const effectivePolicy = (
   overrides: Partial<Record<TicketPriority, SlaTarget>>,
+  defaults: SlaPolicy = DEFAULT_SLA_POLICY,
 ): EffectiveSlaTarget[] =>
   TICKET_PRIORITIES.map((priority) => {
     const propio = overrides[priority];
-    const target = propio ?? DEFAULT_SLA_POLICY[priority];
+    const target = propio ?? defaults[priority];
     return {
       priority,
       responseMinutes: target.responseMinutes,
