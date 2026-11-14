@@ -104,7 +104,19 @@ import {
   PrismaSlaTimerRepository,
 } from './infrastructure/persistence/prisma-sla.repository';
 import { PrismaBusinessCalendarRepository } from './infrastructure/persistence/prisma-business-calendar.repository';
-import { BUSINESS_CALENDAR_REPOSITORY } from './domain/ports/business-calendar.repository';
+import {
+  BUSINESS_CALENDAR_REPOSITORY,
+  BusinessCalendarRepository,
+} from './domain/ports/business-calendar.repository';
+import { BusinessHoursController } from './infrastructure/http/business-hours.controller';
+import {
+  AddCalendarException,
+  GetBusinessHours,
+  GetBusinessStatus,
+  LoadNationalHolidays,
+  RemoveCalendarException,
+  UpdateBusinessHours,
+} from './application/business-hours/business-hours.use-cases';
 import { TicketReadModel } from './infrastructure/persistence/ticket.read-model';
 import { TriageTicket } from './application/triage/triage-ticket.use-case';
 import {
@@ -142,8 +154,86 @@ import { AiTriageProcessor } from './infrastructure/queue/ai-triage.processor';
     CannedResponseController,
     TagController,
     SavedViewController,
+    BusinessHoursController,
   ],
   providers: [
+    // --- Horario laboral (ADR-0034) ---
+    {
+      provide: GetBusinessHours,
+      inject: [BUSINESS_CALENDAR_REPOSITORY],
+      useFactory: (calendars: BusinessCalendarRepository) =>
+        new GetBusinessHours(calendars),
+    },
+    {
+      provide: UpdateBusinessHours,
+      inject: [
+        TRANSACTION_MANAGER,
+        BUSINESS_CALENDAR_REPOSITORY,
+        AuditRecorder,
+        CLOCK,
+      ],
+      useFactory: (
+        tx: TransactionManager,
+        calendars: BusinessCalendarRepository,
+        audit: AuditRecorder,
+        clock: Clock,
+      ) => new UpdateBusinessHours(tx, calendars, audit, clock),
+    },
+    {
+      provide: AddCalendarException,
+      inject: [
+        TRANSACTION_MANAGER,
+        BUSINESS_CALENDAR_REPOSITORY,
+        AuditRecorder,
+        CLOCK,
+        ID_GENERATOR,
+      ],
+      useFactory: (
+        tx: TransactionManager,
+        calendars: BusinessCalendarRepository,
+        audit: AuditRecorder,
+        clock: Clock,
+        ids: IdGenerator,
+      ) => new AddCalendarException(tx, calendars, audit, clock, ids),
+    },
+    {
+      provide: RemoveCalendarException,
+      inject: [
+        TRANSACTION_MANAGER,
+        BUSINESS_CALENDAR_REPOSITORY,
+        AuditRecorder,
+        CLOCK,
+      ],
+      useFactory: (
+        tx: TransactionManager,
+        calendars: BusinessCalendarRepository,
+        audit: AuditRecorder,
+        clock: Clock,
+      ) => new RemoveCalendarException(tx, calendars, audit, clock),
+    },
+    {
+      provide: LoadNationalHolidays,
+      inject: [
+        TRANSACTION_MANAGER,
+        BUSINESS_CALENDAR_REPOSITORY,
+        AuditRecorder,
+        CLOCK,
+        ID_GENERATOR,
+      ],
+      useFactory: (
+        tx: TransactionManager,
+        calendars: BusinessCalendarRepository,
+        audit: AuditRecorder,
+        clock: Clock,
+        ids: IdGenerator,
+      ) => new LoadNationalHolidays(tx, calendars, audit, clock, ids),
+    },
+    {
+      provide: GetBusinessStatus,
+      inject: [BUSINESS_CALENDAR_REPOSITORY, CLOCK],
+      useFactory: (calendars: BusinessCalendarRepository, clock: Clock) =>
+        new GetBusinessStatus(calendars, clock),
+    },
     // --- Adapters ---
     PrismaTicketRepository,
     PrismaCommentRepository,

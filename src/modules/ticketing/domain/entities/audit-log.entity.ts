@@ -23,6 +23,7 @@ export const AUDIT_ACTIONS = [
   'tag.created',
   'tag.updated',
   'tag.deleted',
+  'business_hours.changed',
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
