@@ -46,8 +46,6 @@ import {
 
 /** El refresh token nunca toca JavaScript del navegador: solo esta cookie. */
 const REFRESH_COOKIE = 'refresh_token';
-/** Acotar el path limita a qué endpoints la manda el navegador. */
-const REFRESH_COOKIE_PATH = '/auth';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -181,7 +179,7 @@ export class AuthController {
       httpOnly: true, // inaccesible desde JS: mitiga XSS
       sameSite: 'lax', // mitiga CSRF sin romper la navegación normal
       secure: this.isProduction(), // en local no hay HTTPS
-      path: REFRESH_COOKIE_PATH,
+      path: this.refreshCookiePath(),
       expires: tokens.refreshTokenExpiresAt,
     });
     return { accessToken: tokens.accessToken };
@@ -193,7 +191,15 @@ export class AuthController {
   }
 
   private clearRefreshCookie(res: Response): void {
-    res.clearCookie(REFRESH_COOKIE, { path: REFRESH_COOKIE_PATH });
+    res.clearCookie(REFRESH_COOKIE, { path: this.refreshCookiePath() });
+  }
+
+  /**
+   * Acotar el path limita a qué endpoints la manda el navegador. Es `/auth`
+   * salvo que el front sirva la API detrás de su propio proxy (ADR-0035).
+   */
+  private refreshCookiePath(): string {
+    return this.config.get('REFRESH_COOKIE_PATH', { infer: true });
   }
 
   private isProduction(): boolean {

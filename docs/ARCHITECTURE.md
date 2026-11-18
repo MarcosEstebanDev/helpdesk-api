@@ -64,6 +64,7 @@ lo que costaría revertirla.
 - [ADR-0004](#adr-0004--contratos-vía-openapi) — Contratos vía OpenAPI
 - [ADR-0024](#adr-0024--observabilidad-logs-estructurados-correlación-hasta-el-worker-y-sondas-separadas) — Observabilidad: logs estructurados, correlación hasta el worker y sondas separadas
 - [ADR-0026](#adr-0026--despliegue-gestionado-rol-dueño-propio-prisma-en-la-imagen-y-rotación-de-credenciales) — Despliegue gestionado: rol dueño propio, Prisma en la imagen y rotación de credenciales (adenda: Postgres sin superusuario y despliegue gratis)
+- [ADR-0035](#adr-0035--el-front-sirve-la-api-detrás-de-su-propio-proxy) — El front sirve la API detrás de su propio proxy
 
 **IA** — Dónde entra un modelo de lenguaje y qué puede tocar.
 
@@ -2036,3 +2037,65 @@ precarga no pisa lo que el ADMIN cargó a mano.
 **Revisar si.** Se piden franjas por día de la semana o turnos partidos (→ la
 semana pasa a ser una lista de franjas por día), horarios por equipo, o
 guardia solo para urgentes (→ calendario por prioridad).
+
+## ADR-0035 — El front sirve la API detrás de su propio proxy
+
+**Estado:** aceptado (2026-11-18). **Relacionado:** ADR-0011 (cookie del
+refresh), ADR-0013 (rate limiting y `TRUST_PROXY_HOPS`), ADR-0022 (socket),
+ADR-0026 (despliegue).
+
+### Contexto
+
+En Railway la web y la API viven en `*.up.railway.app`, que está en la Public
+Suffix List: para el navegador son dos SITIOS distintos, no dos subdominios
+del mismo. La cookie del refresh (`SameSite=Lax`) se guardaba pero no viajaba
+en el `fetch` cruzado, así que **la sesión se perdía al recargar**. La salida
+prevista era un dominio propio (`app.` y `api.` del mismo dominio); mientras
+tanto la demo pública no servía para mostrarla.
+
+### Decisión
+
+1. **La web reenvía `/api/*` a la API** con una rewrite de Next
+   (`API_PROXY_TARGET`, fijada en build). Las llamadas HTTP del navegador van
+   al MISMO origen que la página (`NEXT_PUBLIC_API_BASE=/api`), y la cookie
+   pasa a ser de primera parte.
+2. **El path de la cookie es configurable** (`REFRESH_COOKIE_PATH`, por defecto
+   `/auth`). Detrás del proxy vale `/api/auth`: el navegador compara el path
+   con la URL que VE, no con la que recibe la API. Emitir y borrar usan el
+   mismo valor (una cookie solo se pisa con su mismo path).
+3. **El proxy llega a la API por la red PRIVADA** de Railway, no por su URL
+   pública. Por la pública, el borde de Railway delante de la API agregaría la
+   IP del servidor de la web al final de `X-Forwarded-For`; con
+   `TRUST_PROXY_HOPS=1` la API vería a todos los usuarios con esa IP y el
+   límite de login (5 cada 15 min) se volvería GLOBAL. Por la privada, el
+   último salto sigue siendo el borde delante de la web, que agregó la IP real
+   del cliente: el mismo número de saltos que sin proxy.
+4. **El socket NO pasa por el proxy.** Se autentica con el access token en el
+   handshake (ADR-0022), no con la cookie, así que no gana nada; y un proxy de
+   WebSocket más es un punto más que se corta. Sigue yendo directo a
+   `NEXT_PUBLIC_API_URL`, con CORS como hasta ahora.
+
+### Alternativas descartadas
+
+- **Esperar el dominio propio:** cero código, pero la demo seguía rota hasta
+  comprarlo. El proxy sigue sirviendo después: con dominio propio basta con
+  no definir las dos variables.
+- **`SameSite=None`:** la cookie viajaría entre sitios, pero el bloqueo de
+  cookies de terceros de los navegadores la descarta igual, y abre CSRF.
+- **Route Handler propio en Next** (`app/api/[...path]/route.ts`): más
+  control, pero hay que reescribir a mano cabeceras, cuerpo y `Set-Cookie`;
+  la rewrite lo hace sin código.
+
+### Consecuencias
+
+- (+) La sesión sobrevive a recargar con dominios de plataforma.
+- (+) Cambio aditivo: sin las variables, todo funciona como antes (local, CI,
+  compose de demo).
+- (−) Un salto más en cada petición HTTP (web → API por red privada).
+- (−) La rewrite queda congelada en el BUILD de la web: cambiar el destino
+  exige rebuild, igual que las `NEXT_PUBLIC_*`.
+- (−) La IP del cliente depende de que la red privada no agregue saltos; si
+  Railway cambia eso, el síntoma es el límite de login global.
+
+**Revisar si.** Hay dominio propio (→ quitar el proxy y volver a `/auth`), o
+la API necesita ver algo que la rewrite no reenvía.
