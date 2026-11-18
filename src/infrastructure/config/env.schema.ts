@@ -68,6 +68,14 @@ export const envSchema = z.object({
   // vuelve global. Un número y no `true`: con `true` Express cree la cabecera
   // entera, y un cliente se inventa una IP por intento.
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
+  // Path de la cookie del refresh (ADR-0011). `/auth` cuando el front llama a
+  // la API directo; `/api/auth` cuando el front la sirve a través de su propio
+  // proxy (`/api/*`, ADR-0035): el navegador compara el path contra la URL que
+  // VE, no contra la que recibe la API, y con `/auth` la cookie no viajaría.
+  REFRESH_COOKIE_PATH: z
+    .string()
+    .regex(/^\/[\w\-/]*$/, 'Debe ser un path absoluto, p. ej. /auth')
+    .default('/auth'),
   // Servicio de triage con IA (ADR-0027). OPCIONAL: sin URL, el consumidor de
   // la cola `ai-triage` descarta los eventos como "desactivado" y el resto del
   // sistema funciona igual. La IA es una mejora, no una dependencia de arranque.
